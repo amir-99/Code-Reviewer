@@ -1,0 +1,9 @@
+{
+  "defaults": {
+    "enforcement": "advisory",
+    "languages": ["typescript", "go", "python"],
+    "issue_tracker": {"project_keys": [], "ac_heading": "Acceptance Criteria"},
+    "static_tools": []
+  },
+  "projects": {}
+}

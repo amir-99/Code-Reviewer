@@ -1,0 +1,10 @@
+# Optional static analysis via a dedicated Docker daemon. Do not point this at
+# a production Docker host. The same absolute repository path must exist on
+# the sandbox host; set REPO_CACHE in .env to that path.
+services:
+  worker:
+    environment:
+      STATIC_ENABLED: 'true'
+      DOCKER_HOST: ${SANDBOX_DOCKER_HOST:?Set an internal sandbox Docker endpoint}
+    volumes:
+      - ${REPO_CACHE:?Set absolute shared repository path}:${REPO_CACHE}
