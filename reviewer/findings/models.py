@@ -71,9 +71,11 @@ class ValidationResult(Schema):
 
 
 class VerificationResult(Schema):
-    verdict: Literal["confirmed", "rejected", "uncertain"]
+    # Ordered so the model argues before it rules: strict JSON schema emits
+    # properties in declaration order.
     counterargument: str
     reasoning: str
+    verdict: Literal["confirmed", "rejected", "uncertain"]
 
 
 class Finding(ProposedFinding):

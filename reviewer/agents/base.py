@@ -19,6 +19,9 @@ for path in sorted(
     )
 
 
+SHARED = "_shared"
+
+
 class StageAgent(ABC):
     name: str
     tier: str = "strong"
@@ -26,7 +29,8 @@ class StageAgent(ABC):
 
     @property
     def prompt_version(self):
-        return PROMPTS[self.name][0]
+        # The shared contract is versioned independently, so record both.
+        return f"{PROMPTS[self.name][0]}+shared.{PROMPTS[SHARED][0]}"
 
     @abstractmethod
     def build_prompt(self, bundle, unit): ...
@@ -87,4 +91,7 @@ class TemplateAgent(StageAgent):
             ),
             "review-context",
         )
-        return template + "\n" + INJECTION_RULE, user
+        return (
+            template + "\n" + PROMPTS[SHARED][1] + "\n" + INJECTION_RULE,
+            user,
+        )
