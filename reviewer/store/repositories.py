@@ -262,6 +262,25 @@ class Store:
                     )
                 )
 
+    async def by_event(self, event_id: str):
+        """The review a queued event produced, once the worker has admitted it."""
+        async with self.sessions() as session:
+            return await session.scalar(
+                select(Review).where(Review.event_id == event_id)
+            )
+
+    async def findings_for(self, review_id):
+        """Stored findings for one review, newest severity data included."""
+        from reviewer.store.models import FindingRow
+
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(FindingRow).where(FindingRow.review_id == review_id)
+                )
+            ).all()
+            return [row.data for row in rows]
+
     async def finding_by_fingerprint(self, project_id, iid, fingerprint):
         from reviewer.findings.models import Finding
         from reviewer.store.models import FindingRow

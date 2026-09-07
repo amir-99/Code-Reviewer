@@ -68,3 +68,41 @@ def test_unimplemented_milestones_and_blocking_are_rejected():
         ProjectConfig(enforcement="blocking")
     with pytest.raises(ValidationError):
         Settings(milestone="M10")
+
+
+async def test_inspect_returns_findings_and_drafted_report(store):
+    """The trigger cannot carry results, so reading them back must work."""
+    import sys
+
+    sys.path.insert(0, "tests/unit")
+    from test_findings import finding
+
+    review = await store.accept(7, 2, "a" * 40, "event-1")
+    f = finding()
+    f.severity_final = "REQUIRED"
+    f.status = "verified"
+    await store.save_findings(review, [f])
+    await store.save_snapshot(
+        review.id, {"report": {"mode": "draft", "summary": "# drafted", "inline": []}}
+    )
+    app = create_app(
+        Settings(webhook_secrets={7: "secret"}, admin_token="admin", milestone="M0"),
+        store,
+        FakeQueue(),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        auth = {"Authorization": "Bearer admin"}
+        body = (await client.get(f"/admin/reviews/{review.id}", headers=auth)).json()
+        assert [x["claim"] for x in body["findings"]] == [f.claim]
+        assert body["findings"][0]["severity"] == "REQUIRED"
+        assert body["findings"][0]["file"] == f.anchor.file
+        assert body["report"]["summary"] == "# drafted"
+        # The event id from a trigger response resolves to the same review.
+        found = (
+            await client.get("/admin/reviews?event_id=event-1", headers=auth)
+        ).json()
+        assert found["id"] == review.id and len(found["findings"]) == 1
+        queued = (await client.get("/admin/reviews?event_id=nope", headers=auth)).json()
+        assert queued["state"] == "QUEUED" and queued["findings"] == []

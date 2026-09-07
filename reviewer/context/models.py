@@ -23,6 +23,9 @@ class Linkage(BaseModel):
     warnings: list[str] = []
 
 
+ReportMode = Literal["applied", "draft", "none"]
+
+
 class ReviewOverrides(BaseModel):
     """Operator-supplied context for a manually triggered review.
 
@@ -38,6 +41,11 @@ class ReviewOverrides(BaseModel):
     epic_key: str | None = Field(default=None, pattern=ISSUE_KEY_PATTERN)
     document_urls: list[str] = Field(default_factory=list, max_length=20)
     requested_by: str = Field(default="", max_length=128)
+    # How the finished report reaches the merge request. "applied" posts it,
+    # "draft" renders and stores it without writing to GitLab, "none" publishes
+    # nothing at all. Persisted with the review so a replay reuses the mode the
+    # run was triggered with. None means "whatever the project config says".
+    report_mode: ReportMode | None = None
 
 
 class Hunk(BaseModel):

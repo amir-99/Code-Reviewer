@@ -40,7 +40,7 @@ class StageAgent(ABC):
                 user=user,
                 response_model=StageEnvelope,
                 review_id=bundle.review_id,
-                max_tokens=8000,
+                max_tokens=16000,
                 timeout_s=90,
                 prompt_version=self.prompt_version,
             )

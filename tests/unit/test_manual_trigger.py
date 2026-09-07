@@ -260,3 +260,23 @@ async def test_collect_without_overrides_is_unchanged():
     )
     assert linkage.issue_key == "ABC-123" and linkage.resolved_from == "branch"
     assert epic is None and pages == []
+
+
+async def test_manual_trigger_carries_report_mode(client_parts):
+    app, queue, _ = client_parts
+    url = f"{BASE}/group/proj/-/merge_requests/2"
+    # Posting the report is the default a webhook run would also take.
+    response = await post(app, {"merge_request_url": url})
+    assert response.status_code == 202
+    assert response.json()["report_mode"] == "applied"
+    assert queue.jobs[0][1][0]["overrides"]["report_mode"] == "applied"
+    # The trigger answers before the worker has run, so it cannot carry results.
+    assert response.json()["findings"] is None
+    for mode in ("draft", "none"):
+        response = await post(app, {"merge_request_url": url, "report_mode": mode})
+        assert response.status_code == 202
+        assert response.json()["report_mode"] == mode
+        assert queue.jobs[-1][1][0]["overrides"]["report_mode"] == mode
+    assert (
+        await post(app, {"merge_request_url": url, "report_mode": "publish"})
+    ).status_code == 422

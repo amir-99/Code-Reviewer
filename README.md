@@ -183,8 +183,17 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   all. The link must be on the configured GitLab instance, its project must
   already be onboarded through `WEBHOOK_SECRETS`, and the merge request must be
   open and not a draft. A manual run supersedes an in-flight review for the same
-  merge request, exactly as a new push does.
-- `GET /admin/reviews/{id}`: state, history and status delivery.
+  merge request, exactly as a new push does. `report_mode` chooses what happens
+  to the finished report: `applied` (default) posts it on the merge request,
+  `draft` renders and stores it without writing to GitLab, and `none` publishes
+  nothing. A project configured for silent enforcement never posts, so `applied`
+  degrades to `none` there rather than overriding the operator. The response
+  carries no findings: the review runs in the worker, so poll the `poll` address
+  it returns.
+- `GET /admin/reviews?event_id=...`: resolve a trigger response's event id to
+  its review; reports `QUEUED` until the worker admits it.
+- `GET /admin/reviews/{id}`: state, history, status delivery, the review's
+  findings, and the rendered `report` for a drafted run.
 - `POST /admin/reviews/{id}/replay`: fresh review at the current head, keeping
   any context the review was manually triggered with.
 - `GET /admin/reviews/{id}/audit`: model, prompt/version/hash, token counts,

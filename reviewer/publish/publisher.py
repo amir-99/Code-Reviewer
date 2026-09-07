@@ -23,9 +23,23 @@ class Publisher:
     def __init__(self, forge, store=None):
         self.forge, self.store = forge, store
 
-    async def publish(self, bundle, findings, decision, config, stages):
-        if config.enforcement == "silent":
-            return
+    async def publish(
+        self, bundle, findings, decision, config, stages, report_mode=None
+    ):
+        """Render the report and, unless drafting, post it to the merge request.
+
+        `report_mode` is the operator's per-run choice: "applied" posts, "draft"
+        renders and returns without writing to GitLab, "none" produces nothing.
+        Silent enforcement is an operator setting rather than a per-run one, so a
+        manual override can downgrade writes to a draft but never introduce them.
+        """
+        writes_allowed = config.enforcement != "silent"
+        mode = report_mode or ("applied" if writes_allowed else "none")
+        if mode == "applied" and not writes_allowed:
+            mode = "none"
+        if mode == "none":
+            return None
+        draft = mode == "draft"
         p, i = bundle.mr.project_id, bundle.mr.iid
         refs = await self.forge.get_diff_refs(p, i)
         if refs.head_sha != bundle.code.head_sha:
@@ -38,6 +52,7 @@ class Publisher:
         from collections import Counter
 
         per_file = Counter(d.file for d in open_findings.values() if d.file)
+        posted = []
         for f in inline:
             if f.fingerprint in open_findings:
                 continue
@@ -45,8 +60,10 @@ class Publisher:
                 overflow[f.category] = overflow.get(f.category, 0) + 1
                 continue
             if (
-                await self.forge.get_merge_request(p, i)
-            ).head_sha != bundle.code.head_sha:
+                not draft
+                and (await self.forge.get_merge_request(p, i)).head_sha
+                != bundle.code.head_sha
+            ):
                 raise StaleReview()
             file = next(x for x in bundle.code.files if x.path == f.anchor.file)
             line = next(
@@ -57,20 +74,28 @@ class Publisher:
                 summarized.append(f)
                 continue
             position = position_for_line(file, line, refs)
+            body = render(f)
+            if draft:
+                posted.append(comment(f, position, body))
+                slots -= 1
+                per_file[f.anchor.file] += 1
+                continue
             try:
                 discussion = await self.forge.post_inline_discussion(
-                    p, i, render(f), position
+                    p, i, body, position
                 )
                 f.status = "published"
                 slots -= 1
                 per_file[f.anchor.file] += 1
+                posted.append(comment(f, position, body))
                 if self.store:
                     await self.store.record_comment(f.id, discussion)
             except PositionError:
                 summarized.append(f)
+        body = summary(bundle, decision, findings, summarized, overflow, stages)
         marker = f"<!-- ai-review:summary={bundle.code.head_sha} -->"
         bot = await self.forge.identity()
-        if not any(
+        if not draft and not any(
             marker in n.body and n.author_id == bot
             for d in discussions
             for n in d.notes
@@ -79,9 +104,18 @@ class Publisher:
                 await self.forge.get_merge_request(p, i)
             ).head_sha != bundle.code.head_sha:
                 raise StaleReview()
-            await self.forge.post_note(
-                p, i, summary(bundle, decision, findings, summarized, overflow, stages)
-            )
+            await self.forge.post_note(p, i, body)
+        return {"mode": mode, "summary": body, "inline": posted}
+
+
+def comment(finding, position, body):
+    return {
+        "fingerprint": finding.fingerprint,
+        "severity": str(finding.severity_final or ""),
+        "file": position.new_path,
+        "line": position.new_line or position.old_line,
+        "body": body,
+    }
 
 
 def position_for_line(file, line, refs):

@@ -115,6 +115,11 @@ class Pipeline:
                 from reviewer.services.issues.jira import FakeIssueService
                 from reviewer.services.secrets.scanner import FakeSecretScanner
 
+                overrides = (
+                    ReviewOverrides.model_validate(review.overrides)
+                    if review.overrides
+                    else None
+                )
                 bundle, redactor, symbols, secrets, context_provider = await build(
                     review,
                     mr,
@@ -126,9 +131,7 @@ class Pipeline:
                     self.scanner if level >= 3 else FakeSecretScanner(),
                     config,
                     previous,
-                    ReviewOverrides.model_validate(review.overrides)
-                    if review.overrides
-                    else None,
+                    overrides,
                 )
                 bundle.jira_base_url = self.settings.jira_base_url
                 config_hash = hashlib.sha256(
@@ -474,9 +477,20 @@ class Pipeline:
                                 "No longer present after complete re-review",
                                 "system",
                             )
-                    await Publisher(self.forge, self.store).publish(
-                        bundle, findings, decision, config, list(results.values())
+                    report = await Publisher(self.forge, self.store).publish(
+                        bundle,
+                        findings,
+                        decision,
+                        config,
+                        list(results.values()),
+                        overrides.report_mode if overrides else None,
                     )
+                    # A drafted report is never posted, so the snapshot is the
+                    # only place an operator can read it back from.
+                    if report is not None:
+                        await self.store.save_snapshot(
+                            review.id, data | {"report": report}
+                        )
                 await self.store.save_findings(review, findings)
                 final = "TERMINATED_EARLY" if early else "PUBLISHED"
                 return await self.finish(review, final, decision, config, partial)

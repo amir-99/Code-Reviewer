@@ -20,7 +20,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from reviewer.api.admin import authenticate
 from reviewer.api.webhooks import ReviewJob
-from reviewer.context.models import ISSUE_KEY_PATTERN, ReviewOverrides
+from reviewer.context.models import (
+    ISSUE_KEY_PATTERN,
+    ReportMode,
+    ReviewOverrides,
+)
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
 
@@ -71,6 +75,11 @@ class ManualReviewRequest(BaseModel):
     issue_key: str | None = Field(default=None, pattern=ISSUE_KEY_PATTERN)
     epic_key: str | None = Field(default=None, pattern=ISSUE_KEY_PATTERN)
     document_urls: list[str] = Field(default_factory=list, max_length=20)
+    # "applied" posts the report on the merge request, "draft" renders it for
+    # GET /admin/reviews/{id} without writing to GitLab, and "none" publishes
+    # nothing. A project configured for silent enforcement never posts, so
+    # "applied" degrades to "none" there rather than overriding the operator.
+    report_mode: ReportMode = "applied"
 
 
 def check_document_urls(urls, confluence_base_url):
@@ -131,6 +140,7 @@ async def trigger(body: ManualReviewRequest, request: Request):
             epic_key=body.epic_key,
             document_urls=list(dict.fromkeys(body.document_urls)),
             requested_by="admin",
+            report_mode=body.report_mode,
         ),
     )
     try:
@@ -140,10 +150,15 @@ async def trigger(body: ManualReviewRequest, request: Request):
             )
     except Exception:
         raise HTTPException(503, "Queue unavailable; retry the request") from None
+    # The review runs in the worker, so no findings exist yet. Hand back the
+    # address to poll rather than pretending this call carries results.
     return {
         "accepted": True,
         "project_id": project_id,
         "iid": iid,
         "head_sha": mr.head_sha,
         "event_id": job.event_id,
+        "report_mode": body.report_mode,
+        "findings": None,
+        "poll": f"/admin/reviews?event_id={job.event_id}",
     }

@@ -62,3 +62,64 @@ def test_added_removed_and_context_positions():
         ).model_dump(exclude_none=True)
         assert ("old_line" in result) == (old is not None)
         assert ("new_line" in result) == (new is not None)
+
+
+async def test_draft_mode_renders_without_writing_to_gitlab(tmp_path):
+    b = bundle(tmp_path, 1)
+    f = finding()
+    f.severity_final = "REQUIRED"
+    f.anchor.in_diff = True
+    f.anchor.introduced_by_this_change = True
+    forge = FakeForge(b.mr)
+    report = await Publisher(forge).publish(
+        b, [f], "COMMENT_ONLY", ProjectConfig(), [], "draft"
+    )
+    assert forge.comments == []
+    assert report["mode"] == "draft"
+    assert f.claim in report["summary"]
+    assert [c["fingerprint"] for c in report["inline"]] == [f.fingerprint]
+    # Nothing was posted, so the finding must not claim it was.
+    assert f.status != "published"
+
+
+async def test_report_mode_none_and_silent_enforcement_publish_nothing(tmp_path):
+    b = bundle(tmp_path, 1)
+    f = finding()
+    f.severity_final = "REQUIRED"
+    f.anchor.in_diff = True
+    f.anchor.introduced_by_this_change = True
+    forge = FakeForge(b.mr)
+    assert (
+        await Publisher(forge).publish(
+            b, [f], "COMMENT_ONLY", ProjectConfig(), [], "none"
+        )
+        is None
+    )
+    assert forge.comments == []
+    # Silent is an operator setting: a per-run override cannot introduce writes.
+    silent = ProjectConfig(enforcement="silent")
+    assert (
+        await Publisher(forge).publish(b, [f], "COMMENT_ONLY", silent, [], "applied")
+        is None
+    )
+    assert forge.comments == []
+    # A draft is only rendering, so it stays available under silent enforcement.
+    report = await Publisher(forge).publish(b, [f], "COMMENT_ONLY", silent, [], "draft")
+    assert report["mode"] == "draft" and forge.comments == []
+
+
+async def test_applied_mode_posts_and_returns_the_same_report(tmp_path):
+    b = bundle(tmp_path, 1)
+    f = finding()
+    f.severity_final = "REQUIRED"
+    f.anchor.in_diff = True
+    f.anchor.introduced_by_this_change = True
+    forge = FakeForge(b.mr)
+    report = await Publisher(forge).publish(
+        b, [f], "COMMENT_ONLY", ProjectConfig(), [], "applied"
+    )
+    assert report["mode"] == "applied" and f.status == "published"
+    # One inline discussion plus the summary note.
+    assert len(forge.comments) == 2
+    assert report["inline"][0]["body"] == forge.comments[0].body
+    assert report["summary"] == forge.comments[1].body

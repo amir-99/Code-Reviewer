@@ -1,12 +1,29 @@
-**REQUIRED** · correctness
+### 🔴 REQUIRED · correctness
 
-Fails at runtime
+**Fails at runtime**
 
-Wrong result Wrong result
+| | |
+|---|---|
+| 📍 Location | `f0.py:1` |
+| 🧭 Confidence | high |
 
-**Failure scenario:** Input is zero
+**Why** — Wrong result
 
-**Suggested direction:** Handle zero
+**Impact** — Wrong result
+
+**💥 Failure scenario**
+
+Input is zero
+
+**🛠️ Suggested direction**
+
+Handle zero
+
+<details><summary>📎 Evidence</summary>
+
+- `f0.py:1-1` — code
+
+</details>
 
 <sub>AI review · reply `/ai explain` for evidence · reply `/ai dismiss <reason>` if this is wrong</sub>
 <!-- ai-review:fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->

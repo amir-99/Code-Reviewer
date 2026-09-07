@@ -16,12 +16,33 @@ async def authenticate(request: Request):
 router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
 
 
+@router.get("/reviews")
+async def lookup(request: Request, event_id: str):
+    """Resolve a trigger response's event id to its review.
+
+    The trigger enqueues and returns; the worker creates the review a moment
+    later. Until it does there is nothing to report, which is a queued run
+    rather than an error.
+    """
+    review = await request.app.state.store.by_event(event_id)
+    if review is None:
+        return {"state": "QUEUED", "event_id": event_id, "findings": []}
+    return await inspect(review.id, request)
+
+
 @router.get("/reviews/{review_id}")
 async def inspect(review_id: str, request: Request):
-    review = await request.app.state.store.get(review_id)
+    """Review progress plus, once analysis has run, its findings.
+
+    The trigger endpoint answers before any work happens, so this is where a
+    manual run reads its results back. `report` carries the rendered comment for
+    a drafted run, which by definition was never posted to the merge request.
+    """
+    store = request.app.state.store
+    review = await store.get(review_id)
     if review is None:
         raise HTTPException(404, "Review not found")
-    return {
+    body = {
         key: getattr(review, key)
         for key in (
             "id",
@@ -36,6 +57,44 @@ async def inspect(review_id: str, request: Request):
             "status_delivered",
             "error",
         )
+    }
+    body["overrides"] = review.overrides
+    body["findings"] = [summarise(f) for f in await store.findings_for(review_id)]
+    snapshot = await store.snapshot(review_id) or {}
+    body["report"] = snapshot.get("report")
+    return body
+
+
+def summarise(finding):
+    """The reviewer-facing shape of a stored finding.
+
+    Provenance, prompts and raw model text stay in the audit endpoint; this is
+    the operator's view of what the review actually concluded.
+    """
+    anchor = finding.get("anchor") or {}
+    verification = finding.get("verification") or {}
+    return {
+        "id": finding.get("id"),
+        "fingerprint": finding.get("fingerprint"),
+        "stage": finding.get("stage"),
+        "category": finding.get("category"),
+        "severity": finding.get("severity_final"),
+        "severity_proposed": finding.get("severity_proposed"),
+        "status": finding.get("status"),
+        "confidence": finding.get("confidence"),
+        "claim": finding.get("claim"),
+        "reason": finding.get("reason"),
+        "impact": finding.get("impact"),
+        "failure_scenario": finding.get("failure_scenario"),
+        "suggested_direction": finding.get("suggested_direction"),
+        "requirement_ref": finding.get("requirement_ref"),
+        "file": anchor.get("file"),
+        "line_start": anchor.get("line_start"),
+        "line_end": anchor.get("line_end"),
+        "introduced_by_this_change": anchor.get("introduced_by_this_change"),
+        "evidence": finding.get("evidence") or [],
+        "verdict": verification.get("verdict"),
+        "resolution": finding.get("resolution"),
     }
 
 

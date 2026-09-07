@@ -1,23 +1,88 @@
 from collections import Counter
 from html import escape
 
+SEVERITY_ICON = {
+    "BLOCKER": "🛑",
+    "REQUIRED": "🔴",
+    "SUGGESTION": "💡",
+    "NIT": "🔧",
+    "QUESTION": "❓",
+    "FYI": "ℹ️",
+    "PRAISE": "🌟",
+}
+DECISION_ICON = {"APPROVE": "✅", "COMMENT_ONLY": "💬", "REQUEST_CHANGES": "🚧"}
+# Worst first, so the reader meets blockers before praise.
+SEVERITY_ORDER = list(SEVERITY_ICON)
+
+
+def safe(value):
+    """Escape reviewed content and defuse @-mentions before it reaches GitLab."""
+    return escape(str(value or "")).replace("@", "＠")
+
+
+def oneline(value):
+    """Collapse newlines so escaped text can sit inside a list item."""
+    return " ".join(safe(value).split())
+
+
+def cell(value):
+    """Escape for a table cell, where an unescaped pipe would break the row."""
+    return oneline(value).replace("|", "\\|")
+
+
+def icon(severity):
+    return SEVERITY_ICON.get(str(severity or ""), "•")
+
+
+def location(anchor):
+    span = (
+        str(anchor.line_start)
+        if anchor.line_end in (None, anchor.line_start)
+        else f"{anchor.line_start}-{anchor.line_end}"
+    )
+    return f"{anchor.file}:{span}"
+
 
 def render(f, explain_url=""):
-    def safe(value):
-        return escape(value or "").replace("@", "＠")
-
-    return f"""**{f.severity_final}** · {safe(f.category)}
-
-{safe(f.claim)}
-
-{safe(f.reason)} {safe(f.impact)}
-
-**Failure scenario:** {safe(f.failure_scenario) or "Not specified"}
-
-**Suggested direction:** {safe(f.suggested_direction)}
-
-<sub>AI review · reply `/ai explain` for evidence · reply `/ai dismiss <reason>` if this is wrong</sub>
-<!-- ai-review:fingerprint={f.fingerprint} -->"""
+    lines = [
+        f"### {icon(f.severity_final)} {safe(f.severity_final)} · {safe(f.category)}",
+        "",
+        f"**{safe(f.claim)}**",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| 📍 Location | `{cell(location(f.anchor))}` |",
+        f"| 🧭 Confidence | {cell(f.confidence)} |",
+    ]
+    if f.requirement_ref:
+        lines.append(f"| 🔗 Requirement | {cell(f.requirement_ref)} |")
+    lines += [
+        "",
+        f"**Why** — {safe(f.reason)}",
+        "",
+        f"**Impact** — {safe(f.impact)}",
+        "",
+        "**💥 Failure scenario**",
+        "",
+        safe(f.failure_scenario) or "_Not specified_",
+        "",
+        "**🛠️ Suggested direction**",
+        "",
+        safe(f.suggested_direction),
+    ]
+    if f.evidence:
+        lines += ["", "<details><summary>📎 Evidence</summary>", ""]
+        lines += [
+            f"- `{cell(e.file)}:{e.line_start}-{e.line_end}` — {oneline(e.note)}"
+            for e in f.evidence
+        ]
+        lines += ["", "</details>"]
+    lines += [
+        "",
+        "<sub>AI review · reply `/ai explain` for evidence · reply `/ai dismiss <reason>` if this is wrong</sub>",
+        f"<!-- ai-review:fingerprint={f.fingerprint} -->",
+    ]
+    return "\n".join(lines)
 
 
 def summary(bundle, decision, findings, summary_findings, overflow, stage_results):
@@ -28,64 +93,123 @@ def summary(bundle, decision, findings, summary_findings, overflow, stage_result
             else key
         )
 
-    lines = [
-        f"## AI review · {decision}",
-        f"Commit: `{bundle.code.head_sha}`",
-        f"Issue: {bundle.issue.key if bundle.issue else 'unlinked'} · Epic: {bundle.epic.key if bundle.epic else 'none'}",
+    active = [
+        f for f in findings if f.status not in {"suppressed", "discarded", "resolved"}
     ]
-    lines.append(
-        "Documentation: "
-        + (
-            ", ".join(
-                f"[{escape(d.title)}]({d.url}) v{d.version}" for d in bundle.documents
+    counts = Counter(str(f.severity_final) for f in active)
+    partial = "partial" in bundle.degradations
+    documents = (
+        ", ".join(f"[{cell(d.title)}]({d.url}) v{d.version}" for d in bundle.documents)
+        or "_none_"
+    )
+    tally = (
+        " · ".join(
+            f"{icon(s)} {counts[s]} {s}" for s in SEVERITY_ORDER if counts.get(s)
+        )
+        or "none"
+    )
+
+    lines = [
+        f"## 🤖 AI Code Review · {DECISION_ICON.get(str(decision), '💬')} {safe(decision)}",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| 📦 Commit | `{cell(bundle.code.head_sha)}` |",
+        f"| 🎫 Issue | {issue_link(cell(bundle.issue.key)) if bundle.issue else '_unlinked_'} |",
+        f"| 🗂️ Epic | {issue_link(cell(bundle.epic.key)) if bundle.epic else '_none_'} |",
+        f"| 📚 Documentation | {documents} |",
+        f"| 🧭 Coverage | {'⚠️ partial' if partial else '✅ complete'} |",
+        f"| 🔎 Findings | {tally} |",
+    ]
+
+    lines += ["", "### 📋 Acceptance criteria", ""]
+    criteria = bundle.issue.acceptance_criteria if bundle.issue else []
+    if criteria:
+        lines += ["| # | Criterion | Coverage |", "|---|---|---|"]
+        lines += [
+            f"| {cell(ac.id)} | {cell(ac.text)} | See stage notes below |"
+            for ac in criteria
+        ]
+    elif bundle.issue:
+        lines.append("_No acceptance criteria were found on the linked issue._")
+    else:
+        lines.append(
+            "⚠️ **SUGGESTION**: No accessible mapped Jira story was linked; "
+            "requirement-dependent review is not verifiable."
+        )
+        lines += [f"- {oneline(w)}" for w in bundle.linkage.warnings]
+
+    lines += ["", "### 🔎 Findings", ""]
+    if active:
+        lines += ["| Severity | Category | Location | Claim |", "|---|---|---|---|"]
+        lines += [
+            f"| {icon(f.severity_final)} {cell(f.severity_final)} | {cell(f.category)} "
+            f"| `{cell(location(f.anchor))}` | {cell(f.claim)} |"
+            for f in sorted(
+                active,
+                key=lambda f: (
+                    SEVERITY_ORDER.index(str(f.severity_final))
+                    if str(f.severity_final) in SEVERITY_ORDER
+                    else len(SEVERITY_ORDER),
+                    f.anchor.file,
+                    f.anchor.line_start,
+                ),
             )
-            or "none"
-        )
-    )
-    lines += ["", "| Acceptance criterion | Coverage |", "|---|---|"]
-    for ac in bundle.issue.acceptance_criteria if bundle.issue else []:
-        lines.append(
-            f"| {ac.id}: {escape(ac.text).replace('|', '/')} | See purpose/test coverage below |"
-        )
-    if not bundle.issue:
-        lines.append("| Requirements | not_verifiable: unlinked |")
-        lines.append(
-            "\n**SUGGESTION**: No accessible mapped Jira story was linked; requirement-dependent review is not verifiable."
-        )
-        lines.extend(bundle.linkage.warnings)
-    for stage in stage_results:
-        lines.append(
-            f"\n{stage.stage}: {len(stage.examined)} units examined; {len(stage.skipped)} skipped"
-            + (" (failed)" if stage.failed else "")
-        )
-        lines.extend(escape(note) for note in stage.notes)
-    counts = Counter(
-        str(f.severity_final)
-        for f in findings
-        if f.status not in {"suppressed", "discarded", "resolved"}
-    )
-    lines.append(
-        "\nFinding counts: "
-        + (", ".join(f"{k}: {v}" for k, v in counts.items()) or "none")
-    )
-    lines.append(
-        "Static analysis: "
-        + (
-            ", ".join(f"{s.name}: {s.status}" for s in bundle.static)
-            or "none configured"
-        )
-    )
-    lines.append("Degradations: " + (", ".join(bundle.degradations) or "none"))
-    for f in summary_findings:
-        lines.append(
-            f"\n- **{f.severity_final}** {escape(f.claim)} ({escape(f.anchor.file)}:{f.anchor.line_start}) — {escape(f.reason)}"
-        )
+        ]
+    else:
+        lines.append("✅ No findings were raised on this change.")
+
+    if summary_findings:
+        lines += [
+            "",
+            "### 💬 Not posted inline",
+            "",
+            "_Summary-only severities, unpositionable anchors, or findings over the per-MR caps._",
+            "",
+        ]
+        lines += [
+            f"- {icon(f.severity_final)} **{safe(f.severity_final)}** "
+            f"`{cell(location(f.anchor))}` — {oneline(f.claim)} · {oneline(f.reason)}"
+            for f in summary_findings
+        ]
     if overflow:
         lines.append(
-            "Additional findings above comment caps: "
-            + ", ".join(f"{k}: {v}" for k, v in overflow.items())
+            "\nℹ️ Additional findings above comment caps: "
+            + ", ".join(f"{cell(k)}: {v}" for k, v in overflow.items())
         )
+
     lines += [
+        "",
+        "### 📊 Stage coverage",
+        "",
+        "| Stage | Examined | Skipped | Status |",
+        "|---|---|---|---|",
+    ]
+    for stage in stage_results:
+        status = (
+            "❌ failed"
+            if stage.failed
+            else ("⚠️ partial" if stage.skipped else "✅ complete")
+        )
+        lines.append(
+            f"| {cell(stage.stage)} | {len(stage.examined)} | {len(stage.skipped)} | {status} |"
+        )
+    notes = [(s.stage, note) for s in stage_results for note in s.notes]
+    if notes:
+        lines += ["", "<details><summary>📝 Stage notes</summary>", ""]
+        lines += [f"- **{cell(stage)}** — {oneline(note)}" for stage, note in notes]
+        lines += ["", "</details>"]
+
+    lines += [
+        "",
+        "### 🧰 Static analysis",
+        "",
+        ", ".join(f"`{cell(s.name)}`: {cell(s.status)}" for s in bundle.static)
+        or "_none configured_",
+        "",
+        "### ⚠️ Degradations",
+        "",
+        ", ".join(f"`{cell(d)}`" for d in bundle.degradations) or "_none_",
         "",
         "<sub>Machine-assisted review. No merge or GitLab approval was performed.</sub>",
         f"<!-- ai-review:summary={bundle.code.head_sha} -->",
