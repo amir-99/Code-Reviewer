@@ -22,7 +22,8 @@ Orchestration is an ordinary Python state machine, not an agent framework.
 
 ## Repository map
 
-- `reviewer/api/`: webhook authentication, health, administration, and metrics.
+- `reviewer/api/`: webhook authentication, manual triggering, health,
+  administration, and metrics.
 - `reviewer/worker.py`: arq startup, event handling, job execution, recovery sweep.
 - `reviewer/orchestrator/`: legal transitions, pipeline, stage execution, budgets.
 - `reviewer/context/`: requirement linkage, sanitization, bundles, work units.
@@ -49,6 +50,12 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   deduplication, stage persistence, publication receipts, and recovery behavior.
 - Preserve the partial unique index allowing at most one non-terminal review
   per project/MR. Admission and supersession must remain safe under concurrency.
+- Manual triggers (`POST /admin/reviews`) enqueue the same job a webhook does.
+  Admission, supersession, and recovery keep one durable path: the API process
+  resolves and validates the link only, and does not create reviews itself. A
+  manual run supersedes an in-flight review for its merge request exactly as a
+  new push does. Operator overrides are persisted on the review, so the pipeline
+  and a later replay both see the context the run was triggered with.
 - Purpose and Design are sequential gates. Correctness, Complexity, Test, and
   Line Review fan out concurrently; System Context follows their aggregation.
 - A gate may terminate on a mechanically valid, verified blocker. Model-proposed
@@ -83,12 +90,22 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   static execution. The optional setup uses an operator-configured sandbox daemon.
 - Discover Jira's Epic Link field dynamically; retain the parent-epic fallback.
   Missing requirements degrade the review instead of inventing acceptance criteria.
+- Operator-supplied requirements are optional and override discovery rather than
+  extending it: an issue key replaces branch/title/commit linkage, an epic key
+  replaces the story-derived epic, and hand-supplied pages are read before
+  discovered ones. They remain valid for an unlinked change, and an override
+  that names document pages or an epic forces a fresh requirement collection
+  instead of reusing the previous run's.
 - Confluence links must remain restricted to the configured origin, including
   every redirect. Preserve page/version attribution and document budgets.
 - Read repository policy from the merge base. Repository-controlled YAML cannot
   select enforcement, commands, images, model endpoints, or credentials.
 - Verify webhook tokens in constant time. Keep review work out of the handler.
   Keep Developer-or-higher authorization for `/ai` commands.
+- A pasted merge request link is resolved with the reviewer's own token. Accept
+  only links whose origin and base path match the configured GitLab instance,
+  and only projects already onboarded; reject a closed, merged, or draft merge
+  request at the API rather than accepting a job that cannot run.
 
 ## Models, prompts, and findings
 

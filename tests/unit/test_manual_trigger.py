@@ -12,6 +12,7 @@ from reviewer.services.forge.gitlab import MergeRequestContext
 from reviewer.services.issues.jira import FakeIssueService, IssueContext
 
 BASE = "https://gitlab.example.invalid"
+WIKI = "https://wiki.example.invalid"
 
 
 @pytest.mark.parametrize(
@@ -65,6 +66,9 @@ def client_parts(store, forge):
             webhook_secrets={7: "secret"},
             admin_token="admin",
             gitlab_base_url=BASE,
+            # Pinned, not inherited: Settings reads .env, and a developer's real
+            # Confluence host would otherwise decide whether these cases pass.
+            confluence_base_url=WIKI,
             milestone="M0",
         ),
         store,
@@ -93,7 +97,7 @@ async def test_manual_trigger_enqueues_job_with_overrides(client_parts):
             "merge_request_url": f"{BASE}/group/proj/-/merge_requests/2",
             "issue_key": "ABC-123",
             "epic_key": "ABC-100",
-            "document_urls": ["https://wiki.invalid/x", "https://wiki.invalid/x"],
+            "document_urls": [f"{WIKI}/x", f"{WIKI}/x"],
         },
     )
     assert response.status_code == 202
@@ -105,7 +109,7 @@ async def test_manual_trigger_enqueues_job_with_overrides(client_parts):
     assert overrides["issue_key"] == "ABC-123"
     assert overrides["epic_key"] == "ABC-100"
     # Duplicate links are collapsed before they reach the budget.
-    assert overrides["document_urls"] == ["https://wiki.invalid/x"]
+    assert overrides["document_urls"] == [f"{WIKI}/x"]
 
 
 async def test_manual_trigger_without_optional_context(client_parts):
@@ -146,6 +150,16 @@ async def test_manual_trigger_rejects_bad_input(client_parts):
             },
         )
     ).status_code == 422
+    # A page on another host would be silently dropped at fetch time; say so.
+    assert (
+        await post(
+            app,
+            {
+                "merge_request_url": f"{BASE}/group/proj/-/merge_requests/2",
+                "document_urls": ["https://elsewhere.invalid/x"],
+            },
+        )
+    ).status_code == 400
     # An unknown project path never reaches the queue.
     assert (
         await post(app, {"merge_request_url": f"{BASE}/other/proj/-/merge_requests/2"})
