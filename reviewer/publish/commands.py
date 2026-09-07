@@ -1,12 +1,22 @@
 import re
 
+import structlog
+
 from reviewer.publish.publisher import existing
+
+logger = structlog.get_logger()
 
 
 async def command(ctx, project, iid, user, note, discussion_id=None, note_id=None):
     forge = ctx["forge"]
     store = ctx["store"]
     if await forge.role(project, user) < 30:
+        logger.warning(
+            "ai_command_forbidden",
+            project_id=project,
+            iid=iid,
+            user_id=user,
+        )
         return "forbidden"
     match = re.fullmatch(
         r"/ai (review|explain|dismiss)(?:\s+(.{1,1000}))?", note.strip(), re.S
@@ -14,6 +24,14 @@ async def command(ctx, project, iid, user, note, discussion_id=None, note_id=Non
     if not match:
         return "ignored"
     action, reason = match.groups()
+    logger.info(
+        "ai_command_received",
+        project_id=project,
+        iid=iid,
+        user_id=user,
+        action=action,
+        note_id=note_id,
+    )
     if action == "review":
         from reviewer.worker import replay_review
 

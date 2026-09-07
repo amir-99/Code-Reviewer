@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import structlog
+
 from reviewer.agents.base import PROMPTS
 from reviewer.agents.verification import verify
 from reviewer.config.loader import load_project
@@ -21,6 +23,8 @@ from reviewer.publish.rereview import full_review, reanchor, resolve_fixed
 from reviewer.services.forge.gitlab import StaleReview
 from reviewer.services.llm.client import GatewayClient
 from reviewer.store.audit import Audit, blob_store
+
+logger = structlog.get_logger()
 
 
 class Pipeline:
@@ -49,10 +53,20 @@ class Pipeline:
     async def run(self, review_id):
         review = await self.store.get(review_id)
         if not review:
+            logger.warning("review_not_found", review_id=review_id)
             return
         project = await self.store.project_number(review)
         config = load_project(self.settings.config_path, project)
         level = min(int(self.settings.milestone[1:]), int(config.milestone[1:]))
+        logger.info(
+            "pipeline_start",
+            review_id=review_id,
+            project_id=project,
+            mr_iid=review.mr_iid,
+            head_sha=review.head_sha,
+            state=review.state,
+            milestone=f"M{level}",
+        )
         if review.state in TERMINAL:
             snapshot = await self.store.snapshot(review.id)
             if snapshot and snapshot.get("config"):
@@ -65,6 +79,12 @@ class Pipeline:
                     config.enforcement,
                     review.state
                     in {"FAILED_INTERNAL", "FAILED_CONTEXT", "CANCELLED", "SUPERSEDED"},
+                )
+                logger.info(
+                    "recovering_status",
+                    review_id=review_id,
+                    status=recovered,
+                    state=review.state,
                 )
                 await self.forge.set_commit_status(
                     project,
@@ -132,6 +152,14 @@ class Pipeline:
                     config,
                     previous,
                     overrides,
+                )
+                logger.info(
+                    "context_collected",
+                    review_id=review.id,
+                    files_count=len(bundle.code.files),
+                    total_changed_lines=bundle.code.total_changed_lines,
+                    secrets_found=len(secrets),
+                    degradations=bundle.degradations,
                 )
                 bundle.jira_base_url = self.settings.jira_base_url
                 config_hash = hashlib.sha256(
@@ -368,9 +396,16 @@ class Pipeline:
                         ),
                         None,
                     )
-                    if blocker:
-                        findings = [blocker]
-                        early = True
+                if blocker:
+                    findings = [blocker]
+                    early = True
+                    logger.info(
+                        "gate_terminated_early",
+                        review_id=review.id,
+                        stage=name,
+                        fingerprint=blocker.fingerprint,
+                        severity=blocker.severity_final,
+                    )
                 if not early and level >= 5:
                     await self.advance(review, "ANALYSIS_FAN_OUT")
                     names = (
@@ -427,6 +462,14 @@ class Pipeline:
                     findings,
                     bundle.static,
                     config,
+                )
+                logger.info(
+                    "decision_made",
+                    review_id=review.id,
+                    decision=str(decision),
+                    findings_count=len(findings),
+                    partial=partial,
+                    early=early,
                 )
                 for f in findings:
                     f.provenance.context_bundle_hash = bundle.content_hash()
@@ -496,9 +539,16 @@ class Pipeline:
                 return await self.finish(review, final, decision, config, partial)
         except StaleReview:
             final = "SUPERSEDED"
+            logger.info("review_stale", review_id=review.id, head_sha=review.head_sha)
             current = await self.forge.get_merge_request(project, review.mr_iid)
             await self.store.transition(review.id, final)
             if current.head_sha != review.head_sha:
+                logger.info(
+                    "review_superseded_by_new_head",
+                    review_id=review.id,
+                    old_sha=review.head_sha,
+                    new_sha=current.head_sha,
+                )
                 await self.store.accept(
                     project,
                     review.mr_iid,
@@ -526,10 +576,12 @@ class Pipeline:
                     )
                 except Exception:
                     pass
-            import structlog
-
-            structlog.get_logger().error(
-                "review_failed", review_id=review.id, error_type=type(exc).__name__
+            logger.error(
+                "review_failed",
+                review_id=review.id,
+                error_type=type(exc).__name__,
+                final_state=final,
+                error=str(exc),
             )
         finally:
             if llm and hasattr(llm, "close"):
@@ -554,9 +606,22 @@ class Pipeline:
             "DECISION",
         ]
         if order.index(current.state) < order.index(state):
+            logger.info(
+                "state_transition",
+                review_id=review.id,
+                from_state=current.state,
+                to_state=state,
+            )
             await self.store.transition(review.id, state)
 
     async def finish(self, review, state, decision, config, partial=False):
+        logger.info(
+            "pipeline_finish",
+            review_id=review.id,
+            state=state,
+            decision=str(decision),
+            partial=partial,
+        )
         result = await self.store.transition(
             review.id, state, decision=str(decision), partial=partial
         )

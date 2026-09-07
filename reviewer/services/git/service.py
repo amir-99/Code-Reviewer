@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+import structlog
+
 from reviewer.context.models import ChangedFile, DiffLine, Hunk
+
+logger = structlog.get_logger()
 
 
 class GitError(RuntimeError):
@@ -162,9 +166,11 @@ class GitService:
             path = self.cache / f"work-{uuid4()}"
             try:
                 self.evict()
+                logger.info("git_worktree_create", project_id=project_id, sha=sha)
                 await self.command("worktree", "add", "--detach", path, sha, cwd=mirror)
                 yield WorktreeHandle(path, mirror, sha)
             finally:
+                logger.info("git_worktree_cleanup", project_id=project_id, sha=sha)
                 try:
                     await self.command(
                         "worktree", "remove", "--force", path, cwd=mirror

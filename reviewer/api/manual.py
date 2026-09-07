@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,6 +27,7 @@ from reviewer.context.models import (
     ReviewOverrides,
 )
 
+logger = structlog.get_logger()
 router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
 
 MERGE_REQUEST_PATH = re.compile(
@@ -148,7 +150,21 @@ async def trigger(body: ManualReviewRequest, request: Request):
             await request.app.state.queue.enqueue_job(
                 "receive_event", job.model_dump(), _job_id=job.event_id
             )
+        logger.info(
+            "manual_review_enqueued",
+            project_id=project_id,
+            iid=iid,
+            head_sha=mr.head_sha,
+            event_id=job.event_id,
+            report_mode=body.report_mode,
+        )
     except Exception:
+        logger.error(
+            "manual_review_enqueue_failed",
+            project_id=project_id,
+            iid=iid,
+            event_id=job.event_id,
+        )
         raise HTTPException(503, "Queue unavailable; retry the request") from None
     # The review runs in the worker, so no findings exist yet. Hand back the
     # address to poll rather than pretending this call carries results.

@@ -7,7 +7,9 @@ REVIEWS = Counter("reviewer_runs_total", "Completed review jobs", ["state"])
 def configure():
     structlog.configure(
         processors=[
-            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.JSONRenderer(),
         ]
     )

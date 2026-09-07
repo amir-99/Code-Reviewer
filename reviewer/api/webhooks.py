@@ -4,11 +4,13 @@ import hmac
 from typing import Literal
 from uuid import uuid4
 
+import structlog
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from reviewer.context.models import ReviewOverrides
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -113,12 +115,31 @@ async def gitlab_hook(request: Request):
     except (ValueError, KeyError, TypeError, AttributeError):
         raise HTTPException(400, "Invalid merge request event") from None
     if job is None:
+        logger.info(
+            "webhook_ignored",
+            project_id=project_id,
+            object_kind=payload.get("object_kind"),
+            event_id=event_id,
+        )
         return {"accepted": False, "reason": "event does not trigger a review"}
     try:
         async with asyncio.timeout(0.35):
             await request.app.state.queue.enqueue_job(
                 "receive_event", job.model_dump(), _job_id=event_id
             )
+        logger.info(
+            "webhook_enqueued",
+            project_id=job.project_id,
+            iid=job.iid,
+            action=job.action,
+            event_id=event_id,
+        )
     except Exception:
+        logger.error(
+            "webhook_enqueue_failed",
+            project_id=job.project_id,
+            iid=job.iid,
+            event_id=event_id,
+        )
         raise HTTPException(503, "Queue unavailable; retry webhook") from None
     return {"accepted": True}

@@ -1,3 +1,4 @@
+import structlog
 from arq import cron
 from arq.connections import RedisSettings
 
@@ -8,6 +9,8 @@ from reviewer.services.forge.gitlab import GitLab
 from reviewer.store.repositories import Store
 from reviewer.telemetry import configure
 
+logger = structlog.get_logger()
+
 
 async def startup(ctx):
     configure()
@@ -15,6 +18,11 @@ async def startup(ctx):
     from reviewer.telemetry import configure_traces
 
     configure_traces(settings.otlp_endpoint)
+    logger.info(
+        "worker_startup",
+        milestone=settings.milestone,
+        gitlab_url=settings.gitlab_base_url,
+    )
     ctx["store"] = Store(settings.database_url.get_secret_value())
     ctx["forge"] = GitLab(
         settings.gitlab_base_url, settings.gitlab_token.get_secret_value()
@@ -60,6 +68,7 @@ async def startup(ctx):
 
 
 async def shutdown(ctx):
+    logger.info("worker_shutdown")
     for key in ("issues", "docs"):
         if key in ctx and hasattr(ctx[key], "close"):
             await ctx[key].close()
@@ -69,6 +78,13 @@ async def shutdown(ctx):
 
 async def receive_event(ctx, payload):
     job = ReviewJob.model_validate(payload)
+    logger.info(
+        "receive_event",
+        action=job.action,
+        project_id=job.project_id,
+        iid=job.iid,
+        event_id=job.event_id,
+    )
     if job.action == "command":
         from reviewer.publish.commands import command
 
@@ -92,12 +108,20 @@ async def receive_event(ctx, payload):
                 await ctx["store"].save_snapshot(review.id, data)
         return
     if job.action == "cancel":
+        logger.info("cancel_reviews", project_id=job.project_id, iid=job.iid)
         await ctx["store"].cancel(job.project_id, job.iid)
         return
     # Read current head before admission so delayed hooks cannot supersede a
     # newer run with an older SHA. The machine independently re-checks it.
     mr = await ctx["forge"].get_merge_request(job.project_id, job.iid)
     if mr.state != "opened" or mr.draft:
+        logger.info(
+            "mr_skipped",
+            project_id=job.project_id,
+            iid=job.iid,
+            state=mr.state,
+            draft=mr.draft,
+        )
         return
     review = await ctx["store"].accept(
         job.project_id,
@@ -106,12 +130,20 @@ async def receive_event(ctx, payload):
         job.event_id,
         job.overrides.model_dump() if job.overrides else None,
     )
+    logger.info(
+        "review_admitted",
+        review_id=review.id,
+        project_id=job.project_id,
+        iid=job.iid,
+        head_sha=mr.head_sha,
+    )
     await ctx["redis"].enqueue_job("run_review", review.id, _job_id=f"run:{review.id}")
 
 
 async def run_review(ctx, review_id):
     from opentelemetry import trace
 
+    logger.info("review_started", review_id=review_id)
     with trace.get_tracer(__name__).start_as_current_span(
         "review", attributes={"review.id": review_id}
     ):
@@ -120,6 +152,13 @@ async def run_review(ctx, review_id):
 
 async def replay_review(ctx, project_id, iid, event_id, overrides=None):
     mr = await ctx["forge"].get_merge_request(project_id, iid)
+    logger.info(
+        "replay_review",
+        project_id=project_id,
+        iid=iid,
+        head_sha=mr.head_sha,
+        event_id=event_id,
+    )
     await receive_event(
         ctx,
         ReviewJob(
@@ -137,7 +176,10 @@ async def recover(ctx):
     if "blobs" in ctx:
         ctx["blobs"].reap()
     # Durable DB admission + sweep closes the DB-commit/Redis-enqueue crash gap.
-    for review in await ctx["store"].pending():
+    pending = await ctx["store"].pending()
+    if pending:
+        logger.info("recovering_reviews", count=len(pending))
+    for review in pending:
         await ctx["redis"].enqueue_job(
             "run_review", review.id, _job_id=f"run:{review.id}"
         )

@@ -1,8 +1,12 @@
 import re
 
+import structlog
+
 from reviewer.findings.noise import select
 from reviewer.publish.renderer import render, summary
 from reviewer.services.forge.gitlab import Position, PositionError, StaleReview
+
+logger = structlog.get_logger()
 
 
 async def existing(forge, project, iid):
@@ -38,9 +42,22 @@ class Publisher:
         if mode == "applied" and not writes_allowed:
             mode = "none"
         if mode == "none":
+            logger.info(
+                "publication_skipped",
+                project_id=bundle.mr.project_id,
+                iid=bundle.mr.iid,
+                reason="silent_or_none",
+            )
             return None
         draft = mode == "draft"
         p, i = bundle.mr.project_id, bundle.mr.iid
+        logger.info(
+            "publication_start",
+            project_id=p,
+            iid=i,
+            mode=mode,
+            findings_total=len(findings),
+        )
         refs = await self.forge.get_diff_refs(p, i)
         if refs.head_sha != bundle.code.head_sha:
             raise StaleReview()
@@ -105,6 +122,20 @@ class Publisher:
             ).head_sha != bundle.code.head_sha:
                 raise StaleReview()
             await self.forge.post_note(p, i, body)
+            logger.info(
+                "summary_note_posted",
+                project_id=p,
+                iid=i,
+                head_sha=bundle.code.head_sha,
+            )
+        logger.info(
+            "publication_complete",
+            project_id=p,
+            iid=i,
+            inline_count=len(posted),
+            summarized_count=len(summarized),
+            overflow_count=sum(overflow.values()),
+        )
         return {"mode": mode, "summary": body, "inline": posted}
 
 
