@@ -1,9 +1,28 @@
 {
   "defaults": {
     "enforcement": "advisory",
-    "languages": ["typescript", "go", "python"],
-    "issue_tracker": {"project_keys": [], "ac_heading": "Acceptance Criteria"},
-    "static_tools": []
+    "languages": [
+      "typescript",
+      "go",
+      "python"
+    ],
+    "issue_tracker": {
+      "project_keys": [
+        "AI",
+        "AD",
+        "AVA",
+        "DEVOPS",
+        "PLAT",
+        "RA",
+        "SEN",
+        "SOF"
+      ],
+      "ac_heading": "Acceptance Criteria"
+    },
+    "static_tools": [],
+    "review": {
+      "token_ceiling": 1200000
+    }
   },
   "projects": {}
 }
