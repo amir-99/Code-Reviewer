@@ -19,7 +19,7 @@ async def command(ctx, project, iid, user, note, discussion_id=None, note_id=Non
         )
         return "forbidden"
     match = re.fullmatch(
-        r"/ai (review|explain|dismiss)(?:\s+(.{1,1000}))?", note.strip(), re.S
+        r"/ai (review|recheck|explain|dismiss)(?:\s+(.{1,1000}))?", note.strip(), re.S
     )
     if not match:
         return "ignored"
@@ -32,6 +32,12 @@ async def command(ctx, project, iid, user, note, discussion_id=None, note_id=Non
         action=action,
         note_id=note_id,
     )
+    if action == "recheck":
+        # Answers the existing threads only; it never supersedes a running review.
+        await ctx["redis"].enqueue_job(
+            "recheck_review", project, iid, _job_id=f"recheck:{note_id}"
+        )
+        return "queued"
     if action == "review":
         from reviewer.worker import replay_review
 

@@ -215,3 +215,66 @@ def summary(bundle, decision, findings, summary_findings, overflow, stage_result
         f"<!-- ai-review:summary={bundle.code.head_sha} -->",
     ]
     return "\n".join(lines)
+
+
+RECHECK_ICON = {
+    "fixed": "✅",
+    "partially_fixed": "🟡",
+    "not_fixed": "🔴",
+    "obsolete": "⚪",
+    "unverifiable": "❔",
+}
+RECHECK_LABEL = {
+    "fixed": "Fixed",
+    "partially_fixed": "Partially fixed",
+    "not_fixed": "Still open",
+    "obsolete": "No longer applies",
+    "unverifiable": "Could not verify",
+}
+
+
+def recheck_marker(fingerprint, head_sha):
+    """Identifies a recheck reply by finding and by the head it judged.
+
+    Delivery is at-least-once and a push may arrive while a run is in flight, so
+    the marker is the record that this thread was already answered for this
+    commit. A later head produces a different marker and a fresh reply.
+    """
+    return f"<!-- ai-review:recheck={fingerprint}@{head_sha} -->"
+
+
+def render_recheck(verdict, head_sha):
+    """The threaded reply that reports whether a pushed change answered a comment."""
+    from reviewer.findings.models import RECHECK_RESOLVING
+
+    lines = [
+        f"### {RECHECK_ICON.get(verdict.verdict, '•')} Recheck · "
+        f"{safe(RECHECK_LABEL.get(verdict.verdict, verdict.verdict))}",
+        "",
+        f"Rechecked at `{cell(head_sha[:12])}`"
+        + (" · judged by model" if verdict.judged else " · determined from the diff"),
+        "",
+    ]
+    if verdict.change_summary:
+        lines += [f"**What changed** — {safe(verdict.change_summary)}", ""]
+    if verdict.reasoning:
+        lines += [f"**Assessment** — {safe(verdict.reasoning)}", ""]
+    if verdict.evidence:
+        lines += ["<details><summary>📎 Evidence at this head</summary>", ""]
+        lines += [
+            f"- `{cell(e.file)}:{e.line_start}-{e.line_end}` — {oneline(e.note)}"
+            for e in verdict.evidence
+        ]
+        lines += ["", "</details>", ""]
+    lines.append(
+        "_Resolving this thread._"
+        if verdict.verdict in RECHECK_RESOLVING
+        else "_Leaving this thread open._"
+    )
+    lines += [
+        "",
+        "<sub>AI review · reply `/ai recheck` after another push · "
+        "`/ai dismiss <reason>` if this is wrong</sub>",
+        recheck_marker(verdict.fingerprint, head_sha),
+    ]
+    return "\n".join(lines)

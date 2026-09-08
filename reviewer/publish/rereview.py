@@ -30,30 +30,3 @@ def full_review(previous, config_hash, prompt_hash, merge_base_distance):
         or previous.get("prompt_hash") != prompt_hash
         or merge_base_distance > previous.get("full_rereview_merge_base_delta", 50)
     )
-
-
-async def resolve_fixed(
-    forge, project, iid, previous_findings, new_findings, discussions, complete, touched
-):
-    if not complete:
-        return []
-    fingerprints = {
-        f.fingerprint
-        for f in new_findings
-        if f.status not in {"discarded", "suppressed", "resolved"}
-    }
-    resolved = []
-    for old in previous_findings:
-        if old.anchor.file not in touched or old.fingerprint in fingerprints:
-            continue
-        discussion = discussions.get(old.fingerprint)
-        if discussion:
-            await forge.reply(
-                project,
-                iid,
-                discussion.id,
-                "The affected code was re-reviewed and this finding is no longer present.",
-            )
-            await forge.resolve_discussion(project, iid, discussion.id)
-            resolved.append(old)
-    return resolved

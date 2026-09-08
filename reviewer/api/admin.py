@@ -118,6 +118,23 @@ async def replay(review_id: str, request: Request):
     return {"accepted": True}
 
 
+@router.post("/reviews/{review_id}/recheck")
+async def recheck(review_id: str, request: Request):
+    """Re-judge the comments this review published, at the branch's current head.
+
+    Unlike a replay this runs no stages and publishes no report: it only answers
+    the threads that are already open.
+    """
+    review = await request.app.state.store.get(review_id)
+    if review is None:
+        raise HTTPException(404, "Review not found")
+    project_id = await request.app.state.store.project_number(review)
+    await request.app.state.queue.enqueue_job(
+        "recheck_review", project_id, review.mr_iid
+    )
+    return {"accepted": True, "project_id": project_id, "iid": review.mr_iid}
+
+
 @router.get("/quality")
 async def quality(request: Request, project_id: int | None = None):
     from reviewer.telemetry.quality import quality as query

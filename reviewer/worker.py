@@ -150,6 +150,20 @@ async def run_review(ctx, review_id):
         return await ctx["machine"].run(review_id)
 
 
+async def recheck_review(ctx, project_id, iid):
+    """Answer the open review comments on a merge request at its current head.
+
+    Deliberately not a review: no admission, no supersession and no report, so
+    an author asking "did my fixes land?" never cancels a run in flight.
+    """
+    machine = ctx["machine"]
+    if not hasattr(machine, "recheck_now"):
+        logger.info("recheck_unavailable", project_id=project_id, iid=iid)
+        return {"rechecked": False, "reason": "milestone"}
+    logger.info("recheck_requested", project_id=project_id, iid=iid)
+    return await machine.recheck_now(project_id, iid)
+
+
 async def replay_review(ctx, project_id, iid, event_id, overrides=None):
     mr = await ctx["forge"].get_merge_request(project_id, iid)
     logger.info(
@@ -186,7 +200,7 @@ async def recover(ctx):
 
 
 class WorkerSettings:
-    functions = [receive_event, run_review, replay_review]
+    functions = [receive_event, run_review, replay_review, recheck_review]
     cron_jobs = [cron(recover, second={0, 30}, run_at_startup=True)]
     on_startup = startup
     on_shutdown = shutdown

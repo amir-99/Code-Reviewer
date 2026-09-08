@@ -18,8 +18,8 @@ from reviewer.findings.validator import validate
 from reviewer.orchestrator.budget import BudgetTracker
 from reviewer.orchestrator.stages import execute
 from reviewer.orchestrator.states import TERMINAL
-from reviewer.publish.publisher import Publisher, existing
-from reviewer.publish.rereview import full_review, reanchor, resolve_fixed
+from reviewer.publish.publisher import Publisher
+from reviewer.publish.rereview import full_review, reanchor
 from reviewer.services.forge.gitlab import StaleReview
 from reviewer.services.llm.client import GatewayClient
 from reviewer.store.audit import Audit, blob_store
@@ -173,7 +173,18 @@ class Pipeline:
                 only_paths = None
                 carried = []
                 previous_findings = []
+                previous_head = None
                 system_paths = None
+                if previous:
+                    # Loaded whether or not the re-review is incremental: the
+                    # comments already on the merge request are rechecked either
+                    # way, and a full re-review is the strongest evidence there is.
+                    previous_head = (
+                        previous.get("bundle", {}).get("code", {}).get("head_sha")
+                    )
+                    previous_findings = [
+                        Finding.model_validate(f) for f in previous.get("findings", [])
+                    ]
                 if previous and int(self.settings.milestone[1:]) >= 8:
                     old_bundle = previous.get("bundle", {})
                     old_base = old_bundle.get("code", {}).get("merge_base_sha")
@@ -199,10 +210,6 @@ class Pipeline:
                         old_files = {f["path"] for f in old_bundle["code"]["files"]}
                         new_files = {f.path for f in bundle.code.files}
                         system_paths = None if old_files != new_files else set()
-                        previous_findings = [
-                            Finding.model_validate(f)
-                            for f in previous.get("findings", [])
-                        ]
                         for old in previous_findings:
                             classification, moved = reanchor(old, wt.path)
                             if moved and (
@@ -500,29 +507,22 @@ class Pipeline:
                 if not early:
                     await self.advance(review, "DECISION")
                 if level >= 7:
-                    if previous_findings and config.enforcement != "silent":
-                        discussions, _ = await existing(
-                            self.forge, project, review.mr_iid
-                        )
-                        fixed = await resolve_fixed(
-                            self.forge,
-                            project,
-                            review.mr_iid,
-                            previous_findings,
-                            findings,
-                            discussions,
-                            not partial,
-                            only_paths or set(),
-                        )
-                        for f in fixed:
-                            await self.store.outcome(
-                                review.project_id,
-                                review.mr_iid,
-                                f.fingerprint,
-                                "actioned",
-                                "No longer present after complete re-review",
-                                "system",
-                            )
+                    # Answer the comments already on the merge request before
+                    # adding more: the author's fixes are what this push is about.
+                    recheck_report = await self.recheck(
+                        review,
+                        project,
+                        config,
+                        wt,
+                        previous_findings,
+                        previous_head,
+                        only_paths,
+                        findings + carried,
+                        not partial and not early,
+                        llm,
+                        redactor,
+                        overrides.report_mode if overrides else None,
+                    )
                     report = await Publisher(self.forge, self.store).publish(
                         bundle,
                         findings,
@@ -533,9 +533,10 @@ class Pipeline:
                     )
                     # A drafted report is never posted, so the snapshot is the
                     # only place an operator can read it back from.
-                    if report is not None:
+                    if report is not None or recheck_report is not None:
                         await self.store.save_snapshot(
-                            review.id, data | {"report": report}
+                            review.id,
+                            data | {"report": report, "recheck": recheck_report},
                         )
                 await self.store.save_findings(review, findings)
                 final = "TERMINATED_EARLY" if early else "PUBLISHED"
@@ -590,6 +591,196 @@ class Pipeline:
             if llm and hasattr(llm, "close"):
                 await llm.close()
         return await self.finish(review, final, "COMMENT_ONLY", config, True)
+
+    async def recheck(
+        self,
+        review,
+        project,
+        config,
+        wt,
+        previous_findings,
+        previous_head,
+        only_paths,
+        findings,
+        complete,
+        llm,
+        redactor,
+        report_mode,
+    ):
+        """Answer each open reviewer thread with what this head did to its claim.
+
+        Returns None when there was nothing to recheck. Writes are governed
+        exactly as the report's are: silent enforcement and a "none" report mode
+        publish nothing, and a drafted run renders the replies into the snapshot
+        instead of posting them.
+        """
+        from reviewer.publish.recheck import collect, evaluate
+        from reviewer.publish.recheck import publish as publish_recheck
+
+        if not previous_findings or not config.review.recheck:
+            return None
+        if config.enforcement == "silent" or report_mode == "none":
+            return None
+        draft = report_mode == "draft"
+        threads = await collect(
+            self.forge,
+            self.store,
+            project,
+            review.mr_iid,
+            previous_findings,
+            review.head_sha,
+        )
+        if not threads:
+            return None
+        live = {
+            f.fingerprint
+            for f in findings
+            if f.status not in {"discarded", "suppressed", "resolved"}
+        }
+        # A finished re-review that no longer reports a claim is stronger
+        # evidence than any single-claim judgement. A partial or early-terminated
+        # one is no evidence at all, and an incremental run speaks only for the
+        # files it re-ran.
+        absent = frozenset(
+            finding.fingerprint
+            for finding, *_ in threads
+            if complete
+            and finding.fingerprint not in live
+            and (only_paths is None or finding.anchor.file in only_paths)
+        )
+        verdicts = await evaluate(
+            threads,
+            root=wt.path,
+            touched=only_paths,
+            absent=absent,
+            reported=live,
+            git=self.git,
+            wt=wt,
+            previous_head=previous_head,
+            llm=llm,
+            redactor=redactor,
+            review_id=review.id,
+            limit=config.review.recheck_max_judgements,
+        )
+        if (
+            not draft
+            and (await self.forge.get_merge_request(project, review.mr_iid)).head_sha
+            != review.head_sha
+        ):
+            raise StaleReview()
+        posted = await publish_recheck(
+            self.forge,
+            self.store,
+            project,
+            review.mr_iid,
+            review.project_id,
+            verdicts,
+            review.head_sha,
+            draft,
+        )
+        logger.info(
+            "recheck_complete",
+            review_id=review.id,
+            project_id=project,
+            iid=review.mr_iid,
+            threads=len(verdicts),
+            judged=sum(1 for v in verdicts if v.judged),
+        )
+        return {
+            "mode": "draft" if draft else "applied",
+            "head_sha": review.head_sha,
+            "previous_head_sha": previous_head,
+            "verdicts": [v.model_dump(mode="json") for v in verdicts],
+            "posted": posted,
+        }
+
+    async def recheck_now(self, project_id, iid):
+        """Recheck a merge request's open comments at its current head.
+
+        The `/ai recheck` path. No review is admitted, no stage runs and no
+        report is published: the threads already on the merge request are
+        answered against whatever the branch now points at. A push mid-recheck
+        is harmless — the reply carries the head it judged, and the next run
+        answers the newer one.
+        """
+        from datetime import UTC, datetime, timedelta
+        from types import SimpleNamespace
+
+        from reviewer.context.models import Budget
+        from reviewer.context.redaction import Redactor
+
+        config = load_project(self.settings.config_path, project_id)
+        if not config.review.recheck or config.enforcement == "silent":
+            return {"rechecked": False, "reason": "disabled"}
+        internal = await self.store.internal_project(project_id)
+        if internal is None:
+            return {"rechecked": False, "reason": "project_not_onboarded"}
+        previous_id, previous = await self.store.latest_published(internal, iid)
+        if not previous:
+            return {"rechecked": False, "reason": "no_published_review"}
+        mr = await self.forge.get_merge_request(project_id, iid)
+        if mr.state != "opened" or mr.draft:
+            return {"rechecked": False, "reason": "merge_request_not_open"}
+        previous_findings = [
+            Finding.model_validate(f) for f in previous.get("findings", [])
+        ]
+        if not previous_findings:
+            return {"rechecked": False, "reason": "no_published_findings"}
+        url = mr.repository_url or await self.forge.repository_url(project_id)
+        # No secret scan runs here, so only the pattern-based redaction applies.
+        redactor = Redactor()
+        logger.info(
+            "recheck_now_start",
+            project_id=project_id,
+            iid=iid,
+            head_sha=mr.head_sha,
+            previous_review_id=previous_id,
+        )
+        async with self.git.workspace(project_id, url, mr.head_sha) as wt:
+            llm = None
+            try:
+                try:
+                    llm = (
+                        self.llm_factory(None, redactor)
+                        if self.llm_factory
+                        else GatewayClient(
+                            self.settings,
+                            Audit(self.store, blob_store(self.settings)),
+                            BudgetTracker(
+                                Budget(
+                                    token_ceiling=config.review.token_ceiling,
+                                    deadline_at=datetime.now(UTC)
+                                    + timedelta(seconds=config.review.timeout_s),
+                                    model_tier={},
+                                )
+                            ),
+                            redactor,
+                        )
+                    )
+                except ValueError:
+                    llm = None
+                return await self.recheck(
+                    SimpleNamespace(
+                        id=previous_id,
+                        mr_iid=iid,
+                        head_sha=mr.head_sha,
+                        project_id=internal,
+                    ),
+                    project_id,
+                    config,
+                    wt,
+                    previous_findings,
+                    previous.get("bundle", {}).get("code", {}).get("head_sha"),
+                    None,
+                    [],
+                    False,
+                    llm,
+                    redactor,
+                    None,
+                )
+            finally:
+                if llm and hasattr(llm, "close"):
+                    await llm.close()
 
     async def advance(self, review, state):
         current = await self.store.get(review.id)

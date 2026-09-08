@@ -279,6 +279,12 @@ class FakeForge:
 
     async def reply(self, project_id, iid, discussion_id, body):
         self.replies.append((discussion_id, body))
+        note = Note(id=len(self.comments) + 1, body=body, author_id=self.bot_id)
+        self.comments.append(note)
+        for discussion in self.discussions:
+            if discussion.id == discussion_id:
+                discussion.notes.append(note)
+        return note
 
     async def resolve_discussion(self, project_id, iid, discussion_id):
         next(d for d in self.discussions if d.id == discussion_id).resolved = True

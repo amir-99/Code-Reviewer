@@ -4,7 +4,15 @@ from test_git import git
 from test_git import history as history
 
 from reviewer.config.schema import Settings
-from reviewer.findings.models import Coverage, StageEnvelope
+from reviewer.findings.models import (
+    Anchor,
+    Coverage,
+    Evidence,
+    ProposedFinding,
+    RecheckResult,
+    StageEnvelope,
+    VerificationResult,
+)
 from reviewer.orchestrator.pipeline import Pipeline
 from reviewer.services.docs.confluence import FakeDocumentService
 from reviewer.services.forge.gitlab import FakeForge, MergeRequestContext
@@ -26,6 +34,61 @@ class Echo:
         ids = re.findall(r'"id": "([^"]+:unit-\d+)"', unescape(kwargs["user"]))
         return StageEnvelope(
             findings=[],
+            coverage=Coverage(units_examined=ids, units_skipped=[], skip_reason=None),
+        )
+
+
+class Reviewing:
+    """Reports one correctness finding on the original `new0.py`, and judges rechecks."""
+
+    def __init__(self):
+        self.recheck_calls = []
+
+    async def complete(self, **kwargs):
+        import re
+        from html import unescape
+
+        model = kwargs["response_model"]
+        if model is VerificationResult:
+            return VerificationResult(
+                counterargument="The value could be checked elsewhere",
+                reasoning="The cited line assigns without a check",
+                verdict="confirmed",
+            )
+        if model is RecheckResult:
+            self.recheck_calls.append(kwargs)
+            return RecheckResult(
+                change_summary="The assignment is now guarded by a range check.",
+                reasoning="The input the claim described can no longer reach it.",
+                verdict="fixed",
+            )
+        user = unescape(kwargs["user"])
+        ids = re.findall(r'"id": "([^"]+:unit-\d+)"', user)
+        findings = []
+        if kwargs["stage"] == "correctness" and "added: x = 0" in user:
+            findings = [
+                ProposedFinding(
+                    anchor=Anchor(file="new0.py", line_start=1, line_end=1),
+                    category="correctness",
+                    severity_proposed="REQUIRED",
+                    claim="The assigned value is never checked",
+                    reason="Nothing validates the assignment",
+                    impact="A wrong value reaches the caller",
+                    failure_scenario="The value is out of range",
+                    evidence=[
+                        Evidence(
+                            file="new0.py",
+                            line_start=1,
+                            line_end=1,
+                            note="assignment",
+                        )
+                    ],
+                    suggested_direction="Validate the value",
+                    confidence="high",
+                )
+            ]
+        return StageEnvelope(
+            findings=findings,
             coverage=Coverage(units_examined=ids, units_skipped=[], skip_reason=None),
         )
 
@@ -252,3 +315,81 @@ async def test_verified_purpose_blocker_stops_before_design(store, history, tmp_
     )
     assert [c["stage"] for c in llm.calls] == ["purpose", "verification"]
     assert "DESIGN_REVIEW" not in (await store.get(review.id)).history
+
+
+async def test_recheck_answers_open_comments_after_a_push(store, history, tmp_path):
+    """A second push replies in the thread the first review opened."""
+
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    llm = Reviewing()
+    machine = pipeline(store, forge, tmp_path, llm=llm)
+    first = await store.accept(7, 2, head, "first-push")
+    assert await machine.run(first.id) == "PUBLISHED"
+    inline = next(d for d in forge.discussions if d.file == "new0.py")
+
+    (repo / "new0.py").write_text("x = 40 if y else 0\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "guard the value")
+    newhead = git(repo, "rev-parse", "HEAD")
+    forge.mr.head_sha = newhead
+    forge.paths = git(repo, "diff", "--name-only", base, newhead).splitlines()
+    second = await store.accept(7, 2, newhead, "second-push")
+    assert await machine.run(second.id) == "PUBLISHED"
+
+    # The re-review no longer reports the claim, so the thread is answered as
+    # fixed; the judge supplies the part the diff cannot — how it was fixed.
+    assert len(llm.recheck_calls) == 1
+    replies = [body for discussion, body in forge.replies if discussion == inline.id]
+    assert len(replies) == 1 and "Fixed" in replies[0]
+    assert "now guarded by a range check" in replies[0]
+    assert inline.resolved
+    recheck = (await store.snapshot(second.id))["recheck"]
+    assert [v["verdict"] for v in recheck["verdicts"]] == ["fixed"]
+
+
+async def test_recheck_command_answers_threads_without_running_a_review(
+    store, history, tmp_path
+):
+    """`/ai recheck` judges the open threads at the current head, admitting nothing."""
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    llm = Reviewing()
+    machine = pipeline(store, forge, tmp_path, llm=llm)
+    review = await store.accept(7, 2, head, "first-push")
+    assert await machine.run(review.id) == "PUBLISHED"
+    inline = next(d for d in forge.discussions if d.file == "new0.py")
+    notes = len(forge.comments)
+
+    (repo / "new0.py").write_text("x = 40 if y else 0\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "guard the value")
+    forge.mr.head_sha = git(repo, "rev-parse", "HEAD")
+    result = await machine.recheck_now(7, 2)
+
+    assert [p["verdict"] for p in result["posted"]] == ["fixed"]
+    assert len(llm.recheck_calls) == 1 and inline.resolved
+    assert "now guarded by a range check" in forge.replies[0][1]
+    # One reply, no summary note, no second review.
+    assert len(forge.comments) == notes + 1
+    assert len(await store.recent()) == 1
+    # Nothing is left to answer at this head.
+    assert (await machine.recheck_now(7, 2)) is None

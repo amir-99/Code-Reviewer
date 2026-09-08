@@ -32,7 +32,8 @@ Orchestration is an ordinary Python state machine, not an agent framework.
 - `reviewer/agents/`: stage contracts and versioned prompt templates.
 - `reviewer/findings/`: schemas, mechanical validation, deduplication, severity,
   and noise control.
-- `reviewer/publish/`: rendering, idempotent publication, commands, and re-review.
+- `reviewer/publish/`: rendering, idempotent publication, commands, re-review,
+  and recheck of already-published comments.
 - `reviewer/decision/engine.py`: deterministic decision and status policy.
 - `reviewer/store/`: persistence, audit objects, repositories, migrations.
 - `reviewer/config/` and `config/projects.json`: schemas and project policy.
@@ -65,6 +66,12 @@ Orchestration is an ordinary Python state machine, not an agent framework.
 - Partial and failed reviews fail open. Never turn an unavailable dependency or
   internal exception into a failed commit status. Retain undelivered status
   records for retry when GitLab is unreachable.
+- Recheck answers every open reviewer thread on a push and on `/ai recheck`.
+  Only `fixed` and `obsolete` resolve a thread; a missing, failed or capped
+  judgement is never evidence of a fix. Deterministic evidence from the run
+  itself outranks the judge, which may only answer more conservatively. Replies carry the head they judged, so
+  redelivery re-posts nothing. It obeys enforcement and report mode exactly as
+  publication does.
 - Preserve `silent`, `advisory`, and `gating` modes; reject `blocking`.
   Silent publishes nothing. Advisory statuses always pass. Gating can fail only
   on the deterministic decision from a complete review.

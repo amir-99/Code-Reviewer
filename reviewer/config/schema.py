@@ -33,6 +33,11 @@ class ReviewConfig(Strict):
     max_per_file: int = Field(default=5, ge=0, le=5)
     merge_distance: int = Field(default=10, ge=0, le=100)
     full_rereview_merge_base_delta: int = 50
+    # Recheck answers the comments already on the merge request after a push.
+    # The judgement cap bounds its token cost; threads past it stay open and
+    # report that they could not be verified rather than guessing.
+    recheck: bool = True
+    recheck_max_judgements: int = Field(default=15, ge=0, le=50)
     exclude: list[str] = [
         "**/node_modules/**",
         "**/vendor/**",

@@ -142,11 +142,35 @@ unpositionable findings appear in the summary. Comments include hidden
 fingerprints; existing bot-authored discussions prevent duplicate publication.
 
 On another push, changed files are re-reviewed, unchanged/moved findings are
-carried forward, and fully re-reviewed findings that disappeared are resolved.
+carried forward, and every comment still open on the merge request is rechecked.
 System Context reruns when the changed-file set changes. Configuration changes,
 prompt changes, a partial previous review, or a large merge-base movement force
 a full review. Jira's update timestamp controls reuse of requirement context.
 No operation pushes or rewrites Git history.
+
+## Recheck
+
+Every push answers the comments already on the merge request. Each unresolved
+reviewer thread is judged against the new head and gets one threaded reply
+saying what changed and whether the claim still holds: `fixed`,
+`partially_fixed`, `not_fixed`, `obsolete` or `unverifiable`. Only `fixed` and
+`obsolete` resolve the thread and record an `actioned` outcome; every other
+verdict leaves it open for a person.
+
+The diff settles what it can on its own — a deleted file, cited lines untouched
+by any new commit, a claim the run still reports, or one a complete re-review of
+that file no longer reports. Anything ambiguous, and every claim the diff calls
+fixed, goes to a judge that sees the claim, the code as it stood when the comment
+was posted, the code now, the diff between them and the author's replies; that is
+where the "how" comes from. Reformatting, moving code and an author's assertion
+are not fixes. A judgement may only make the answer more conservative: it can
+withdraw a resolution the diff implied, never grant one the diff did not, and it
+can never overrule a claim the review itself still reports. A missing or failed
+judgement never closes a thread. Replies carry the head they judged, so
+redelivery and repeated requests neither re-post nor re-spend tokens.
+Silent enforcement posts nothing and a drafted run stores the replies in the
+snapshot instead. `review.recheck` disables it; `review.recheck_max_judgements`
+caps the model calls per run.
 
 ## Static-analysis sandbox
 
@@ -188,6 +212,8 @@ against matching active heads.
 Users with at least Developer access may issue:
 
 - `/ai review`: enqueue a fresh review at the current head.
+- `/ai recheck`: re-judge the open comments at the current head, without
+  running a review or superseding one in flight.
 - `/ai explain`: reply to a finding to see its evidence references and rationale.
 - `/ai dismiss <reason>`: resolve a finding and record feedback.
 
@@ -217,6 +243,9 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   findings, and the rendered `report` for a drafted run.
 - `POST /admin/reviews/{id}/replay`: fresh review at the current head, keeping
   any context the review was manually triggered with.
+- `POST /admin/reviews/{id}/recheck`: re-judge the comments that review
+  published, at the merge request's current head. Runs no stages and publishes
+  no report.
 - `GET /admin/reviews/{id}/audit`: model, prompt/version/hash, token counts,
   latency, outcome and blob references.
 - `GET /admin/quality?project_id=42`: precision, fabrication, coverage, model

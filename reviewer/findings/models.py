@@ -78,6 +78,26 @@ class VerificationResult(Schema):
     verdict: Literal["confirmed", "rejected", "uncertain"]
 
 
+class RecheckResult(Schema):
+    """One previously published finding, judged against a newer head.
+
+    Ordered so the model describes the change before ruling on it: strict JSON
+    emits properties in declaration order.
+    """
+
+    change_summary: str = Field(default="", max_length=400)
+    reasoning: str = Field(default="", max_length=600)
+    verdict: Literal[
+        "fixed", "partially_fixed", "not_fixed", "obsolete", "unverifiable"
+    ]
+    evidence: list[Evidence] = []
+
+
+# Verdicts that answer the comment for good; anything else leaves the thread
+# open for a person to settle.
+RECHECK_RESOLVING = {"fixed", "obsolete"}
+
+
 class Finding(ProposedFinding):
     id: str
     fingerprint: str

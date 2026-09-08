@@ -178,6 +178,31 @@ class Store:
                 .limit(1)
             )
 
+    async def latest_published(self, project_id, iid):
+        """The newest published review for a merge request, with its snapshot.
+
+        A recheck runs outside any review of its own, so it needs both: the
+        snapshot for the findings it published, and the review id the audit rows
+        for its judgements belong to.
+        """
+        from reviewer.store.models import ReviewSnapshot
+
+        async with self.sessions() as session:
+            row = (
+                await session.execute(
+                    select(Review.id, ReviewSnapshot.data)
+                    .join(ReviewSnapshot, ReviewSnapshot.review_id == Review.id)
+                    .where(
+                        Review.project_id == project_id,
+                        Review.mr_iid == iid,
+                        Review.state == "PUBLISHED",
+                    )
+                    .order_by(Review.finished_at.desc())
+                    .limit(1)
+                )
+            ).first()
+            return (row[0], row[1]) if row else (None, None)
+
     async def save_stage(self, review_id, result):
         async with self.sessions.begin() as session:
             row = await session.get(ReviewStage, (review_id, result.stage))
@@ -241,6 +266,22 @@ class Store:
                         note_id=str(discussion.notes[0].id),
                     )
                 )
+
+    async def resolve_comment(self, finding_id):
+        """Record that a published comment's thread was closed by the reviewer."""
+        from reviewer.store.models import PublishedComment
+
+        async with self.sessions.begin() as session:
+            row = await session.get(PublishedComment, finding_id)
+            if row and row.resolved_at is None:
+                row.resolved_at = utcnow()
+
+    async def internal_project(self, gitlab_project_id: int):
+        """The projects row id for a GitLab project, or None when not onboarded."""
+        async with self.sessions() as session:
+            return await session.scalar(
+                select(Project.id).where(Project.gitlab_project_id == gitlab_project_id)
+            )
 
     async def outcome(self, project_id, iid, fingerprint, outcome, reason, user):
         from reviewer.store.models import FindingOutcome

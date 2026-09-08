@@ -21,7 +21,7 @@
     },
     "static_tools": [],
     "review": {
-      "token_ceiling": 4000000
+      "token_ceiling": 8000000
     }
   },
   "projects": {}
