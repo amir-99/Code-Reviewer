@@ -122,13 +122,6 @@ async def trigger(body: ManualReviewRequest, request: Request):
         raise HTTPException(502, "GitLab is unreachable") from None
     if mr.state != "opened" or mr.draft:
         raise HTTPException(409, "Merge request is closed, merged or a draft")
-    # Admission would reject an unonboarded project inside the worker, where the
-    # operator would never see it. Say so here instead of accepting a no-op.
-    if not await request.app.state.store.is_configured(project_id):
-        raise HTTPException(
-            409,
-            "Project is not onboarded; add it to PROJECT_IDS and restart the worker",
-        )
     job = ReviewJob(
         project_id=project_id,
         iid=iid,

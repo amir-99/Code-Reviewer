@@ -205,9 +205,10 @@ must be reachable only over your controlled internal Docker transport.
 
 ## Hooks and commands
 
-Webhooks are optional. For manual-only operation, set `PROJECT_IDS` to your
-project IDs and leave `WEBHOOK_SECRETS={}`. Restart the worker after adding
-projects so it provisions them before you trigger a review. Trigger reviews
+Webhooks are optional. Manual requests require no prior project onboarding:
+you can leave `PROJECT_IDS=[]` and `WEBHOOK_SECRETS={}`. The authenticated admin
+request resolves the project with the reviewer's GitLab token, and the worker
+creates its project record when admitting the request. Trigger reviews
 through `POST /admin/reviews`; `report_mode: "applied"` still posts GitLab
 comments when enforcement allows it, using the publication API token.
 Without hooks, automatic MR/push and pipeline events and `/ai` comment commands
@@ -241,8 +242,9 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   one derived from the story, and the given pages are read before any the issue
   links to. Confluence links are honoured even when the change has no issue at
   all. The link must be on the configured GitLab instance, its project must
-  already be onboarded through `PROJECT_IDS` (or `WEBHOOK_SECRETS`), and the merge
-  request must be open and not a draft. A manual run supersedes an in-flight review for the same
+  be visible to the reviewer's token, and the merge request must be open and not
+  a draft. No `PROJECT_IDS` or webhook configuration is required for a manual
+  request. A manual run supersedes an in-flight review for the same
   merge request, exactly as a new push does. `report_mode` chooses what happens
   to the finished report: `applied` (default) posts it on the merge request,
   `draft` leaves it on the merge request as GitLab draft notes — pending

@@ -127,6 +127,11 @@ async def receive_event(ctx, payload):
             draft=mr.draft,
         )
         return
+    # The authenticated admin endpoint already resolved this project using our
+    # GitLab token. Manual requests need no prior operator onboarding. Hook
+    # payloads cannot set overrides, so they cannot provision projects here.
+    if job.overrides and job.overrides.requested_by == "admin":
+        await ctx["store"].provision([job.project_id])
     review = await ctx["store"].accept(
         job.project_id,
         job.iid,

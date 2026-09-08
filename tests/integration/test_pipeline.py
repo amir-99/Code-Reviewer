@@ -115,7 +115,7 @@ def pipeline(store, forge, tmp_path, scanner=None, llm=None):
 
 @pytest.mark.parametrize(
     "project_ids,webhook_secrets",
-    [([88], {}), ([], {88: "hook-secret"}), ([88, 88], {88: "hook-secret"})],
+    [([], {}), ([88], {}), ([], {88: "hook-secret"}), ([88, 88], {88: "hook-secret"})],
 )
 async def test_onboarding_manual_review_and_publication(
     store, history, tmp_path, monkeypatch, project_ids, webhook_secrets
@@ -147,7 +147,7 @@ async def test_onboarding_manual_review_and_publication(
     ctx = {"redis": queue}
     assert not await store.is_configured(88)
     await worker.startup(ctx)
-    assert await store.is_configured(88)
+    assert await store.is_configured(88) == bool(project_ids or webhook_secrets)
     app = create_app(settings, store, queue, forge)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
@@ -169,8 +169,13 @@ async def test_onboarding_manual_review_and_publication(
         )
     assert response.status_code == 202
     assert response.json()["report_mode"] == "applied"
+    # The API only validates and enqueues; provisioning belongs to the worker.
+    assert await store.is_configured(88) == bool(project_ids or webhook_secrets)
     ctx["machine"] = pipeline(store, forge, tmp_path, llm=Reviewing())
     await worker.receive_event(ctx, queue.jobs[0][1][0])
+    assert await store.is_configured(88)
+    await worker.receive_event(ctx, queue.jobs[0][1][0])
+    assert len(queue.jobs) == 2
     review_id = queue.jobs[1][1][0]
     assert await ctx["machine"].run(review_id) == "PUBLISHED"
     assert len(forge.comments) >= 2  # Inline finding and summary.

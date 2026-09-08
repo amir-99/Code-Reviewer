@@ -21,7 +21,8 @@ class Store:
     ):
         async with self.sessions.begin() as session:
             # PostgreSQL row locking serializes admission per project. Projects
-            # are pre-provisioned by startup, never created from untrusted hooks.
+            # are provisioned by startup or an authenticated manual request,
+            # never created from untrusted hooks.
             project = await session.scalar(
                 select(Project)
                 .where(Project.gitlab_project_id == project_id)
@@ -96,12 +97,20 @@ class Store:
                 )
 
     async def provision(self, ids):
+        # Concurrent manual requests (or worker startups) may discover the same
+        # project. Preserve its existing policy and let the unique key arbitrate.
+        if self.engine.dialect.name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert
+        else:
+            from sqlalchemy.dialects.postgresql import insert
+
         async with self.sessions.begin() as session:
-            for project_id in ids:
-                if not await session.scalar(
-                    select(Project).where(Project.gitlab_project_id == project_id)
-                ):
-                    session.add(Project(gitlab_project_id=project_id))
+            for project_id in sorted(set(ids)):
+                await session.execute(
+                    insert(Project)
+                    .values(gitlab_project_id=project_id)
+                    .on_conflict_do_nothing(index_elements=[Project.gitlab_project_id])
+                )
 
     async def cancel(self, project_id: int, iid: int):
         async with self.sessions() as session:

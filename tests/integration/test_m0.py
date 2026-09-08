@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from reviewer.config.schema import Settings
 from reviewer.main import create_app
 from reviewer.orchestrator.machine import ReviewStateMachine
-from reviewer.store.models import Review, ReviewStage
+from reviewer.store.models import Project, Review, ReviewStage
 from reviewer.worker import receive_event, recover
 
 
@@ -126,3 +126,34 @@ async def test_cancel_and_invalid_transition(store, forge):
     await store.cancel(7, 2)
     assert await ReviewStateMachine(store, forge).run(review.id) == "CANCELLED"
     assert forge.statuses[-1]["state"] == "success"
+
+
+async def test_concurrent_project_provision_preserves_policy(store):
+    await asyncio.gather(*(store.provision([88]) for _ in range(3)))
+    async with store.sessions.begin() as session:
+        project = await session.scalar(
+            select(Project).where(Project.gitlab_project_id == 88)
+        )
+        project.enforcement = "advisory"
+        project.config_json = {"operator_policy": True}
+    await store.provision([88, 88])
+    async with store.sessions() as session:
+        projects = (
+            await session.scalars(
+                select(Project).where(Project.gitlab_project_id == 88)
+            )
+        ).all()
+        assert len(projects) == 1
+        assert projects[0].enforcement == "advisory"
+        assert projects[0].config_json == {"operator_policy": True}
+
+
+async def test_nonmanual_job_cannot_provision_project(store, forge):
+    queue = FakeQueue()
+    with pytest.raises(ValueError, match="Project is not configured"):
+        await receive_event(
+            {"store": store, "forge": forge, "redis": queue},
+            {"project_id": 88, "iid": 2, "head_sha": "a" * 40, "event_id": "unknown"},
+        )
+    assert not await store.is_configured(88)
+    assert queue.jobs == []

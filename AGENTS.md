@@ -117,8 +117,10 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   Keep Developer-or-higher authorization for `/ai` commands.
 - A pasted merge request link is resolved with the reviewer's own token. Accept
   only links whose origin and base path match the configured GitLab instance,
-  and only projects already onboarded; reject a closed, merged, or draft merge
-  request at the API rather than accepting a job that cannot run.
+  and projects visible to the reviewer's token; reject a closed, merged, or draft
+  merge request at the API rather than accepting a job that cannot run. Manual
+  requests need no prior onboarding: the worker provisions their project record
+  idempotently before admission. Webhooks still require configured secrets.
 
 ## Models, prompts, and findings
 

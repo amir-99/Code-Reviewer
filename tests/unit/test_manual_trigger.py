@@ -165,11 +165,6 @@ async def test_manual_trigger_rejects_bad_input(client_parts):
     assert (
         await post(app, {"merge_request_url": f"{BASE}/other/proj/-/merge_requests/2"})
     ).status_code == 404
-    # A project that was never onboarded is refused, not silently accepted.
-    forge.projects["group/other"] = 99
-    assert (
-        await post(app, {"merge_request_url": f"{BASE}/group/other/-/merge_requests/2"})
-    ).status_code == 409
     forge.mr = MergeRequestContext(project_id=7, iid=2, head_sha="a" * 40, draft=True)
     assert (
         await post(app, {"merge_request_url": f"{BASE}/group/proj/-/merge_requests/2"})
