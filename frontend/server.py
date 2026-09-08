@@ -9,7 +9,8 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).parent
 UPSTREAM = urlsplit(os.environ.get("REVIEWER_API_URL", "http://api:8080"))
 ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
-          "/sse.js": ("sse.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
+          "/sse.js": ("sse.js", "text/javascript"), "/style.css": ("style.css", "text/css"),
+          "/favicon.svg": ("favicon.svg", "image/svg+xml")}
 
 
 class Handler(BaseHTTPRequestHandler):

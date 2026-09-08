@@ -317,7 +317,9 @@ docker compose -f compose.yml -f compose.frontend.yml up -d --build
 Open http://127.0.0.1:8093 and connect using `ADMIN_TOKEN`. The dashboard starts
 reviews from GitLab links, accepts requirement overrides, displays findings and
 reports, rechecks a review's open comments at the branch's current head, and
-follows live stage-agent, work-unit, and tool activity. It defaults to draft
+follows live stage-agent, work-unit, and tool activity. Reviews are filterable
+by status and free text; each review shows its progress, metrics, state trail,
+and tabbed activity, findings, recheck, and report. It defaults to draft
 reports and preserves project enforcement settings.
 
 The authenticated SSE endpoint is `GET /admin/reviews/{id}/events`, with durable

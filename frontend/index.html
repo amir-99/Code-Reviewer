@@ -1,22 +1,192 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Review Room</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Review Room</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.js"></script>
+</head>
 <body>
-<header><a class="brand" href="/">◈ <span>Review Room</span></a><span class="muted">AI code reviewer</span><button id="disconnect" hidden>Disconnect</button></header>
+<div class="backdrop" aria-hidden="true"></div>
+
+<header class="topbar">
+  <a class="brand" href="/"><span class="mark" aria-hidden="true">◈</span><span class="wordmark">Review Room<small>AI code reviewer</small></span></a>
+  <div class="topbar-actions">
+    <span id="conn" class="pill" hidden><i class="dot" aria-hidden="true"></i><span id="conn-text">Offline</span></span>
+    <button id="theme" class="icon-button" type="button" title="Switch between the dark and light palette" aria-label="Switch colour theme">◐</button>
+    <button id="disconnect" type="button" hidden>Disconnect</button>
+  </div>
+</header>
+
 <main>
-<section id="connect" class="card connect"><p class="eyebrow">OPERATOR WORKSPACE</p><h1>A clearer view of every review.</h1><p class="muted">Follow the analysis, inspect findings, and start reviews from one place.</p><form id="login"><label>Admin token<input id="token" type="password" required autocomplete="off" placeholder="Enter your reviewer admin token"></label><p class="hint">Held in memory for this tab. Sent only to the configured review API.</p><button class="primary">Connect to reviewer →</button></form></section>
+<section id="connect" class="connect">
+  <div class="card connect-card">
+    <p class="eyebrow">Operator workspace</p>
+    <h1>A clearer view of <em>every</em> review.</h1>
+    <p class="lede">Watch the pipeline as it runs, inspect what it concluded, and start a review from a merge request link.</p>
+    <form id="login" autocomplete="off">
+      <div class="field">
+        <label for="token">Admin token</label>
+        <input id="token" type="password" required autocomplete="off" placeholder="Enter your reviewer admin token">
+      </div>
+      <p class="hint">Held in memory for this tab only, and sent only to the configured review API. Reloading clears it.</p>
+      <button class="primary" type="submit">Connect to reviewer</button>
+    </form>
+    <ul class="features">
+      <li><span aria-hidden="true">◈</span> Live stage, work unit and tool activity</li>
+      <li><span aria-hidden="true">◈</span> Findings with severity, evidence and verification</li>
+      <li><span aria-hidden="true">◈</span> Manual triggers with Jira and Confluence overrides</li>
+      <li><span aria-hidden="true">◈</span> Recheck of the threads a review already published</li>
+    </ul>
+  </div>
+</section>
+
 <section id="workspace" hidden>
-<div class="heading"><div><p class="eyebrow">REVIEW OPERATIONS</p><h1>Your review workspace</h1></div><button id="refresh">Refresh reviews</button></div>
-<div class="layout"><aside>
-<section class="card"><h2>Start a review</h2><form id="trigger"><label>GitLab merge request<input name="merge_request_url" type="url" required placeholder="https://gitlab…/merge_requests/42"></label><details><summary>Requirements & report settings</summary><label>Jira story<input name="issue_key" placeholder="TEAM-123"></label><label>Jira epic<input name="epic_key" placeholder="TEAM-100"></label><label>Confluence pages<textarea name="documents" rows="3" placeholder="One URL per line"></textarea></label></details><label>Report mode<select name="report_mode"><option value="draft">Draft — view here</option><option value="applied">Applied — publish per project policy</option><option value="none">None — no report publication</option></select></label><button class="primary" id="start">Start review →</button></form></section>
-<section class="card"><div class="row"><h2>Recent reviews</h2><span class="hint">Latest 50</span></div><div id="reviews" class="reviews"></div></section>
-</aside><section class="detail"><div id="empty" class="card empty"><span class="symbol">◈</span><h2>Every finding has a story.</h2><p class="muted">Select a review to follow its progress, or start one with a merge request link.</p></div><div id="review" hidden>
-<section class="card"><div class="row"><p class="eyebrow" id="identity"></p><span id="live" class="badge">Connecting</span></div><h2 id="state"></h2><p id="metadata" class="muted"></p><div id="stages" class="stages"></div><div class="actions"><button id="recheck">Recheck comments</button><span class="hint">Re-judges this review's open threads at the branch's current head. No stages run and no report is published.</span></div></section>
-<section class="card"><div class="row"><h2>Live activity</h2><span class="hint">Stages · work units · tools</span></div><p class="hint">Operational activity only. Model reasoning and raw tool output stay private.</p><ol id="activity" class="activity" aria-label="Review activity"></ol></section>
-<section class="card"><h2>Findings <span id="count" class="badge">0</span></h2><div id="findings"></div></section>
-<section id="recheck-section" class="card" hidden><div class="row"><h2>Recheck <span id="recheck-count" class="badge">0</span></h2><span id="recheck-meta" class="hint"></span></div><div id="recheck-results"></div></section>
-<section id="report-section" class="card" hidden><h2>Review report</h2><pre id="report"></pre></section>
-</div></section></div>
-</section><p id="notice" role="status" aria-live="polite"></p>
-</main><footer>Deterministic decisions. Visible progress.</footer>
-</body></html>
+<div class="layout">
+
+  <aside class="rail">
+    <section class="card">
+      <div class="card-head"><h2>Start a review</h2></div>
+      <form id="trigger">
+        <div class="field">
+          <label for="mr">GitLab merge request</label>
+          <input id="mr" name="merge_request_url" type="url" required placeholder="https://gitlab…/merge_requests/42">
+        </div>
+        <details>
+          <summary>Requirements &amp; overrides</summary>
+          <div class="field">
+            <label for="issue">Jira story</label>
+            <input id="issue" name="issue_key" placeholder="TEAM-123">
+          </div>
+          <div class="field">
+            <label for="epic">Jira epic</label>
+            <input id="epic" name="epic_key" placeholder="TEAM-100">
+          </div>
+          <div class="field">
+            <label for="documents">Confluence pages</label>
+            <textarea id="documents" name="documents" rows="3" placeholder="One URL per line"></textarea>
+          </div>
+        </details>
+        <div class="field">
+          <label for="mode">Report mode</label>
+          <select id="mode" name="report_mode">
+            <option value="draft">Draft — view here, draft notes on GitLab</option>
+            <option value="applied">Applied — publish per project policy</option>
+            <option value="none">None — no report publication</option>
+          </select>
+        </div>
+        <button class="primary" id="start" type="submit">Start review</button>
+      </form>
+    </section>
+
+    <section class="card reviews-card">
+      <div class="card-head">
+        <h2>Reviews <span id="review-total" class="badge">0</span></h2>
+        <button id="refresh" class="icon-button" type="button" title="Refresh the review list (r)" aria-label="Refresh reviews">⟳</button>
+      </div>
+      <input id="search" type="search" placeholder="Filter by project, MR, sha or state  ( / )" aria-label="Filter reviews">
+      <div class="chips" id="filters" role="group" aria-label="Review status filter">
+        <button class="chip on" type="button" data-filter="all">All<span class="n" data-count="all">0</span></button>
+        <button class="chip" type="button" data-filter="running">Running<span class="n" data-count="running">0</span></button>
+        <button class="chip" type="button" data-filter="changes">Changes<span class="n" data-count="changes">0</span></button>
+        <button class="chip" type="button" data-filter="failed">Failed<span class="n" data-count="failed">0</span></button>
+      </div>
+      <div id="reviews" class="reviews"></div>
+    </section>
+  </aside>
+
+  <section class="detail">
+    <div id="empty" class="card empty">
+      <span class="symbol" aria-hidden="true">◈</span>
+      <h2>Every finding has a story.</h2>
+      <p>Select a review to follow its pipeline, or start one from a merge request link.</p>
+    </div>
+
+    <div id="review" hidden>
+      <section class="card review-head">
+        <div class="row">
+          <div>
+            <p class="eyebrow" id="identity"></p>
+            <h2 id="state">Loading review…</h2>
+            <p id="metadata" class="hint"></p>
+          </div>
+          <div class="head-right">
+            <span id="decision" class="badge" hidden></span>
+            <span id="live" class="pill"><i class="dot" aria-hidden="true"></i><span id="live-text">Connecting</span></span>
+          </div>
+        </div>
+        <div id="alert" class="alert" hidden></div>
+        <dl id="metrics" class="metrics"></dl>
+        <div class="pipeline">
+          <div id="track" class="track"><div id="track-fill" class="track-fill"></div></div>
+          <div id="stages" class="stages"></div>
+        </div>
+        <div id="trail" class="trail" aria-label="State history"></div>
+        <div class="actions">
+          <button id="recheck" type="button">Recheck comments</button>
+          <span class="hint">Re-judges this review's open threads at the branch's current head. No stages run and no report is published.</span>
+        </div>
+      </section>
+
+      <div class="tabs" role="tablist" aria-label="Review detail">
+        <button class="tab" type="button" role="tab" id="tab-activity" data-tab="activity" aria-selected="true" aria-controls="panel-activity">Activity<span class="n" id="tabn-activity">0</span></button>
+        <button class="tab" type="button" role="tab" id="tab-findings" data-tab="findings" aria-selected="false" aria-controls="panel-findings">Findings<span class="n" id="tabn-findings">0</span></button>
+        <button class="tab" type="button" role="tab" id="tab-recheck" data-tab="recheck" aria-selected="false" aria-controls="panel-recheck">Recheck<span class="n" id="tabn-recheck">0</span></button>
+        <button class="tab" type="button" role="tab" id="tab-report" data-tab="report" aria-selected="false" aria-controls="panel-report">Report<span class="n" id="tabn-report">0</span></button>
+      </div>
+
+      <section class="card" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity">
+        <div class="card-head">
+          <h2>Live activity <span id="running" class="badge tone-good" hidden>0 running</span></h2>
+          <div class="chips" id="activity-filters" role="group" aria-label="Activity filter">
+            <button class="chip on" type="button" data-kind="all">All</button>
+            <button class="chip" type="button" data-kind="state">States</button>
+            <button class="chip" type="button" data-kind="agent">Stages</button>
+            <button class="chip" type="button" data-kind="unit">Units</button>
+            <button class="chip" type="button" data-kind="tool">Tools</button>
+          </div>
+        </div>
+        <p class="hint">Operational activity only — prompts, code, model reasoning and raw tool output stay private.</p>
+        <ol id="activity" class="activity" aria-label="Review activity" aria-live="polite"></ol>
+        <p id="activity-empty" class="empty-line">Waiting for the first event…</p>
+      </section>
+
+      <section class="card" id="panel-findings" role="tabpanel" aria-labelledby="tab-findings" hidden>
+        <div class="card-head">
+          <h2>Findings <span id="count" class="badge">0</span></h2>
+          <div class="chips" id="severity-filters" role="group" aria-label="Severity filter"></div>
+        </div>
+        <div id="sevbar" class="sevbar" aria-hidden="true"></div>
+        <div id="findings"></div>
+      </section>
+
+      <section class="card" id="panel-recheck" role="tabpanel" aria-labelledby="tab-recheck" hidden>
+        <div class="card-head">
+          <h2>Recheck <span id="recheck-count" class="badge">0</span></h2>
+          <span id="recheck-meta" class="hint"></span>
+        </div>
+        <div id="recheck-results"></div>
+      </section>
+
+      <section class="card" id="panel-report" role="tabpanel" aria-labelledby="tab-report" hidden>
+        <div class="card-head">
+          <h2>Review report</h2>
+          <button id="copy-report" type="button">Copy</button>
+        </div>
+        <pre id="report"></pre>
+        <p id="report-empty" class="empty-line">This review has not rendered a report.</p>
+      </section>
+    </div>
+  </section>
+
+</div>
+</section>
+</main>
+
+<div id="toasts" role="status" aria-live="polite"></div>
+<footer>Deterministic decisions. Visible progress.</footer>
+</body>
+</html>

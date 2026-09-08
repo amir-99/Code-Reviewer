@@ -48,6 +48,22 @@ live activity feed. Draft is the default report mode; a drafted run leaves its
 comments on the merge request as GitLab draft notes, which only the reviewer
 account sees until someone publishes them.
 
+The layout is a review rail beside a detail pane. The rail filters the recent
+reviews by status and by a free-text match on project, merge request, head sha,
+state, or decision. The detail pane leads with the review's state, decision,
+head, elapsed time, finding and blocking counts, commit-status delivery, and
+report mode, over a progress track, the fan-out stage chips, and the state
+trail; a partial review or a recorded error is called out above them. Activity,
+findings, recheck, and report are tabs. The activity feed keeps one row per
+activity, so a started stage, work unit, or tool shows as running with a spinner
+until its own completion event lands on the same row with the elapsed time; a
+stream that ends without one is labelled rather than left spinning. Rows are
+indented by their parent activity and can be filtered by kind. Findings are
+grouped by severity with a proportion bar, severity filters, evidence, and the
+model's confidence. Dark is the default palette; the header toggle switches to
+light and the choice is remembered per browser. `/` focuses the review filter
+and `r` refreshes the list.
+
 **Recheck comments** re-judges the threads a review published, at the merge
 request's current head. It calls `POST /admin/reviews/{id}/recheck`, which runs
 no stages and publishes no report. The review is already terminal, so its event

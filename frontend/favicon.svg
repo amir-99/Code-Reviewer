@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Review Room">
+  <!-- The ◈ brand mark: an emerald tile legible on a light or dark tab strip. -->
+  <rect width="32" height="32" rx="8" fill="#3ddc97"/>
+  <path d="M16 3.6 28.4 16 16 28.4 3.6 16Z" fill="none" stroke="#06231a" stroke-width="2.6" stroke-linejoin="round"/>
+  <path d="M16 10.6 21.4 16 16 21.4 10.6 16Z" fill="#06231a"/>
+</svg>
