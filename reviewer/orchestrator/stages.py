@@ -38,43 +38,65 @@ async def execute(name, bundle, llm, config, context_provider=None, only_paths=N
     units = partition(bundle, kind, config.review.unit_tokens)
     if only_paths is not None:
         units = [u for u in units if set(u.paths) & set(only_paths)]
-    result = StageResult(stage=name)
-    for unit in units:
-        examined = False
-        for attempt in range(2):
-            result.attempts += 1
-            try:
-                envelope = await agent.run(
-                    bundle,
-                    unit,
-                    llm,
-                    None if name == "line_review" else context_provider,
-                )
-                if unit.id in envelope.coverage.units_examined:
-                    result.examined.append(unit.id)
-                    examined = True
-                result.findings.extend(
-                    f
-                    for f in envelope.findings
-                    if name != "correctness" or f.failure_scenario
-                )
-                if envelope.notes_for_summary:
-                    result.notes.append(envelope.notes_for_summary)
-                if examined:
+    # Workers consume the iterator without awaiting between reads. Keep results
+    # in dispatch order, regardless of model completion order.
+    pending = iter(enumerate(units))
+    completed = {}
+    exhausted = False
+
+    async def worker():
+        nonlocal exhausted
+        for index, unit in pending:
+            result = StageResult(stage=name)
+            completed[index] = result
+            if exhausted:
+                result.partial = True
+                result.skipped.append(unit.id)
+                continue
+            for attempt in range(2):
+                result.attempts += 1
+                try:
+                    envelope = await agent.run(
+                        bundle,
+                        unit,
+                        llm,
+                        None if name == "line_review" else context_provider,
+                    )
+                    result.findings.extend(
+                        f
+                        for f in envelope.findings
+                        if name != "correctness" or f.failure_scenario
+                    )
+                    if envelope.notes_for_summary:
+                        result.notes.append(envelope.notes_for_summary)
+                    if unit.id in envelope.coverage.units_examined:
+                        result.examined.append(unit.id)
+                        break
+                except BudgetExhausted:
+                    exhausted = True
                     break
-            except BudgetExhausted:
+                except Exception:
+                    result.failed = True
+                    break
+            if not result.examined:
+                result.skipped.append(unit.id)
                 result.partial = True
-                result.skipped.extend(
-                    u.id for u in units if u.id not in result.examined
-                )
-                return result
-            except Exception:
-                result.failed = True
-                result.partial = True
-                break
-        if not examined:
-            result.skipped.append(unit.id)
-            result.partial = True
+
+    # TaskGroup drains cancelled children before the pipeline cleans its worktree.
+    concurrency = config.unit_concurrency if kind != "whole_change" else 1
+    async with asyncio.TaskGroup() as group:
+        for _ in range(min(concurrency, len(units))):
+            group.create_task(worker())
+    result = StageResult(stage=name)
+    for index in sorted(completed):
+        item = completed[index]
+        result.findings.extend(item.findings)
+        result.examined.extend(item.examined)
+        result.skipped.extend(item.skipped)
+        result.notes.extend(item.notes)
+        result.attempts += item.attempts
+        result.partial |= item.partial
+        result.failed |= item.failed
     return result
 
 

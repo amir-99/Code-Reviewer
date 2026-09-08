@@ -58,6 +58,9 @@ class StaticTool(Strict):
 
 
 class ProjectConfig(Strict):
+    # Operator-only controls; repository YAML cannot set these.
+    unit_concurrency: int = Field(default=2, ge=1, le=16)
+    final_stage_token_reserve: int = Field(default=0, ge=0)
     enforcement: Literal["silent", "advisory", "gating"] = "advisory"
     milestone: Literal["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"] = (
         "M9"
@@ -71,6 +74,14 @@ class ProjectConfig(Strict):
         "typescript",
         "go",
     ]
+
+    @model_validator(mode="after")
+    def reserve_fits_budget(self):
+        if self.final_stage_token_reserve >= self.review.token_ceiling:
+            raise ValueError(
+                "Final stage reserve must be smaller than the review token ceiling"
+            )
+        return self
 
 
 class Settings(BaseSettings):

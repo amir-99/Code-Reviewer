@@ -154,6 +154,10 @@ async def build(
         except Exception:
             pass
 
+    from reviewer.context.code_cache import ScannedCodeCache
+
+    code_cache = ScannedCodeCache(git, wt, scanner, redactor)
+
     @activity("tool", "Read requested code context")
     async def context_provider(requests):
         output = {}
@@ -173,28 +177,7 @@ async def build(
                 ][:3]
             for path in paths:
                 try:
-                    text = await git.read_file(wt, path)
-                    from reviewer.context.models import ChangedFile, DiffLine
-
-                    extra = await scanner.scan(
-                        [
-                            ChangedFile(
-                                path=path,
-                                change_type="modified",
-                                lines=[
-                                    DiffLine(
-                                        text=line,
-                                        new_line=n,
-                                        old_line=n,
-                                        kind="context",
-                                    )
-                                    for n, line in enumerate(text.splitlines(), 1)
-                                ],
-                            )
-                        ]
-                    )
-                    redactor.secrets.update(Redactor(extra).secrets)
-                    output[path] = redactor.text(text[:6000])
+                    output[path] = await code_cache.read(path)
                 except Exception:
                     output[path] = "unavailable"
         return output

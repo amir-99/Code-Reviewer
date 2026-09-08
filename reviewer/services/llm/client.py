@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from reviewer.telemetry.activity import activity
+from reviewer.telemetry.activity import activity, llm_attempt
 
 
 class LLMClient(Protocol):
@@ -110,10 +110,13 @@ class GatewayClient:
             prompt = json.dumps(messages, ensure_ascii=False)
             reserve = len(prompt.encode()) + max_tokens
             for attempt in range(3):
-                await self.budget.reserve(reserve)
+                await self.budget.reserve(reserve, stage=stage)
                 start = time.monotonic()
                 response_text = ""
                 outcome = "transport_error"
+                finish_reason = None
+                validation_failure = None
+                transport_failure = None
                 used = reserve
                 tokens_in = len(prompt.encode())
                 tokens_out = max_tokens
@@ -151,7 +154,23 @@ class GatewayClient:
                     )
                     response.raise_for_status()
                     data = response.json()
-                    response_text = data["choices"][0]["message"]["content"]
+                    choice = data["choices"][0]
+                    if not isinstance(choice, dict):
+                        raise TypeError("Invalid response envelope")
+                    reason = choice.get("finish_reason")
+                    finish_reason = (
+                        reason
+                        if reason
+                        in (
+                            "stop",
+                            "length",
+                            "content_filter",
+                            "tool_calls",
+                            "function_call",
+                        )
+                        else "unknown"
+                    )
+                    response_text = choice["message"]["content"]
                     tokens_in = data.get("usage", {}).get(
                         "prompt_tokens", len(prompt.encode())
                     )
@@ -162,12 +181,33 @@ class GatewayClient:
                     value = response_model.model_validate_json(response_text)
                     outcome = "success"
                     return value
-                except (ValidationError, ValueError, KeyError, IndexError, TypeError):
+                except (
+                    ValidationError,
+                    ValueError,
+                    KeyError,
+                    IndexError,
+                    TypeError,
+                ) as exc:
                     outcome = "invalid_output"
+                    validation_failure = (
+                        "invalid_json"
+                        if isinstance(exc, ValidationError)
+                        and any(e["type"] == "json_invalid" for e in exc.errors())
+                        else "schema_validation"
+                        if isinstance(exc, ValidationError)
+                        else "response_envelope"
+                    )
                     if parse_attempt:
                         raise StageFailed("Structured output invalid") from None
                     break
-                except (httpx.TransportError, httpx.HTTPStatusError):
+                except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                    transport_failure = (
+                        "timeout"
+                        if isinstance(exc, httpx.TimeoutException)
+                        else "http_status"
+                        if isinstance(exc, httpx.HTTPStatusError)
+                        else "transport"
+                    )
                     if attempt == 2:
                         raise StageFailed("Gateway transport failed") from None
                     await asyncio.sleep(0.1 * 2**attempt + random.random() * 0.05)
@@ -193,6 +233,15 @@ class GatewayClient:
                         if model in self.prices
                         else None,
                         outcome=outcome,
+                    )
+                    await llm_attempt(
+                        stage=stage,
+                        parse_attempt=parse_attempt + 1,
+                        transport_attempt=attempt + 1,
+                        outcome=outcome,
+                        finish_reason=finish_reason,
+                        validation_failure=validation_failure,
+                        transport_failure=transport_failure,
                     )
             messages = [
                 {

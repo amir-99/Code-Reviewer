@@ -93,3 +93,150 @@ async def test_transport_retries_exactly_twice_and_audits(store, tmp_path):
     async with store.sessions() as session:
         assert len((await session.scalars(select(LLMCall))).all()) == 3
     await llm.close()
+
+
+@pytest.mark.parametrize(
+    ("content", "finish_reason", "expected"),
+    [
+        ("malformed-private-content", "length", "invalid_json"),
+        ("{}", "private-upstream-value", "schema_validation"),
+    ],
+)
+async def test_attempt_diagnostics_are_persisted_without_response_content(
+    store, tmp_path, content, finish_reason, expected
+):
+    from reviewer.telemetry.activity import sink
+
+    review = await store.accept(7, 2, "a" * 40, "diagnostics")
+
+    def handler(req):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": content}, "finish_reason": finish_reason}
+                ]
+            },
+        )
+
+    budget = BudgetTracker(
+        Budget(
+            token_ceiling=100000,
+            deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+            model_tier={},
+        )
+    )
+    llm = GatewayClient(
+        Settings(
+            gateway_base_url="https://gateway.internal/v1", model_strong="approved"
+        ),
+        Audit(store, BlobStore(tmp_path / "blobs")),
+        budget,
+        Redactor(),
+        httpx.MockTransport(handler),
+    )
+    token = sink.set((store, review.id))
+    try:
+        with pytest.raises(StageFailed):
+            await llm.complete(
+                stage="design",
+                tier="strong",
+                system="review",
+                user="private-code",
+                response_model=StageEnvelope,
+                review_id=review.id,
+                max_tokens=100,
+                timeout_s=2,
+            )
+    finally:
+        sink.reset(token)
+        await llm.close()
+    diagnostics = [
+        e["data"] for e in await store.events(review.id) if e["kind"] == "llm_attempt"
+    ]
+    assert len(diagnostics) == 2
+    assert [e["parse_attempt"] for e in diagnostics] == [1, 2]
+    assert all(e["validation_failure"] == expected for e in diagnostics)
+    assert all(
+        e["finish_reason"] == ("length" if finish_reason == "length" else "unknown")
+        for e in diagnostics
+    )
+    assert "private" not in str(diagnostics)
+    async with store.sessions() as session:
+        assert len((await session.scalars(select(LLMCall))).all()) == 2
+
+
+async def test_concurrent_gateway_calls_wait_for_budget_and_keep_audits(
+    store, tmp_path
+):
+    import asyncio
+
+    first_started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_started.set()
+            await release.wait()
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"findings": [], "coverage": {"units_examined": [], "units_skipped": [], "skip_reason": null}}'
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 10},
+            },
+        )
+
+    budget = BudgetTracker(
+        Budget(
+            token_ceiling=250,
+            deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+            model_tier={},
+        )
+    )
+    llm = GatewayClient(
+        Settings(
+            gateway_base_url="https://gateway.internal/v1", model_strong="approved"
+        ),
+        Audit(store, BlobStore(tmp_path / "blobs")),
+        budget,
+        Redactor(),
+        httpx.MockTransport(handler),
+    )
+
+    async def complete():
+        return await llm.complete(
+            stage="correctness",
+            tier="strong",
+            system="review",
+            user="code",
+            response_model=StageEnvelope,
+            review_id="concurrent",
+            max_tokens=100,
+            timeout_s=2,
+        )
+
+    tasks = [asyncio.create_task(complete())]
+    try:
+        await asyncio.wait_for(first_started.wait(), 1)
+        tasks.append(asyncio.create_task(complete()))
+        await asyncio.sleep(0)
+        assert calls == 1 and not tasks[-1].done()
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 2)
+        assert calls == 2 and budget.reserved == 0 and budget.budget.tokens_used == 40
+        async with store.sessions() as session:
+            assert len((await session.scalars(select(LLMCall))).all()) == 2
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await llm.close()

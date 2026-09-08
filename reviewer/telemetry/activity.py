@@ -75,3 +75,18 @@ def traced_review(fn):
             sink.reset(token)
 
     return wrapped
+
+
+async def llm_attempt(**metadata):
+    """Persist caller-normalized attempt diagnostics without model content."""
+    target = sink.get()
+    if target is not None:
+        store, review_id = target
+        try:
+            await store.append_event(
+                review_id,
+                "llm_attempt",
+                {"parent_id": parent.get(), **metadata},
+            )
+        except Exception:
+            pass

@@ -70,6 +70,27 @@ branch. It can override review, issue-tracker, document and language options;
 operator-only enforcement, executable commands, model endpoints and credentials
 cannot be selected by repository content.
 
+Operator-only scheduling controls also live in project defaults or overrides:
+`unit_concurrency` defaults to 2 workers per analysis stage (at most 8 active
+units across the four stages per review). Set it to 1 for sequential units.
+Purpose and Design remain sequential gates; System Context follows aggregation.
+Size concurrency for gateway capacity and the number of concurrent reviews.
+
+`final_stage_token_reserve` defaults to 0. Set an explicit token allowance to
+protect System Context and independent verification from earlier stages. It
+must be smaller than `review.token_ceiling` and is shared by those final stages;
+it does not increase the total budget or guarantee complete coverage. Allow
+for conservative prompt-byte plus maximum-output reservations when sizing it.
+Calls wait for temporary reservations to settle, bounded by the review deadline.
+True exhaustion still produces a partial, fail-open review.
+
+Requested code is cached only within one SHA-pinned review, after a successful
+secret scan, and repeated context is included once in each unit's prompt.
+The authenticated event stream records `llm_attempt` metadata: normalized finish
+reason, validation/transport failure category, and retry numbers. These events
+contain no response text, validation input, or upstream error messages; the
+existing private per-call audit records remain available separately.
+
 `MILESTONE=M9` enables the complete pipeline. M0 remains an infrastructure-only
 check; intermediate milestone values support staged rollout. Lower milestones
 cannot issue a blocking decision from an incomplete review.

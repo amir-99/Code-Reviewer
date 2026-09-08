@@ -38,6 +38,8 @@ class StageAgent(ABC):
     @activity("unit", "Review work unit")
     async def run(self, bundle, unit, llm, context_provider=None):
         system, user = self.build_prompt(bundle, unit)
+        initial_user = user
+        context = {}
         for round_no in range(3):
             result = await llm.complete(
                 stage=self.name,
@@ -53,7 +55,12 @@ class StageAgent(ABC):
             if not result.context_requests or not context_provider or round_no == 2:
                 return result
             extra = await context_provider(result.context_requests)
-            user += "\n" + frame(json.dumps(extra), "requested-code-context")
+            context.update(extra)
+            user = (
+                initial_user
+                + "\n"
+                + frame(json.dumps(context), "requested-code-context")
+            )
         return result
 
 

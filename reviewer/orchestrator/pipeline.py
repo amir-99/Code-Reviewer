@@ -255,7 +255,7 @@ class Pipeline:
                             ).where(LLMCall.review_id == review.id)
                         )
                     )
-                tracker = BudgetTracker(bundle.budget)
+                tracker = BudgetTracker(bundle.budget, config.final_stage_token_reserve)
                 try:
                     llm = (
                         self.llm_factory(bundle, redactor)
