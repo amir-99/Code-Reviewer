@@ -44,7 +44,17 @@ node --test frontend/sse.test.js
 
 The dashboard supports recent reviews, manual triggers, Jira story/epic and
 Confluence overrides, report modes, stored findings, plain-text reports, and a
-live activity feed. Draft is the default report mode. Project enforcement rules
+live activity feed. Draft is the default report mode; a drafted run leaves its
+comments on the merge request as GitLab draft notes, which only the reviewer
+account sees until someone publishes them.
+
+**Recheck comments** re-judges the threads a review published, at the merge
+request's current head. It calls `POST /admin/reviews/{id}/recheck`, which runs
+no stages and publishes no report. The review is already terminal, so its event
+stream is finished: the dashboard polls the review until the answers appear and
+then shows each verdict, what changed, and whether the thread was resolved.
+Nothing appears if the review has no open reviewer threads or the project
+disables recheck. Project enforcement rules
 still control publication and commit statuses. Activity is bounded to the latest
 300 displayed entries; all retained events remain available through the API.
 

@@ -1,3 +1,4 @@
+import pytest
 from test_findings import finding
 from test_stages import bundle
 
@@ -64,7 +65,7 @@ def test_added_removed_and_context_positions():
         assert ("new_line" in result) == (new is not None)
 
 
-async def test_draft_mode_renders_without_writing_to_gitlab(tmp_path):
+async def test_draft_mode_queues_gitlab_draft_notes(tmp_path):
     b = bundle(tmp_path, 1)
     f = finding()
     f.severity_final = "REQUIRED"
@@ -74,12 +75,29 @@ async def test_draft_mode_renders_without_writing_to_gitlab(tmp_path):
     report = await Publisher(forge).publish(
         b, [f], "COMMENT_ONLY", ProjectConfig(), [], "draft"
     )
-    assert forge.comments == []
+    # Pending comments on the merge request, not notes: nothing was published.
+    assert forge.comments == [] and forge.discussions == []
+    assert [n.file for n in forge.draft_notes] == [f.anchor.file, None]
+    assert f.fingerprint in forge.draft_notes[0].body
+    assert b.code.head_sha in forge.draft_notes[1].body
     assert report["mode"] == "draft"
     assert f.claim in report["summary"]
     assert [c["fingerprint"] for c in report["inline"]] == [f.fingerprint]
     # Nothing was posted, so the finding must not claim it was.
     assert f.status != "published"
+    # A second drafted run finds its own drafts and repeats neither.
+    report = await Publisher(forge).publish(
+        b, [f], "COMMENT_ONLY", ProjectConfig(), [], "draft"
+    )
+    assert len(forge.draft_notes) == 2 and report["inline"] == []
+    # An unpositionable anchor is summarized in draft mode exactly as applied.
+    forged = FakeForge(b.mr)
+    forged.bad_position = True
+    report = await Publisher(forged).publish(
+        b, [f], "COMMENT_ONLY", ProjectConfig(), [], "draft"
+    )
+    assert report["inline"] == [] and len(forged.draft_notes) == 1
+    assert f.claim in forged.draft_notes[0].body
 
 
 async def test_report_mode_none_and_silent_enforcement_publish_nothing(tmp_path):
@@ -103,9 +121,11 @@ async def test_report_mode_none_and_silent_enforcement_publish_nothing(tmp_path)
         is None
     )
     assert forge.comments == []
-    # A draft is only rendering, so it stays available under silent enforcement.
+    # Silent writes nothing at all, so a drafted run under it renders the report
+    # for the operator and leaves not even a draft note on the merge request.
     report = await Publisher(forge).publish(b, [f], "COMMENT_ONLY", silent, [], "draft")
-    assert report["mode"] == "draft" and forge.comments == []
+    assert report["mode"] == "draft" and f.claim in report["summary"]
+    assert forge.comments == [] and forge.draft_notes == []
 
 
 async def test_applied_mode_posts_and_returns_the_same_report(tmp_path):
@@ -123,3 +143,72 @@ async def test_applied_mode_posts_and_returns_the_same_report(tmp_path):
     assert len(forge.comments) == 2
     assert report["inline"][0]["body"] == forge.comments[0].body
     assert report["summary"] == forge.comments[1].body
+
+
+async def test_draft_note_requests_match_the_gitlab_api():
+    """The draft-notes wire format, which no fake can verify for us."""
+    import httpx
+
+    from reviewer.services.forge.gitlab import GitLab, Position, PositionError
+
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, request.read()))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": 11,
+                        "author_id": 900,
+                        "note": "pending <!-- ai-review:fingerprint=%s -->"
+                        % ("a" * 32),
+                        "discussion_id": None,
+                        "resolve_discussion": False,
+                        "position": {"new_path": "f0.py", "new_line": 3},
+                    }
+                ],
+            )
+        if b'"position"' in request.read():
+            return httpx.Response(400, json={"message": "Note position is invalid"})
+        return httpx.Response(
+            201,
+            json={
+                "id": 12,
+                "author_id": 900,
+                "note": "reply",
+                "discussion_id": "d1",
+                "resolve_discussion": True,
+                "position": None,
+            },
+        )
+
+    forge = GitLab("https://gitlab.internal", "token", httpx.MockTransport(handler))
+    drafted = await forge.list_draft_notes(7, 2)
+    assert [(n.id, n.file, n.author_id) for n in drafted] == [(11, "f0.py", 900)]
+    note = await forge.post_draft_note(
+        7, 2, "reply", in_reply_to_discussion_id="d1", resolve_discussion=True
+    )
+    assert note.discussion_id == "d1" and note.resolve_discussion
+    import json
+
+    assert json.loads(seen[-1][2]) == {
+        "note": "reply",
+        "in_reply_to_discussion_id": "d1",
+        "resolve_discussion": True,
+    }
+    position = Position(
+        base_sha="b" * 40,
+        start_sha="b" * 40,
+        head_sha="a" * 40,
+        old_path="f0.py",
+        new_path="f0.py",
+        new_line=3,
+    )
+    with pytest.raises(PositionError):
+        await forge.post_draft_note(7, 2, "inline", position)
+    assert {path for _, path, _ in seen} == {
+        "/api/v4/projects/7/merge_requests/2/draft_notes"
+    }
+    await forge.close()

@@ -75,6 +75,12 @@ Orchestration is an ordinary Python state machine, not an agent framework.
 - Preserve `silent`, `advisory`, and `gating` modes; reject `blocking`.
   Silent publishes nothing. Advisory statuses always pass. Gating can fail only
   on the deterministic decision from a complete review.
+- The `draft` report mode writes GitLab draft notes: inline pending comments,
+  a pending summary, and pending recheck replies carrying the resolution they
+  would apply. It never posts a note, resolves a thread, or marks a finding
+  published. Deduplicate against the reviewer's own pending drafts so a repeat
+  queues nothing twice, and keep silent enforcement writing nothing at all,
+  drafts included.
 - Keep milestone flags functional. A lower milestone must not imply a complete
   AI review or silently enable later publication/enforcement behavior.
 

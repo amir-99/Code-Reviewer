@@ -391,5 +391,9 @@ async def test_recheck_command_answers_threads_without_running_a_review(
     # One reply, no summary note, no second review.
     assert len(forge.comments) == notes + 1
     assert len(await store.recent()) == 1
+    # The dashboard reads a manual recheck back from the review it answered for.
+    snapshot = await store.snapshot(review.id)
+    assert [v["verdict"] for v in snapshot["recheck"]["verdicts"]] == ["fixed"]
+    assert snapshot["recheck"]["at"] and snapshot["findings"]
     # Nothing is left to answer at this head.
     assert (await machine.recheck_now(7, 2)) is None

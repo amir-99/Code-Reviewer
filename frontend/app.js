@@ -1,7 +1,8 @@
 import {events} from './sse.js';
 const $ = id => document.getElementById(id);
 const el = (tag, text, cls) => {const n = document.createElement(tag); n.textContent = text; if (cls) n.className = cls; return n;};
-let token = '', selected = '', controller, noticeTimer, refreshTimer;
+let token = '', selected = '', controller, noticeTimer, refreshTimer, lastRecheck = null;
+const verdicts = {fixed: 'Fixed', partially_fixed: 'Partially fixed', not_fixed: 'Still open', obsolete: 'No longer applies', unverifiable: 'Could not verify'};
 const activityNames = new Map();
 const stages = ['purpose', 'design', 'correctness', 'complexity', 'tests_', 'line_review', 'system_context'];
 const labels = x => String(x || '').replaceAll('_', ' ').toLowerCase();
@@ -39,6 +40,25 @@ function render(review) {
     $('findings').append(article);
   }
   $('report-section').hidden = !review.report; $('report').textContent = review.report || '';
+  renderRecheck(review.recheck);
+}
+function renderRecheck(recheck) {
+  lastRecheck = JSON.stringify(recheck ?? null);
+  $('recheck-section').hidden = !recheck;
+  if (!recheck) return;
+  const answers = recheck.verdicts || [];
+  const resolved = new Set((recheck.posted || []).filter(p => p.resolved).map(p => p.fingerprint));
+  $('recheck-count').textContent = answers.length;
+  $('recheck-meta').textContent = [recheck.mode === 'draft' ? 'Drafted on GitLab' : 'Posted on the merge request',
+    `head ${String(recheck.head_sha || '').slice(0, 12)}`, recheck.at ? new Date(recheck.at).toLocaleString() : ''].filter(Boolean).join(' · ');
+  $('recheck-results').replaceChildren();
+  for (const answer of answers) {
+    const article = el('article', '', 'finding');
+    article.append(el('span', verdicts[answer.verdict] || labels(answer.verdict), `badge ${answer.verdict}`), el('h3', answer.claim), el('code', `${answer.file || ''}:${answer.line || ''}`));
+    for (const key of ['change_summary', 'reasoning']) if (answer[key]) article.append(el('p', answer[key]));
+    article.append(el('p', `${answer.judged ? 'Judged by model' : 'Determined from the diff'} · ${resolved.has(answer.fingerprint) ? 'thread resolved' : 'thread left open'}`, 'hint'));
+    $('recheck-results').append(article);
+  }
 }
 function addActivity(item) {
   const {data, kind} = item;
@@ -85,6 +105,7 @@ function select(id) {
   $('empty').hidden = true; $('review').hidden = false;
   $('activity').replaceChildren(); $('findings').replaceChildren(); $('count').textContent = '0';
   $('identity').textContent = ''; $('state').textContent = 'Loading review…'; $('metadata').textContent = ''; $('report-section').hidden = true;
+  $('recheck-section').hidden = true; $('recheck-results').replaceChildren(); lastRecheck = null;
   $('stages').replaceChildren(...stages.map(name => {const n = el('span', labels(name), 'stage'); n.dataset.stage = name; return n;}));
   refresh().catch(e => notice(e.message)); follow(id, controller.signal).catch(e => notice(e.message));
 }
@@ -95,6 +116,25 @@ $('login').onsubmit = async event => {
 };
 $('disconnect').onclick = () => { controller?.abort(); clearInterval(refreshTimer); token = ''; location.reload(); };
 $('refresh').onclick = () => refresh().catch(e => notice(e.message));
+$('recheck').onclick = async () => {
+  if (!selected) return;
+  const id = selected, before = lastRecheck;
+  $('recheck').disabled = true;
+  try {
+    await request(`/admin/reviews/${encodeURIComponent(id)}/recheck`, {method: 'POST'});
+    notice('Recheck queued. Judging the open threads at the current head…');
+    // The review is already terminal, so its event stream reports nothing more:
+    // read the answers back from the review itself.
+    for (let attempt = 0; attempt < 40 && selected === id; attempt++) {
+      await delay(3000, controller.signal);
+      if (selected !== id) return;
+      const review = await (await request(`/admin/reviews/${encodeURIComponent(id)}`)).json();
+      if (JSON.stringify(review.recheck ?? null) !== before) { renderRecheck(review.recheck); notice('Recheck answered the open threads.'); return; }
+    }
+    notice('No recheck answers recorded yet. The review may have no open reviewer threads, or recheck may be off for this project.');
+  } catch (error) { if (error.name !== 'AbortError') notice(error.message); }
+  finally { $('recheck').disabled = false; }
+};
 $('trigger').onsubmit = async event => {
   event.preventDefault(); $('start').disabled = true;
   const data = new FormData(event.target);

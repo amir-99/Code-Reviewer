@@ -153,13 +153,32 @@ async def test_deleted_file_is_obsolete_and_no_judgement_is_a_fix(tmp_path):
     assert verdicts[0].verdict == "unverifiable" and llm.calls == 0
 
 
-async def test_draft_renders_without_touching_the_merge_request(tmp_path):
+async def test_draft_queues_replies_as_gitlab_draft_notes(tmp_path):
     forge, f = await opened(tmp_path)
-    threads = await collect(forge, None, 7, 2, [f], HEAD)
+    threads = await collect(forge, None, 7, 2, [f], HEAD, draft=True)
     verdicts = await evaluate(threads, root=tmp_path, touched={"other.py"})
     posted = await publish(forge, None, 7, 2, 1, verdicts, HEAD, draft=True)
     assert posted[0]["body"] and not posted[0]["resolved"]
+    # The thread is answered only once someone publishes the pending reply.
     assert not forge.replies and not forge.discussions[0].resolved
+    draft = forge.draft_notes[0]
+    assert draft.discussion_id == verdicts[0].discussion_id
+    assert draft.resolve_discussion is False and posted[0]["body"] == draft.body
+    # A drafted answer counts as an answer: the same head is not judged twice.
+    assert await collect(forge, None, 7, 2, [f], HEAD, draft=True) == []
+    assert len(await collect(forge, None, 7, 2, [f], HEAD)) == 1
+
+
+async def test_draft_carries_the_resolution_it_would_apply(tmp_path):
+    forge, f = await opened(tmp_path)
+    (tmp_path / "f0.py").unlink()
+    threads = await collect(forge, None, 7, 2, [f], HEAD, draft=True)
+    verdicts = await evaluate(threads, root=tmp_path, touched=None)
+    posted = await publish(forge, None, 7, 2, 1, verdicts, HEAD, draft=True)
+    assert verdicts[0].verdict == "obsolete"
+    # Resolution rides with the draft, so publishing it resolves the thread.
+    assert forge.draft_notes[0].resolve_discussion is True
+    assert not posted[0]["resolved"] and not forge.discussions[0].resolved
 
 
 async def test_recheck_command_queues_without_superseding_a_review(store, tmp_path):

@@ -168,9 +168,12 @@ withdraw a resolution the diff implied, never grant one the diff did not, and it
 can never overrule a claim the review itself still reports. A missing or failed
 judgement never closes a thread. Replies carry the head they judged, so
 redelivery and repeated requests neither re-post nor re-spend tokens.
-Silent enforcement posts nothing and a drafted run stores the replies in the
-snapshot instead. `review.recheck` disables it; `review.recheck_max_judgements`
-caps the model calls per run.
+Silent enforcement posts nothing, and a drafted run queues the replies as GitLab
+draft notes, each carrying the resolution it would apply, so publishing them
+answers and resolves the threads exactly as an applied run would have. A drafted
+answer counts as an answer, so a repeat neither re-drafts nor re-spends tokens.
+`review.recheck` disables it; `review.recheck_max_judgements` caps the model
+calls per run.
 
 ## Static-analysis sandbox
 
@@ -232,15 +235,20 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   open and not a draft. A manual run supersedes an in-flight review for the same
   merge request, exactly as a new push does. `report_mode` chooses what happens
   to the finished report: `applied` (default) posts it on the merge request,
-  `draft` renders and stores it without writing to GitLab, and `none` publishes
-  nothing. A project configured for silent enforcement never posts, so `applied`
-  degrades to `none` there rather than overriding the operator. The response
-  carries no findings: the review runs in the worker, so poll the `poll` address
-  it returns.
+  `draft` leaves it on the merge request as GitLab draft notes — pending
+  comments only the reviewer account can see, which notify nobody and resolve
+  nothing until someone publishes them — and `none` publishes nothing. A
+  project configured for silent enforcement never writes, so `applied` degrades
+  to `none` there rather than overriding the operator, and a drafted run under
+  it renders the report without creating even a draft note. A drafted run finds
+  its own pending drafts, so repeating it queues no duplicate comment. The
+  response carries no findings: the review runs in the worker, so poll the
+  `poll` address it returns.
 - `GET /admin/reviews?event_id=...`: resolve a trigger response's event id to
   its review; reports `QUEUED` until the worker admits it.
 - `GET /admin/reviews/{id}`: state, history, status delivery, the review's
-  findings, and the rendered `report` for a drafted run.
+  findings, the rendered `report`, and `recheck`, the answers the last recheck
+  gave this review's open threads.
 - `POST /admin/reviews/{id}/replay`: fresh review at the current head, keeping
   any context the review was manually triggered with.
 - `POST /admin/reviews/{id}/recheck`: re-judge the comments that review
@@ -308,8 +316,9 @@ docker compose -f compose.yml -f compose.frontend.yml up -d --build
 
 Open http://127.0.0.1:8093 and connect using `ADMIN_TOKEN`. The dashboard starts
 reviews from GitLab links, accepts requirement overrides, displays findings and
-reports, and follows live stage-agent, work-unit, and tool activity. It defaults
-to draft reports and preserves project enforcement settings.
+reports, rechecks a review's open comments at the branch's current head, and
+follows live stage-agent, work-unit, and tool activity. It defaults to draft
+reports and preserves project enforcement settings.
 
 The authenticated SSE endpoint is `GET /admin/reviews/{id}/events`, with durable
 resume using the `Last-Event-ID` header. Apply migration `0005` before deploying

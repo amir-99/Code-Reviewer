@@ -83,7 +83,11 @@ async def test_inspect_returns_findings_and_drafted_report(store):
     f.status = "verified"
     await store.save_findings(review, [f])
     await store.save_snapshot(
-        review.id, {"report": {"mode": "draft", "summary": "# drafted", "inline": []}}
+        review.id,
+        {
+            "report": {"mode": "draft", "summary": "# drafted", "inline": []},
+            "recheck": {"mode": "draft", "head_sha": "b" * 40, "verdicts": []},
+        },
     )
     app = create_app(
         Settings(webhook_secrets={7: "secret"}, admin_token="admin", milestone="M0"),
@@ -99,6 +103,7 @@ async def test_inspect_returns_findings_and_drafted_report(store):
         assert body["findings"][0]["severity"] == "REQUIRED"
         assert body["findings"][0]["file"] == f.anchor.file
         assert body["report"]["summary"] == "# drafted"
+        assert body["recheck"]["head_sha"] == "b" * 40
         # The event id from a trigger response resolves to the same review.
         found = (
             await client.get("/admin/reviews?event_id=event-1", headers=auth)
@@ -106,3 +111,29 @@ async def test_inspect_returns_findings_and_drafted_report(store):
         assert found["id"] == review.id and len(found["findings"]) == 1
         queued = (await client.get("/admin/reviews?event_id=nope", headers=auth)).json()
         assert queued["state"] == "QUEUED" and queued["findings"] == []
+
+
+async def test_recheck_endpoint_enqueues_for_the_reviewed_merge_request(store):
+    """What the dashboard's recheck button calls: a job, no review of its own."""
+    review = await store.accept(7, 2, "a" * 40, "event-1")
+    queue = FakeQueue()
+    app = create_app(
+        Settings(webhook_secrets={7: "secret"}, admin_token="admin", milestone="M0"),
+        store,
+        queue,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        auth = {"Authorization": "Bearer admin"}
+        response = await client.post(
+            f"/admin/reviews/{review.id}/recheck", headers=auth
+        )
+        assert response.status_code == 200 and response.json()["accepted"] is True
+        assert queue.jobs == [("recheck_review", (7, 2))]
+        assert (
+            await client.post("/admin/reviews/missing/recheck", headers=auth)
+        ).status_code == 404
+        assert (
+            await client.post(f"/admin/reviews/{review.id}/recheck")
+        ).status_code == 401

@@ -611,9 +611,11 @@ class Pipeline:
 
         Returns None when there was nothing to recheck. Writes are governed
         exactly as the report's are: silent enforcement and a "none" report mode
-        publish nothing, and a drafted run renders the replies into the snapshot
-        instead of posting them.
+        publish nothing, and a drafted run queues the replies as GitLab draft
+        notes instead of posting them into the threads.
         """
+        from datetime import UTC, datetime
+
         from reviewer.publish.recheck import collect, evaluate
         from reviewer.publish.recheck import publish as publish_recheck
 
@@ -629,6 +631,7 @@ class Pipeline:
             review.mr_iid,
             previous_findings,
             review.head_sha,
+            draft,
         )
         if not threads:
             return None
@@ -688,6 +691,7 @@ class Pipeline:
         )
         return {
             "mode": "draft" if draft else "applied",
+            "at": datetime.now(UTC).isoformat(),
             "head_sha": review.head_sha,
             "previous_head_sha": previous_head,
             "verdicts": [v.model_dump(mode="json") for v in verdicts],
@@ -759,7 +763,7 @@ class Pipeline:
                     )
                 except ValueError:
                     llm = None
-                return await self.recheck(
+                report = await self.recheck(
                     SimpleNamespace(
                         id=previous_id,
                         mr_iid=iid,
@@ -778,6 +782,16 @@ class Pipeline:
                     redactor,
                     None,
                 )
+                if report is not None:
+                    # The recheck runs outside any review of its own, so its
+                    # answers are recorded on the review that published the
+                    # threads; that is where an operator reads them back.
+                    stored = await self.store.snapshot(previous_id)
+                    if stored is not None:
+                        await self.store.save_snapshot(
+                            previous_id, stored | {"recheck": report}
+                        )
+                return report
             finally:
                 if llm and hasattr(llm, "close"):
                     await llm.close()

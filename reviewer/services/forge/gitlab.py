@@ -28,6 +28,18 @@ class ForgeService(Protocol):
         self, project_id: int, iid: int, body: str, position: "Position"
     ) -> "Discussion": ...
     async def post_note(self, project_id: int, iid: int, body: str) -> "Note": ...
+    async def list_draft_notes(
+        self, project_id: int, iid: int
+    ) -> list["DraftNote"]: ...
+    async def post_draft_note(
+        self,
+        project_id: int,
+        iid: int,
+        body: str,
+        position: "Position | None" = None,
+        in_reply_to_discussion_id: str | None = None,
+        resolve_discussion: bool = False,
+    ) -> "DraftNote": ...
     async def resolve_discussion(
         self, project_id: int, iid: int, discussion_id: str
     ) -> None: ...
@@ -194,6 +206,56 @@ class GitLab:
         d = r.json()
         return Note(id=d["id"], body=d["body"], author_id=d["author"]["id"])
 
+    async def list_draft_notes(self, project_id, iid):
+        """The reviewer's own pending draft notes on a merge request.
+
+        GitLab scopes draft notes to their author, so this is what the bot
+        already drafted and nobody else has seen.
+        """
+        output = []
+        page = 1
+        while True:
+            r = await self.client.get(
+                f"projects/{project_id}/merge_requests/{iid}/draft_notes",
+                params={"page": page, "per_page": 100},
+            )
+            r.raise_for_status()
+            data = r.json()
+            output.extend(draft_note(d) for d in data)
+            if len(data) < 100:
+                return output
+            page += 1
+
+    async def post_draft_note(
+        self,
+        project_id,
+        iid,
+        body,
+        position=None,
+        in_reply_to_discussion_id=None,
+        resolve_discussion=False,
+    ):
+        """Create a pending comment instead of posting it.
+
+        A draft note stays invisible to the merge request until it is published,
+        so a drafted run leaves the review where an operator can see it in
+        GitLab without notifying anyone or resolving anything.
+        """
+        payload = {"note": body}
+        if position is not None:
+            payload["position"] = position.model_dump(exclude_none=True)
+        if in_reply_to_discussion_id is not None:
+            payload["in_reply_to_discussion_id"] = in_reply_to_discussion_id
+        if resolve_discussion:
+            payload["resolve_discussion"] = True
+        r = await self.client.post(
+            f"projects/{project_id}/merge_requests/{iid}/draft_notes", json=payload
+        )
+        if r.status_code == 400 and position is not None:
+            raise PositionError("Anchor not positionable")
+        r.raise_for_status()
+        return draft_note(r.json())
+
     async def reply(self, project_id, iid, discussion_id, body):
         r = await self.client.post(
             f"projects/{project_id}/merge_requests/{iid}/discussions/{discussion_id}/notes",
@@ -229,6 +291,7 @@ class FakeForge:
         self.roles = {}
         self.replies = []
         self.projects = {}
+        self.draft_notes = []
 
     async def get_merge_request(self, project_id, iid):
         if self.error:
@@ -277,6 +340,31 @@ class FakeForge:
         self.discussions.append(Discussion(id=str(note.id), notes=[note]))
         return note
 
+    async def list_draft_notes(self, project_id, iid):
+        return list(self.draft_notes)
+
+    async def post_draft_note(
+        self,
+        project_id,
+        iid,
+        body,
+        position=None,
+        in_reply_to_discussion_id=None,
+        resolve_discussion=False,
+    ):
+        if self.bad_position and position is not None:
+            raise PositionError()
+        note = DraftNote(
+            id=len(self.draft_notes) + 1,
+            body=body,
+            author_id=self.bot_id,
+            file=position.new_path if position else None,
+            discussion_id=in_reply_to_discussion_id,
+            resolve_discussion=resolve_discussion,
+        )
+        self.draft_notes.append(note)
+        return note
+
     async def reply(self, project_id, iid, discussion_id, body):
         self.replies.append((discussion_id, body))
         note = Note(id=len(self.comments) + 1, body=body, author_id=self.bot_id)
@@ -311,6 +399,29 @@ class Note(BaseModel):
     id: int
     body: str
     author_id: int = 0
+
+
+class DraftNote(BaseModel):
+    """A comment pending publication, visible only to the account that wrote it."""
+
+    id: int
+    body: str = ""
+    author_id: int = 0
+    file: str | None = None
+    discussion_id: str | None = None
+    resolve_discussion: bool = False
+
+
+def draft_note(payload):
+    position = payload.get("position") or {}
+    return DraftNote(
+        id=payload["id"],
+        body=payload.get("note") or "",
+        author_id=payload.get("author_id") or 0,
+        file=position.get("new_path") or position.get("old_path"),
+        discussion_id=payload.get("discussion_id"),
+        resolve_discussion=bool(payload.get("resolve_discussion")),
+    )
 
 
 class Discussion(BaseModel):

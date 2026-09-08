@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from reviewer.agents.recheck import judge
 from reviewer.findings.models import RECHECK_RESOLVING, Evidence
 from reviewer.findings.validator import read_lines
-from reviewer.publish.publisher import existing
+from reviewer.publish.publisher import existing, pending
 from reviewer.publish.renderer import recheck_marker, render_recheck
 from reviewer.publish.rereview import reanchor
 
@@ -49,20 +49,23 @@ class ThreadVerdict(BaseModel):
     judged: bool = False
 
 
-async def collect(forge, store, project, iid, previous_findings, head_sha):
+async def collect(forge, store, project, iid, previous_findings, head_sha, draft=False):
     """Unresolved reviewer-owned threads paired with the finding that opened them.
 
     Threads already answered for this head are dropped, so a redelivered job or
-    a second manual recheck neither re-posts nor re-spends tokens.
+    a second manual recheck neither re-posts nor re-spends tokens. A drafted
+    answer counts as an answer: its reply is waiting as a draft note rather than
+    in the thread, so the pending drafts are searched for the same marker.
     """
     fingerprints, _ = await existing(forge, project, iid)
+    _, drafts = await pending(forge, project, iid) if draft else (None, [])
     bot = await forge.identity()
     known = {f.fingerprint: f for f in previous_findings}
     threads = []
     for fingerprint, discussion in fingerprints.items():
-        if any(
-            recheck_marker(fingerprint, head_sha) in note.body
-            for note in discussion.notes
+        marker = recheck_marker(fingerprint, head_sha)
+        if any(marker in note.body for note in discussion.notes) or any(
+            marker in note.body for note in drafts
         ):
             continue
         finding = known.get(fingerprint)
@@ -256,12 +259,25 @@ async def evaluate(
 async def publish(
     forge, store, project, iid, internal_project, verdicts, head_sha, draft=False
 ):
-    """Reply in each thread, and resolve the ones the new head answered."""
+    """Reply in each thread, and resolve the ones the new head answered.
+
+    A drafted recheck queues the same replies as GitLab draft notes, each
+    carrying the resolution it would apply, so publishing them later answers and
+    resolves the threads exactly as an applied run would have.
+    """
     posted = []
     for verdict in verdicts:
         body = render_recheck(verdict, head_sha)
         resolving = verdict.verdict in RECHECK_RESOLVING
-        if not draft:
+        if draft:
+            await forge.post_draft_note(
+                project,
+                iid,
+                body,
+                in_reply_to_discussion_id=verdict.discussion_id,
+                resolve_discussion=resolving,
+            )
+        else:
             await forge.reply(project, iid, verdict.discussion_id, body)
             if resolving:
                 await forge.resolve_discussion(project, iid, verdict.discussion_id)

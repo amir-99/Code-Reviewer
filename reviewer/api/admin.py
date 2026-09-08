@@ -42,8 +42,10 @@ async def inspect(review_id: str, request: Request):
     """Review progress plus, once analysis has run, its findings.
 
     The trigger endpoint answers before any work happens, so this is where a
-    manual run reads its results back. `report` carries the rendered comment for
-    a drafted run, which by definition was never posted to the merge request.
+    manual run reads its results back. `report` carries the rendered comment,
+    and `recheck` the answers the last recheck gave this review's open threads.
+    A drafted run's comments wait on the merge request as GitLab draft notes,
+    so both are the record of what was queued rather than posted.
     """
     store = request.app.state.store
     review = await store.get(review_id)
@@ -70,6 +72,7 @@ async def inspect(review_id: str, request: Request):
     body["findings"] = [summarise(f) for f in await store.findings_for(review_id)]
     snapshot = await store.snapshot(review_id) or {}
     body["report"] = snapshot.get("report")
+    body["recheck"] = snapshot.get("recheck")
     return body
 
 
