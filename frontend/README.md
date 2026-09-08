@@ -39,8 +39,13 @@ For local development (Python 3.12; no npm install required):
 ```sh
 REVIEWER_API_URL=http://127.0.0.1:8092 PORT=8093 python3 frontend/server.py
 node --check frontend/app.js
-node --test frontend/sse.test.js
+node --test frontend/sse.test.js frontend/flow.test.js
 ```
+
+`flow.js` holds the pipeline's shape and the pure reading of where a review is in
+it; `app.js` only paints what it returns. Adding a state or a fan-out lane means
+editing that one list. A new asset also has to be added to `ASSETS` in
+`server.py` and to the image's `COPY` line.
 
 The dashboard supports recent reviews, manual triggers, Jira story/epic and
 Confluence overrides, report modes, stored findings, plain-text reports, and a
@@ -52,13 +57,31 @@ The layout is a review rail beside a detail pane. The rail filters the recent
 reviews by status and by a free-text match on project, merge request, head sha,
 state, or decision. The detail pane leads with the review's state, decision,
 head, elapsed time, finding and blocking counts, commit-status delivery, and
-report mode, over a progress track, the fan-out stage chips, and the state
-trail; a partial review or a recorded error is called out above them. Activity,
+report mode, over a progress track, the pipeline flow, and the state trail; a
+partial review or a recorded error is called out above them.
+
+The flow is the pipeline drawn as it runs: sequential steps joined by links,
+the two gates that can end a review on a verified blocker, and the fan-out
+branching into the four lanes that run concurrently before the system stage
+rejoins them. Each step lights up as the review reaches it — walked steps carry
+the time the pipeline spent in them, the running one counts up, and the lanes
+report themselves as their stages finish. A step reached but never walked, by a
+milestone short circuit or a gate, is drawn as not run rather than as still to
+come, and a stage that came back partial, failed or without a completion keeps
+its step off "done" whatever the state moved on to. Only a published review
+fills the track: one that failed, was cancelled or was superseded stops where it
+stopped. Activity,
 findings, recheck, and report are tabs. The activity feed keeps one row per
-activity, so a started stage, work unit, or tool shows as running with a spinner
-until its own completion event lands on the same row with the elapsed time; a
-stream that ends without one is labelled rather than left spinning. Rows are
-indented by their parent activity and can be filtered by kind. Findings are
+activity, so a started stage, work unit, or tool shows as running with a live
+elapsed time that counts up until its own completion event lands on the same row
+with the time it took; a stream that ends without one is labelled rather than
+left spinning. State and run rows read as phase headings over the work they
+started, rows are indented under the activity that started them, and a partial
+or failed row is marked down its edge. Filters carry a count each, and the
+running badge names the stages still in flight rather than only counting them.
+The feed is bounded, and stages fan out in parallel, so the bound drops the
+oldest finished row: a row still waiting on its completion is kept however old
+it is. Findings are
 grouped by severity with a proportion bar, severity filters, evidence, and the
 model's confidence. Dark is the default palette; the header toggle switches to
 light and the choice is remembered per browser. `/` focuses the review filter
@@ -88,12 +111,29 @@ unknown review returns 404; invalid cursors return 400. The stream contains:
 
 | Event | Data |
 | --- | --- |
-| `snapshot` | Current review detail, findings and report; at connection and completion |
+| `snapshot` | Current review detail, findings and report, plus the `sequence` it already reflects; at connection and completion |
 | `activity` | `id`, `kind`, `at`, and `data`; SSE `id` equals the durable sequence |
 | `complete` | Terminal review `state`; the client should stop reconnecting |
 
-Activity `kind` is `state`, `agent`, `unit`, or `tool`. State payloads contain
-`state`. Other payloads contain a fixed operational `name`, `status`, unique
+A connecting client is sent the snapshot and then the activity replay that
+produced it. `sequence` is the newest event the snapshot already reflects, read
+before the body so a concurrent event is above it rather than lost: the
+dashboard replays activity at or below it into the feed without walking the
+header, trail or progress track through those states a second time.
+
+A terminal state is not the end of the run. The transition is committed before
+the commit status is delivered and before the worktree is torn down, and both
+still write activity, so the worker brackets its run with a `run` activity and
+the stream waits for that bracket to close before sending the final snapshot and
+`complete`. Without the wait a dashboard reports a review finished while its own
+activity is still arriving, and freezes on a commit status that had not been
+delivered yet. A review terminated without a run of its own — supersession,
+cancellation — has no bracket and completes at once, and a worker that dies
+inside its run holds the stream no longer than 30 seconds past the transition.
+
+Activity `kind` is `state`, `run`, `agent`, `unit`, `tool`, or `llm_attempt`.
+State payloads contain `state`; a gateway attempt carries its stage, attempt
+numbers and outcome, and is filtered with the tool it was made for. Other payloads contain a fixed operational `name`, `status`, unique
 `activity_id`, and optional `parent_id` linking nested calls. Status is
 `started`, `completed`, `partial`, `failed`, or `cancelled`. A completed tool
 invocation is not proof the analyzer found no defects. Parallel stage agents

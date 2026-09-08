@@ -1,4 +1,5 @@
 import {events} from './sse.js';
+import {FAILED, HALTED, TERMINAL, label as labels, walk} from './flow.js';
 
 const $ = id => document.getElementById(id);
 const el = (tag, text, cls) => {
@@ -9,27 +10,31 @@ const el = (tag, text, cls) => {
 };
 const all = selector => Array.from(document.querySelectorAll(selector));
 
-// The pipeline the orchestrator walks, and the fan-out stages it reports as agents.
-const PIPELINE = ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'PURPOSE_REVIEW', 'DESIGN_REVIEW',
-  'ANALYSIS_FAN_OUT', 'SYSTEM_CONTEXT_REVIEW', 'EVIDENCE_VALIDATION', 'FINDING_VERIFICATION',
-  'FINALIZATION', 'DECISION', 'PUBLISHED'];
-const STAGES = ['purpose', 'design', 'correctness', 'complexity', 'tests_', 'line_review', 'system_context'];
-const FAILED = new Set(['FAILED_CONTEXT', 'FAILED_INTERNAL']);
-const HALTED = new Set(['TERMINATED_EARLY', 'CANCELLED', 'SUPERSEDED']);
-const TERMINAL = new Set([...FAILED, ...HALTED, 'PUBLISHED']);
 const SEVERITIES = ['BLOCKER', 'REQUIRED', 'SUGGESTION', 'QUESTION', 'NIT', 'FYI', 'PRAISE'];
 const DECISIONS = {APPROVE: 'Approve', REQUEST_CHANGES: 'Request changes', COMMENT_ONLY: 'Comment only'};
 const VERDICTS = {fixed: 'Fixed', partially_fixed: 'Partially fixed', not_fixed: 'Still open',
   obsolete: 'No longer applies', unverifiable: 'Could not verify'};
 const CONFIDENCE = {high: 1, medium: 0.6, low: 0.3};
 const THEME_KEY = 'review-room-theme';
+// Kinds beyond the four the filter chips name, and the chip each belongs under:
+// a gateway attempt is reported inside the LLM tool call it was made for, and
+// the run bracket spans the states of one worker run.
+const GROUPS = {llm_attempt: 'tool', run: 'state'};
+const KINDS = {llm_attempt: 'llm'};
+const KEEP = 300;
 
 let token = '', selected = '', current = null, controller, refreshTimer, lastRecheck = null;
 let reviews = [], listFilter = 'all', listQuery = '', activityKind = 'all', severity = 'all', tabTouched = false;
-const activities = new Map();   // activity_id -> {row, status, depth, at}
+let snapshotSeq = 0;            // the newest event the last snapshot already reflects
+const activities = new Map();   // activity_id -> {row, kind, name, status, depth, at}
 const running = new Set();
+const stages = new Map();       // agent name -> {status, at, took}
+const stateAt = new Map();      // review state -> when the pipeline entered it
+const nodes = new Map();        // review state -> the flow node's elements
 
-const labels = value => String(value ?? '').replaceAll('_', ' ').trim().toLowerCase();
+const group = kind => GROUPS[kind] || kind;
+const shows = kind => activityKind === 'all' || activityKind === group(kind);
+
 const short = (sha, length = 8) => String(sha ?? '').slice(0, length);
 const tone = state => FAILED.has(state) ? 'bad' : HALTED.has(state) ? 'warn' : state === 'PUBLISHED' ? 'ok' : 'run';
 
@@ -213,37 +218,104 @@ function renderHead(review) {
     metric('Report mode', overrides.report_mode || 'project default'),
   );
 
-  const history = (review.history || []).slice(-14);
+  renderTrail(review.history);
+  renderPipeline(review.state, review.history);
+}
+
+function renderTrail(history) {
+  const states = (history || []).slice(-14);
   $('trail').replaceChildren();
-  history.forEach((state, index) => {
+  states.forEach((state, index) => {
     if (index) $('trail').append(el('i', '›'));
-    $('trail').append(el('span', labels(state), index === history.length - 1 ? 'now' : ''));
+    $('trail').append(el('span', labels(state), index === states.length - 1 ? 'now' : ''));
   });
-
-  renderProgress(review.state);
 }
 
-function renderProgress(state) {
-  const index = PIPELINE.indexOf(state);
-  const done = TERMINAL.has(state) || index < 0;
-  const percent = done ? 100 : Math.round((index / (PIPELINE.length - 1)) * 100);
-  $('track-fill').style.setProperty('--progress', percent);
-  $('track').classList.toggle('running', !TERMINAL.has(state));
+/* ---------- pipeline flow ---------- */
+
+function buildFlow() {
+  nodes.clear();
+  const flow = $('flow');
+  flow.replaceChildren();
+  const cell = (kind, text) => {
+    const box = el(kind === 'lane' ? 'span' : 'div', '', kind);
+    const top = el('span', '', 'n-top');
+    top.append(el('i', '', 'n-dot'), el('span', text, 'n-label'), el('span', '', 'n-time'));
+    box.append(top, el('span', '', 'n-note'));
+    return box;
+  };
+  // The flow's own shape, read from an unstarted review: labels and lanes only.
+  walk('INIT').steps.forEach((step, index) => {
+    if (index) flow.append(el('i', '', 'link'));
+    const node = cell('node', step.label);
+    node.dataset.node = step.state;
+    const entry = {node, lanes: new Map()};
+    if (!step.lanes.length) flow.append(node);
+    else {
+      // The fan-out is the one place the flow branches: its lanes hang off the
+      // node that dispatched them and rejoin at the step that follows.
+      const branch = el('div', '', 'branch');
+      const lanes = el('div', '', 'lanes');
+      for (const lane of step.lanes) {
+        const box = cell('lane', lane.label);
+        box.dataset.lane = lane.stage;
+        entry.lanes.set(lane.stage, box);
+        lanes.append(box);
+      }
+      branch.append(node, lanes);
+      flow.append(branch);
+    }
+    nodes.set(step.state, entry);
+  });
 }
 
-function resetStages() {
-  $('stages').replaceChildren(...STAGES.map(name => {
-    const node = el('span', labels(name), 'stage');
-    node.dataset.stage = name;
-    return node;
-  }));
+function paint(target, step) {
+  if (!target) return;
+  target.className = `${target.dataset.lane ? 'lane' : 'node'} ${step.status}`;
+  const time = target.querySelector('.n-time');
+  delete time.dataset.since;
+  if (step.status === 'active' && Number.isFinite(step.at)) {
+    // A step in flight counts up; a finished one keeps the time it took.
+    time.dataset.since = step.at;
+    time.textContent = span(Date.now() - step.at);
+  } else time.textContent = Number.isFinite(step.took) ? span(step.took) : '';
+  target.querySelector('.n-note').textContent = step.note ?? '';
+  // Colour alone never carries the status: the title always spells it out.
+  target.title = `${step.label} · ${step.status}${step.note ? ` · ${step.note}` : ''}`;
 }
 
-function markStage(data) {
-  const node = Array.from($('stages').children).find(child => child.dataset.stage === data.name);
-  if (!node) return;
-  node.className = `stage ${data.status === 'started' ? 'active' : data.status === 'completed' ? 'done' : 'warning'}`;
-  node.textContent = data.status === 'started' ? labels(data.name) : `${labels(data.name)} · ${data.status}`;
+function renderPipeline(state = current?.state ?? 'INIT', history = current?.history ?? []) {
+  const flow = walk(state, history, stages, stateAt);
+  $('track-fill').style.setProperty('--progress', flow.percent);
+  $('track').className = `track${flow.terminal ? '' : ' running'}${flow.tone ? ` ${flow.tone}` : ''}`;
+  for (const step of flow.steps) {
+    const entry = nodes.get(step.state);
+    if (!entry) continue;
+    paint(entry.node, step);
+    for (const lane of step.lanes) paint(entry.lanes.get(lane.stage), lane);
+  }
+}
+
+function applyState(state) {
+  // A snapshot already carries every state it walked, and the stream replays the
+  // events that produced them. Applying one twice doubles the trail and rewinds
+  // the header, so only a state the review is not already in moves it on.
+  if (!current || current.state === state) return;
+  current.state = state;
+  current.history = [...(current.history || []), state];
+  $('state').textContent = labels(state);
+  renderTrail(current.history);
+  renderPipeline(state, current.history);
+}
+
+function markStage(item) {
+  const {data, at} = item;
+  const when = Date.parse(at);
+  const open = stages.get(data.name);
+  stages.set(data.name, data.status === 'started'
+    ? {status: 'started', at: when}
+    : {status: data.status, at: open?.at, took: Number.isFinite(open?.at) ? when - open.at : null});
+  renderPipeline();
 }
 
 /* ---------- findings ---------- */
@@ -425,83 +497,131 @@ function statusTone(status) {
   return '';
 }
 
-function fillRight(row, status, took) {
+function fillRight(row, status, took, since) {
   const right = row.lastChild;
   right.replaceChildren();
+  row.dataset.status = status || '';
   if (took) right.append(el('span', took, 'took'));
-  if (status === 'started') right.append(el('i', '', 'spinner'));
-  else right.append(el('span', status || 'transition', `badge ${statusTone(status)}`));
+  if (status === 'started') {
+    // Something still in flight is more useful counting up than spinning: a work
+    // unit four minutes in is the reason a review looks stuck.
+    const live = el('span', '0s', 'took live');
+    if (Number.isFinite(since)) live.dataset.since = since;
+    right.append(live, el('i', '', 'spinner'));
+  } else right.append(el('span', status || 'transition', `badge ${statusTone(status)}`));
 }
 
 function activityRow(kind, name, parent, at, status, depth) {
   const row = el('li', '', `k-${kind}${status === 'started' ? ' running' : ''}`);
   row.style.setProperty('--depth', depth);
   row.dataset.kind = kind;
-  row.hidden = activityKind !== 'all' && activityKind !== kind;
+  row.hidden = !shows(kind);
   const time = el('time', new Date(at).toLocaleTimeString());
   time.dateTime = at ?? '';
   const label = el('span', '', 'label');
-  label.append(el('span', kind, 'kind'), el('span', name, 'name'));
+  label.append(el('span', KINDS[kind] || kind, 'kind'), el('span', name, 'name'));
   if (parent) label.append(el('span', `· ${parent}`, 'parent'));
   row.append(time, label, el('span', '', 'right'));
-  fillRight(row, status, null);
+  fillRight(row, status, null, Date.parse(at));
   return row;
 }
 
 function countRunning() {
-  $('running').hidden = !running.size;
-  $('running').textContent = `${running.size} running`;
+  // Name what is in flight rather than only counting it: with four stages fanned
+  // out at once, which ones are still going is the question being asked.
+  const named = [...running].map(id => activities.get(id)).filter(Boolean)
+    .filter(entry => entry.kind === 'agent' || entry.kind === 'unit')
+    .map(entry => entry.name);
+  const badge = $('running');
+  badge.hidden = !running.size;
+  badge.textContent = named.length
+    ? `${running.size} running · ${named.slice(0, 3).join(' · ')}${named.length > 3 ? ` +${named.length - 3}` : ''}`
+    : `${running.size} running`;
+}
+
+// One count per filter, read off the feed so a bounded row never inflates it.
+function tally() {
+  const counts = {all: 0, state: 0, agent: 0, unit: 0, tool: 0};
+  for (const row of $('activity').children) {
+    counts.all++;
+    const key = group(row.dataset.kind);
+    if (key in counts) counts[key]++;
+  }
+  for (const node of all('#activity-filters .n')) node.textContent = String(counts[node.dataset.tally] ?? 0);
 }
 
 function addActivity(item) {
   const {data = {}, kind} = item;
+  // Everything at or below the snapshot's cursor is a replay of what the
+  // snapshot already reflects. Those events still belong in the feed, where they
+  // are the record of what ran, but they must not move the header a second time.
   if (kind === 'state') {
-    if (current) { current.state = data.state; current.history = [...(current.history || []), data.state]; }
-    $('state').textContent = labels(data.state);
-    renderProgress(data.state);
-    const trail = $('trail');
-    if (trail.lastChild) trail.lastChild.className = '';
-    trail.append(el('i', '›'), el('span', labels(data.state), 'now'));
+    // Replayed or live, the times are what the flow reports each step took.
+    if (!stateAt.has(data.state)) stateAt.set(data.state, Date.parse(item.at));
+    if (Number(item.id) > snapshotSeq) applyState(data.state);
+    else renderPipeline();
   }
-  if (kind === 'agent') markStage(data);
+  if (kind === 'agent') markStage(item);
 
   const known = data.activity_id ? activities.get(data.activity_id) : null;
   if (known) {
     // One row per activity: the completion lands on the row its start opened.
     known.status = data.status;
     known.row.classList.toggle('running', data.status === 'started');
-    fillRight(known.row, data.status, span(Date.parse(item.at) - known.at));
-    running.delete(data.activity_id);
+    fillRight(known.row, data.status, span(Date.parse(item.at) - known.at), Date.parse(item.at));
+    // A recovered run reopens its own marker: only a finish stops counting it.
+    if (data.status === 'started') running.add(data.activity_id);
+    else running.delete(data.activity_id);
     countRunning();
     return;
   }
 
   const ancestor = data.parent_id ? activities.get(data.parent_id) : null;
   const depth = kind === 'state' ? 0 : Math.min((ancestor ? ancestor.depth + 1 : 0), 4);
+  // A gateway attempt reports its outcome instead of a start/finish pair.
+  const status = kind === 'llm_attempt'
+    ? (data.outcome === 'success' ? 'completed' : labels(data.outcome) || 'attempt')
+    : data.status;
   const name = kind === 'state' ? labels(data.state)
-    : kind === 'agent' ? labels(data.name) : String(data.name ?? '');
-  const row = activityRow(kind, name, ancestor?.name, item.at, data.status, depth);
+    : kind === 'agent' ? labels(data.name)
+    : kind === 'llm_attempt' ? `${labels(data.stage)} · attempt ${data.transport_attempt ?? 1}`
+    : String(data.name ?? '');
+  const row = activityRow(kind, name, ancestor?.name, item.at, status, depth);
   if (data.activity_id) {
     row.dataset.activity = data.activity_id;
-    activities.set(data.activity_id, {row, name, depth, status: data.status, at: Date.parse(item.at)});
-    if (data.status === 'started') running.add(data.activity_id); else running.delete(data.activity_id);
+    activities.set(data.activity_id, {row, kind, name, depth, status, at: Date.parse(item.at)});
+    if (status === 'started') running.add(data.activity_id); else running.delete(data.activity_id);
     countRunning();
   }
   $('activity').prepend(row);
   $('activity-empty').hidden = true;
-  // The feed is bounded; every retained event stays available through the API.
-  while ($('activity').children.length > 300) {
-    const dropped = $('activity').lastChild;
-    if (dropped.dataset.activity) activities.delete(dropped.dataset.activity);
-    dropped.remove();
+  prune();
+}
+
+// The feed is bounded; every retained event stays available through the API.
+// Rows for activities still in flight are kept whatever their age: stages fan
+// out in parallel, so the oldest rows are the ones still waiting on a completion
+// that has to land on the row its start opened.
+function prune() {
+  const list = $('activity');
+  let node = list.lastChild;
+  while (node && list.children.length > KEEP) {
+    const previous = node.previousSibling;
+    const id = node.dataset.activity;
+    if (!id || !running.has(id)) {
+      if (id) activities.delete(id);
+      node.remove();
+    }
+    node = previous;
   }
-  $('tabn-activity').textContent = String($('activity').children.length);
+  $('tabn-activity').textContent = String(list.children.length);
+  tally();
 }
 
 function filterActivity() {
   let visible = 0;
   for (const row of $('activity').children) {
-    row.hidden = activityKind !== 'all' && activityKind !== row.dataset.kind;
+    row.hidden = !shows(row.dataset.kind);
     if (!row.hidden) visible++;
   }
   $('activity-empty').hidden = visible > 0;
@@ -519,12 +639,11 @@ function closeOpenActivities() {
   }
   running.clear();
   countRunning();
-  for (const node of $('stages').children) {
-    if (!node.classList.contains('done') && !node.classList.contains('warning')) {
-      node.className = 'stage';
-      node.textContent = `${labels(node.dataset.stage)} · not reported`;
-    }
+  // A stage whose completion never landed is not a stage that passed.
+  for (const [name, stage] of stages) {
+    if (stage.status === 'started') stages.set(name, {...stage, status: 'no completion'});
   }
+  renderPipeline();
 }
 
 /* ---------- tabs ---------- */
@@ -553,6 +672,7 @@ const delay = (ms, signal) => new Promise(resolve => {
 
 function render(review) {
   current = review;
+  snapshotSeq = Number(review.sequence ?? 0);
   renderHead(review);
   renderFindings();
   renderReport(review.report);
@@ -593,6 +713,7 @@ function select(id) {
   controller = new AbortController();
   selected = id;
   current = null;
+  snapshotSeq = 0;
   tabTouched = false;
   severity = 'all';
   activities.clear();
@@ -611,8 +732,11 @@ function select(id) {
   $('trail').replaceChildren();
   $('alert').hidden = true;
   $('decision').hidden = true;
-  renderProgress('INIT');
-  resetStages();
+  stages.clear();
+  stateAt.clear();
+  buildFlow();
+  renderPipeline('INIT', []);
+  tally();
   renderFindings();
   renderReport('');
   renderRecheck(null);
@@ -626,6 +750,7 @@ function select(id) {
 
 setInterval(() => {
   for (const node of all('[data-ago]')) node.textContent = ago(node.dataset.ago);
+  for (const node of all('[data-since]')) node.textContent = span(Date.now() - Number(node.dataset.since));
   const elapsed = document.querySelector('[data-elapsed]');
   if (elapsed && current && !current.finished_at) {
     const started = Date.parse(current.started_at ?? '');

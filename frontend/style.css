@@ -434,6 +434,10 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent));
   transition: width .5s ease;
 }
+/* A review that failed or was halted stops where it stopped: its track keeps
+   the reached width and drops the completed palette. */
+.track.bad .track-fill { background: linear-gradient(90deg, color-mix(in srgb, var(--red) 55%, transparent), var(--red)); }
+.track.warn .track-fill { background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 55%, transparent), var(--amber)); }
 .track.running .track-fill {
   background-image: linear-gradient(90deg, color-mix(in srgb, var(--accent) 45%, transparent), var(--accent), color-mix(in srgb, var(--accent) 45%, transparent));
   background-size: 200% 100%;
@@ -441,27 +445,77 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
 }
 @keyframes sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
-.stages { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.stage {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 999px;
+/* The pipeline as a flow: nodes joined by links, lighting up as the review
+   walks them, with the fan-out branching into the lanes that run concurrently. */
+.flow { display: flex; flex-wrap: wrap; align-items: center; row-gap: 8px; margin-top: 14px; }
+.node, .lane {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  border-radius: 10px;
   border: 1px solid var(--line);
   background: var(--surface-2);
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: capitalize;
+  transition: color .3s ease, background-color .3s ease, border-color .3s ease;
 }
-.stage::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .5; }
-.stage.done { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); }
-.stage.done::before { opacity: 1; }
-.stage.active { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); }
-.stage.active::before { opacity: 1; animation: pulse 1.4s ease-out infinite; }
-.stage.warning { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); background: var(--red-soft); }
-.stage.warning::before { opacity: 1; }
+.node { min-width: 104px; }
+.n-top { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 640; }
+.n-label { color: var(--text-dim); white-space: nowrap; }
+.n-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .4; flex: none; }
+.n-time { margin-left: auto; padding-left: 8px; font-family: var(--mono); font-size: 9.5px; opacity: .85; }
+.n-note {
+  font-size: 9px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: .75;
+  white-space: nowrap;
+}
+.node.done, .lane.done { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); }
+.node.done .n-label, .lane.done .n-label { color: var(--accent); }
+.node.done .n-dot, .lane.done .n-dot { opacity: 1; }
+.node.active, .lane.active {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 50%, transparent);
+  background: var(--amber-soft);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.node.active .n-label, .lane.active .n-label { color: var(--amber); }
+.node.active .n-dot, .lane.active .n-dot { opacity: 1; animation: pulse 1.4s ease-out infinite; }
+.node.warn, .lane.warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: var(--amber-soft); }
+.node.warn .n-label, .lane.warn .n-label { color: var(--amber); }
+.node.warn .n-dot, .lane.warn .n-dot { opacity: 1; }
+.node.failed, .node.stopped, .lane.failed {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  background: var(--red-soft);
+}
+.node.stopped { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); }
+.node.failed .n-label, .node.stopped .n-label, .lane.failed .n-label { color: inherit; }
+.node.failed .n-dot, .node.stopped .n-dot, .lane.failed .n-dot { opacity: 1; }
+.node.skipped, .lane.skipped { border-style: dashed; opacity: .5; }
+.node.pending, .lane.pending { opacity: .68; }
+
+.link { flex: none; width: 12px; height: 2px; border-radius: 2px; background: var(--line); }
+.flow .node.done + .link, .flow .branch:has(.node.done) + .link { background: var(--accent); }
+.flow .node.active + .link, .flow .branch:has(.node.active) + .link {
+  background: linear-gradient(90deg, var(--amber), color-mix(in srgb, var(--amber) 20%, transparent));
+}
+
+/* The one branch in the flow: lanes hang off the node that dispatched them. */
+.branch { display: flex; flex-direction: column; gap: 5px; }
+.lanes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-soft);
+  border-bottom-left-radius: 6px;
+}
+.lane { padding: 4px 8px; border-radius: 8px; }
+.lane .n-top { font-size: 10px; }
 
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
 .actions .hint { flex: 1; min-width: 220px; }
@@ -507,11 +561,27 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
   grid-template-columns: 58px 1fr auto;
   align-items: baseline;
   gap: 10px;
-  padding: 9px 0 9px calc(var(--depth, 0) * 16px);
+  padding: 8px 6px 8px calc(6px + var(--depth, 0) * 18px);
   border-top: 1px solid var(--line-soft);
   font-size: 12px;
   animation: rise .28s ease both;
+  /* One guide line per row, drawn at the indent of the activity it nests under.
+     A top-level row puts it off the left edge, where it is not drawn. */
+  background-image: linear-gradient(var(--line), var(--line));
+  background-repeat: no-repeat;
+  background-size: 1px calc(100% - 8px);
+  background-position: calc(var(--depth, 0) * 18px - 4px) 4px;
 }
+/* A phase reads as a heading over the work it started, not as another row. */
+.activity li.k-state, .activity li.k-run {
+  background-color: var(--surface-2);
+  border-top-color: var(--line);
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.activity li.k-run .name, .activity li.k-state .name { letter-spacing: .01em; }
+.activity li[data-status="partial"], .activity li[data-status="no completion"] { box-shadow: inset 2px 0 0 var(--amber); }
+.activity li[data-status="failed"], .activity li[data-status="cancelled"] { box-shadow: inset 2px 0 0 var(--red); }
 .activity li:first-child { border-top: none; }
 @keyframes rise { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
 .activity time { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
@@ -529,12 +599,16 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
 .activity li.k-tool .kind { color: var(--blue); }
 .activity li.k-unit .kind { color: var(--violet); }
 .activity li.k-state .kind { color: var(--amber); }
+.activity li.k-llm_attempt .kind { color: var(--blue); }
+.activity li.k-run .kind { color: var(--text-dim); }
+.activity li.k-run .name { font-weight: 620; }
 .activity li.k-state .name { text-transform: capitalize; font-weight: 620; }
 .activity .name { color: var(--text-dim); }
 .activity li.running .name { color: var(--text); }
 .activity .parent { color: var(--muted); }
 .activity .right { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 .activity .took { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.activity .took.live { color: var(--amber); }
 .spinner {
   width: 9px;
   height: 9px;

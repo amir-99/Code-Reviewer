@@ -122,7 +122,7 @@
         <dl id="metrics" class="metrics"></dl>
         <div class="pipeline">
           <div id="track" class="track"><div id="track-fill" class="track-fill"></div></div>
-          <div id="stages" class="stages"></div>
+          <div id="flow" class="flow" aria-label="Review pipeline"></div>
         </div>
         <div id="trail" class="trail" aria-label="State history"></div>
         <div class="actions">
@@ -142,14 +142,15 @@
         <div class="card-head">
           <h2>Live activity <span id="running" class="badge tone-good" hidden>0 running</span></h2>
           <div class="chips" id="activity-filters" role="group" aria-label="Activity filter">
-            <button class="chip on" type="button" data-kind="all">All</button>
-            <button class="chip" type="button" data-kind="state">States</button>
-            <button class="chip" type="button" data-kind="agent">Stages</button>
-            <button class="chip" type="button" data-kind="unit">Units</button>
-            <button class="chip" type="button" data-kind="tool">Tools</button>
+            <button class="chip on" type="button" data-kind="all">All<span class="n" data-tally="all">0</span></button>
+            <button class="chip" type="button" data-kind="state">Phases<span class="n" data-tally="state">0</span></button>
+            <button class="chip" type="button" data-kind="agent">Stages<span class="n" data-tally="agent">0</span></button>
+            <button class="chip" type="button" data-kind="unit">Units<span class="n" data-tally="unit">0</span></button>
+            <button class="chip" type="button" data-kind="tool">Tools<span class="n" data-tally="tool">0</span></button>
           </div>
         </div>
-        <p class="hint">Operational activity only — prompts, code, model reasoning and raw tool output stay private.</p>
+        <p class="hint">Operational activity only — prompts, code, model reasoning and raw tool output stay private.
+          Stages fan out concurrently, so rows interleave; each is indented under the activity that started it.</p>
         <ol id="activity" class="activity" aria-label="Review activity" aria-live="polite"></ol>
         <p id="activity-empty" class="empty-line">Waiting for the first event…</p>
       </section>

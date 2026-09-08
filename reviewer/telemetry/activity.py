@@ -90,3 +90,50 @@ async def llm_attempt(**metadata):
             )
         except Exception:
             pass
+
+
+# The run bracket. A review reaches a terminal state before its worker is done:
+# the commit status is delivered and the worktree torn down afterwards, and both
+# still write activity. Bracketing the run lets a reader tell a review that has
+# reached a terminal state from one whose run is actually over.
+RUN = "run"
+CLOSED = {
+    "PUBLISHED": "completed",
+    "TERMINATED_EARLY": "completed",
+    "FAILED_CONTEXT": "failed",
+    "FAILED_INTERNAL": "failed",
+    "CANCELLED": "cancelled",
+    "SUPERSEDED": "cancelled",
+}
+
+
+async def _run_event(store, review_id, status):
+    # One durable row per run, opened and closed on the same activity id.
+    try:
+        await store.append_event(
+            review_id,
+            RUN,
+            dict(
+                name="review run",
+                status=status,
+                activity_id=f"{RUN}:{review_id}",
+                parent_id=None,
+            ),
+        )
+    except Exception:
+        pass
+
+
+async def open_run(store, review_id):
+    """Record that a worker has taken this review's run."""
+    await _run_event(store, review_id, "started")
+
+
+async def close_run(store, review_id):
+    """Record that the worker is finished with this review, terminal or not."""
+    try:
+        review = await store.get(review_id)
+    except Exception:
+        return
+    state = getattr(review, "state", None)
+    await _run_event(store, review_id, CLOSED.get(str(state), "failed"))

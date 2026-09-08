@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -11,16 +12,48 @@ from reviewer.orchestrator.states import TERMINAL
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
 
+# A worker that dies between the terminal transition and its closing marker
+# would otherwise hold the stream open for ever.
+CLOSING_GRACE = 30.0
+
 
 def frame(event, data, sequence=None):
     prefix = f"id: {sequence}\n" if sequence is not None else ""
     return f"{prefix}event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
+async def picture(request, review_id):
+    """A snapshot frame that says which events it already reflects.
+
+    The cursor is read first, so an event committed while the body is being
+    assembled is above it and gets applied by the client rather than dropped.
+    """
+    sequence = await request.app.state.store.last_sequence(review_id)
+    return frame("snapshot", dict(await inspect(review_id, request), sequence=sequence))
+
+
+async def closing(store, review):
+    """Whether a terminal review's worker is still finishing its run.
+
+    The terminal transition is committed before the commit status is delivered
+    and before the worktree is torn down, and both still write activity. Ending
+    the stream on the transition alone reports the review finished while its own
+    run is still going, and freezes the snapshot on an undelivered status.
+    """
+    if await store.run_state(review.id) != "started":
+        return False
+    finished = getattr(review, "finished_at", None)
+    if finished is None:
+        return True
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - finished).total_seconds() < CLOSING_GRACE
+
+
 async def stream(request, review_id, after):
     store = request.app.state.store
     yield "retry: 2000\n\n"
-    yield frame("snapshot", await inspect(review_id, request))
+    yield await picture(request, review_id)
     ticks = 0
     while not await request.is_disconnected():
         # Read terminal state first, then drain events committed with that state.
@@ -31,8 +64,9 @@ async def stream(request, review_id, after):
             yield frame("activity", row, after)
         if len(rows) == 200:
             continue
-        if review.state in TERMINAL:
-            yield frame("snapshot", await inspect(review_id, request))
+        if review.state in TERMINAL and not await closing(store, review):
+            # Read last, so the closing snapshot carries the delivered status.
+            yield await picture(request, review_id)
             yield frame("complete", {"state": review.state})
             return
         ticks += 1

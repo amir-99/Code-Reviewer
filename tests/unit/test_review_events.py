@@ -1,13 +1,23 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from reviewer.api.events import stream
+from reviewer.api.events import CLOSING_GRACE, closing, stream
 from reviewer.config.schema import Settings
 from reviewer.main import create_app
-from reviewer.telemetry.activity import activity, sink
+from reviewer.telemetry.activity import activity, close_run, open_run, sink
+
+
+def connected(store):
+    async def never():
+        return False
+
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(store=store)), is_disconnected=never
+    )
 
 
 async def test_authenticated_list_and_sse_replay(store):
@@ -164,3 +174,68 @@ async def test_concurrent_activity_has_unique_ordered_sequences(store):
     )
     rows = await store.events(review.id)
     assert [r["id"] for r in rows] == list(range(1, 22))
+
+
+async def test_terminal_state_is_not_the_end_of_the_run(store):
+    """The commit status is delivered after the terminal transition.
+
+    Completing the stream on the transition alone reports the review finished
+    while its worker is still going, and freezes its snapshot on a status that
+    had not been delivered yet.
+    """
+    review = await store.accept(7, 2, "a" * 40, "bracket")
+    await open_run(store, review.id)
+    await store.transition(review.id, "CANCELLED")
+
+    assert await closing(store, await store.get(review.id)) is True
+    await store.mark_status(review.id)
+    await close_run(store, review.id)
+    assert await closing(store, await store.get(review.id)) is False
+    assert (await store.run_state(review.id)) == "cancelled"
+
+    frames = [frame async for frame in stream(connected(store), review.id, 0)]
+    # INIT, the run opening, CANCELLED and the run closing all reach the client.
+    assert sum("event: activity" in frame for frame in frames) == 4
+    assert "event: complete" in frames[-1]
+    assert '"status_delivered": true' in frames[-2]
+
+
+async def test_an_abandoned_run_does_not_hold_the_stream_open(store):
+    """A worker can die between the transition and its closing marker."""
+    review = await store.accept(7, 2, "a" * 40, "abandoned")
+    await open_run(store, review.id)
+    await store.transition(review.id, "CANCELLED")
+    stale = datetime.now(UTC) - timedelta(seconds=CLOSING_GRACE + 1)
+    assert (
+        await closing(store, SimpleNamespace(id=review.id, finished_at=stale)) is False
+    )
+
+
+async def test_a_review_with_no_run_marker_completes_at_once(store):
+    """Supersession and cancellation are recorded without a worker run."""
+    review = await store.accept(7, 2, "a" * 40, "unrun")
+    await store.transition(review.id, "SUPERSEDED")
+    assert await closing(store, await store.get(review.id)) is False
+
+
+async def test_snapshot_reports_the_events_it_already_reflects(store):
+    """Replayed state events must not move a header the snapshot has walked."""
+    review = await store.accept(7, 2, "a" * 40, "cursor")
+    await store.transition(review.id, "CONTEXT_COLLECTION")
+    await store.transition(review.id, "CANCELLED")
+    frames = [frame async for frame in stream(connected(store), review.id, 0)]
+    opening = next(frame for frame in frames if "event: snapshot" in frame)
+    assert '"sequence": 3' in opening
+    assert '"id: 3' not in opening
+
+
+async def test_closing_a_run_never_fails_the_review(store):
+    class Broken:
+        async def get(self, review_id):
+            raise RuntimeError("database unavailable")
+
+        async def append_event(self, *args):
+            raise RuntimeError("database unavailable")
+
+    await open_run(Broken(), "review")
+    await close_run(Broken(), "review")

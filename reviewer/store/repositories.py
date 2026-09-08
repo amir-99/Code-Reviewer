@@ -371,6 +371,32 @@ class Store:
             if review is not None:
                 await self._event(session, review_id, kind, data)
 
+    async def run_state(self, review_id):
+        """The status of the newest run marker, or None if no run was recorded.
+
+        A stream uses this to tell a review that has reached a terminal state
+        from one whose worker has actually finished with it.
+        """
+        async with self.sessions() as session:
+            row = await session.scalar(
+                select(ReviewEvent)
+                .where(ReviewEvent.review_id == review_id, ReviewEvent.kind == "run")
+                .order_by(ReviewEvent.sequence.desc())
+                .limit(1)
+            )
+            return (row.data or {}).get("status") if row is not None else None
+
+    async def last_sequence(self, review_id):
+        """The newest event sequence, so a snapshot can say what it reflects."""
+        async with self.sessions() as session:
+            return (
+                await session.scalar(
+                    select(func.coalesce(func.max(ReviewEvent.sequence), 0)).where(
+                        ReviewEvent.review_id == review_id
+                    )
+                )
+            ) or 0
+
     async def events(self, review_id, after=0, limit=200):
         async with self.sessions() as session:
             rows = (

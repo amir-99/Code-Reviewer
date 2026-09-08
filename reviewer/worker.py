@@ -143,11 +143,21 @@ async def receive_event(ctx, payload):
 async def run_review(ctx, review_id):
     from opentelemetry import trace
 
+    from reviewer.telemetry.activity import close_run, open_run
+
     logger.info("review_started", review_id=review_id)
     with trace.get_tracer(__name__).start_as_current_span(
         "review", attributes={"review.id": review_id}
     ):
-        return await ctx["machine"].run(review_id)
+        # A terminal state is committed before the run is over: the commit
+        # status is delivered and the worktree torn down after it, and both
+        # still write activity. The bracket is what tells a reader the run
+        # itself has ended; it is best effort and never fails the review.
+        await open_run(ctx["store"], review_id)
+        try:
+            return await ctx["machine"].run(review_id)
+        finally:
+            await close_run(ctx["store"], review_id)
 
 
 async def recheck_review(ctx, project_id, iid):
