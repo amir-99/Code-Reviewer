@@ -1,7 +1,14 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveInt,
+    SecretStr,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -98,6 +105,7 @@ class Settings(BaseSettings):
     gitlab_base_url: str = "https://gitlab.example.invalid"
     gitlab_token: SecretStr = SecretStr("")
     git_read_token: SecretStr = SecretStr("")
+    project_ids: list[PositiveInt] = Field(default_factory=list)
     webhook_secrets: dict[int, SecretStr] = Field(default_factory=dict)
     admin_token: SecretStr = SecretStr("")
     milestone: Literal["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"] = (

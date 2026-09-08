@@ -36,7 +36,8 @@ Required deployment settings:
 |---|---|
 | `GITLAB_BASE_URL`, `GITLAB_TOKEN` | Internal forge URL and publication API token |
 | `GIT_READ_TOKEN` | Separate read-only repository access token |
-| `WEBHOOK_SECRETS` | JSON object mapping numeric project IDs to distinct secrets |
+| `PROJECT_IDS` | JSON array of numeric GitLab project IDs to onboard, e.g. `[123,456]` |
+| `WEBHOOK_SECRETS` | Optional JSON object mapping project IDs to distinct webhook secrets; these IDs are also onboarded for compatibility |
 | `JIRA_BASE_URL`, `JIRA_TOKEN` | Jira Data Center REST v2, PAT authentication |
 | `CONFLUENCE_BASE_URL`, `CONFLUENCE_TOKEN` | Confluence Data Center REST content API, PAT |
 | `GATEWAY_BASE_URL`, `GATEWAY_KEY` | Internal OpenAI-compatible gateway, including `/v1` if applicable |
@@ -204,8 +205,17 @@ must be reachable only over your controlled internal Docker transport.
 
 ## Hooks and commands
 
-Register Merge Request, Note and Pipeline hooks at `/webhooks/gitlab`, using
-that project's `WEBHOOK_SECRETS` value. Your internal ingress must make the
+Webhooks are optional. For manual-only operation, set `PROJECT_IDS` to your
+project IDs and leave `WEBHOOK_SECRETS={}`. Restart the worker after adding
+projects so it provisions them before you trigger a review. Trigger reviews
+through `POST /admin/reviews`; `report_mode: "applied"` still posts GitLab
+comments when enforcement allows it, using the publication API token.
+Without hooks, automatic MR/push and pipeline events and `/ai` comment commands
+are unavailable; use the admin routes for reviews and rechecks.
+
+To enable event-driven operation, register Merge Request, Note and Pipeline
+hooks at `/webhooks/gitlab`, using that project's `WEBHOOK_SECRETS` value.
+Your internal ingress must make the
 localhost-bound service reachable from GitLab. The handler verifies the token
 in constant time and enqueues bounded metadata; it does no review work.
 Open/reopen/ready and source-SHA updates trigger review. Title-only updates are
@@ -231,8 +241,8 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   one derived from the story, and the given pages are read before any the issue
   links to. Confluence links are honoured even when the change has no issue at
   all. The link must be on the configured GitLab instance, its project must
-  already be onboarded through `WEBHOOK_SECRETS`, and the merge request must be
-  open and not a draft. A manual run supersedes an in-flight review for the same
+  already be onboarded through `PROJECT_IDS` (or `WEBHOOK_SECRETS`), and the merge
+  request must be open and not a draft. A manual run supersedes an in-flight review for the same
   merge request, exactly as a new push does. `report_mode` chooses what happens
   to the finished report: `applied` (default) posts it on the merge request,
   `draft` leaves it on the merge request as GitLab draft notes — pending

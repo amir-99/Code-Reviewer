@@ -1,8 +1,12 @@
 import json
 
+import httpx
+import pytest
+from conftest import FakeQueue
 from test_git import git
 from test_git import history as history
 
+from reviewer import worker
 from reviewer.config.schema import Settings
 from reviewer.findings.models import (
     Anchor,
@@ -13,6 +17,7 @@ from reviewer.findings.models import (
     StageEnvelope,
     VerificationResult,
 )
+from reviewer.main import create_app
 from reviewer.orchestrator.pipeline import Pipeline
 from reviewer.services.docs.confluence import FakeDocumentService
 from reviewer.services.forge.gitlab import FakeForge, MergeRequestContext
@@ -106,6 +111,70 @@ def pipeline(store, forge, tmp_path, scanner=None, llm=None):
         StaticRunner(),
         lambda *args: llm or Echo(),
     )
+
+
+@pytest.mark.parametrize(
+    "project_ids,webhook_secrets",
+    [([88], {}), ([], {88: "hook-secret"}), ([88, 88], {88: "hook-secret"})],
+)
+async def test_onboarding_manual_review_and_publication(
+    store, history, tmp_path, monkeypatch, project_ids, webhook_secrets
+):
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=88,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.projects["group/proj"] = 88
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    settings = Settings(
+        _env_file=None,
+        project_ids=project_ids,
+        webhook_secrets=webhook_secrets,
+        admin_token="admin",
+        milestone="M0",
+        otlp_endpoint="",
+    )
+    monkeypatch.setattr(worker, "Settings", lambda: settings)
+    monkeypatch.setattr(worker, "Store", lambda *_: store)
+    monkeypatch.setattr(worker, "GitLab", lambda *_: forge)
+    queue = FakeQueue()
+    ctx = {"redis": queue}
+    assert not await store.is_configured(88)
+    await worker.startup(ctx)
+    assert await store.is_configured(88)
+    app = create_app(settings, store, queue, forge)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        if not webhook_secrets:
+            # Onboarding alone must never authorize incoming webhook requests.
+            for headers in ({}, {"X-Gitlab-Token": "anything"}):
+                response = await client.post(
+                    "/webhooks/gitlab", json={"project": {"id": 88}}, headers=headers
+                )
+                assert response.status_code == 401
+            assert queue.jobs == []
+        response = await client.post(
+            "/admin/reviews",
+            json={
+                "merge_request_url": f"{settings.gitlab_base_url}/group/proj/-/merge_requests/2"
+            },
+            headers={"Authorization": "Bearer admin"},
+        )
+    assert response.status_code == 202
+    assert response.json()["report_mode"] == "applied"
+    ctx["machine"] = pipeline(store, forge, tmp_path, llm=Reviewing())
+    await worker.receive_event(ctx, queue.jobs[0][1][0])
+    review_id = queue.jobs[1][1][0]
+    assert await ctx["machine"].run(review_id) == "PUBLISHED"
+    assert len(forge.comments) >= 2  # Inline finding and summary.
+    assert forge.statuses[-1]["state"] == "success"
 
 
 async def test_complete_pipeline_with_real_git_and_fake_external_services(

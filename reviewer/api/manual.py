@@ -126,7 +126,8 @@ async def trigger(body: ManualReviewRequest, request: Request):
     # operator would never see it. Say so here instead of accepting a no-op.
     if not await request.app.state.store.is_configured(project_id):
         raise HTTPException(
-            409, "Project is not onboarded; add it to WEBHOOK_SECRETS first"
+            409,
+            "Project is not onboarded; add it to PROJECT_IDS and restart the worker",
         )
     job = ReviewJob(
         project_id=project_id,

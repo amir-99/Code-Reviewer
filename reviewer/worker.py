@@ -27,7 +27,11 @@ async def startup(ctx):
     ctx["forge"] = GitLab(
         settings.gitlab_base_url, settings.gitlab_token.get_secret_value()
     )
-    await ctx["store"].provision(settings.webhook_secrets)
+    # Keep existing webhook deployments onboarded; manual-only projects need
+    # no webhook secret or registered hook.
+    await ctx["store"].provision(
+        set(settings.project_ids) | set(settings.webhook_secrets)
+    )
     if settings.milestone == "M0":
         ctx["machine"] = ReviewStateMachine(ctx["store"], ctx["forge"])
     else:

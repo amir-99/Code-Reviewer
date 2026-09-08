@@ -63,7 +63,8 @@ def client_parts(store, forge):
     queue = FakeQueue()
     app = create_app(
         Settings(
-            webhook_secrets={7: "secret"},
+            project_ids=[7],
+            webhook_secrets={},
             admin_token="admin",
             gitlab_base_url=BASE,
             # Pinned, not inherited: Settings reads .env, and a developer's real
