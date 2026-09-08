@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from reviewer.telemetry.activity import activity
+
 
 class LLMClient(Protocol):
     async def complete(
@@ -26,6 +28,7 @@ class FakeLLMClient:
         self.responses = list(responses)
         self.calls = []
 
+    @activity("tool", "LLM gateway")
     async def complete(self, *, response_model, **kwargs):
         self.calls.append(kwargs)
         response = self.responses.pop(0)
@@ -66,6 +69,7 @@ class GatewayClient:
         self.context_limit = settings.model_context_tokens
         self.prices = settings.model_prices
 
+    @activity("tool", "LLM gateway")
     async def complete(
         self,
         *,

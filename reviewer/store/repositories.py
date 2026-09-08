@@ -1,10 +1,10 @@
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from reviewer.orchestrator.states import TERMINAL, check_transition
-from reviewer.store.models import Project, Review, ReviewStage, utcnow
+from reviewer.store.models import Project, Review, ReviewEvent, ReviewStage, utcnow
 
 
 class Store:
@@ -35,11 +35,13 @@ class Store:
             if existing:
                 return existing
             active = await session.scalar(
-                select(Review).where(
+                select(Review)
+                .where(
                     Review.project_id == project.id,
                     Review.mr_iid == iid,
                     Review.state.not_in([str(x) for x in TERMINAL]),
                 )
+                .with_for_update()
             )
             review_id = str(uuid4())
             if active:
@@ -47,6 +49,7 @@ class Store:
                 active.history = active.history + ["SUPERSEDED"]
                 active.finished_at = utcnow()
                 active.superseded_by = review_id
+                await self._event(session, active.id, "state", {"state": "SUPERSEDED"})
                 await session.flush()
             review = Review(
                 id=review_id,
@@ -58,6 +61,7 @@ class Store:
             )
             session.add(review)
             await session.flush()
+            await self._event(session, review.id, "state", {"state": "INIT"})
             return review
 
     async def transition(self, review_id: str, state: str, **fields):
@@ -70,6 +74,7 @@ class Store:
             check_transition(review.state, state)
             review.state = str(state)
             review.history = review.history + [str(state)]
+            await self._event(session, review.id, "state", {"state": str(state)})
             if state in TERMINAL:
                 review.finished_at = utcnow()
             for name, value in fields.items():
@@ -299,3 +304,72 @@ class Store:
                 .limit(1)
             )
             return Finding.model_validate(row.data) if row else None
+
+    async def _event(self, session, review_id, kind, data):
+        # Callers hold the review row lock, so sequence order is commit order.
+        sequence = await session.scalar(
+            select(func.coalesce(func.max(ReviewEvent.sequence), 0)).where(
+                ReviewEvent.review_id == review_id
+            )
+        )
+        session.add(
+            ReviewEvent(
+                review_id=review_id, sequence=sequence + 1, kind=kind, data=data
+            )
+        )
+
+    async def append_event(self, review_id, kind, data):
+        async with self.sessions.begin() as session:
+            # SQLite has no row locks; acquire its writer lock before reading the
+            # sequence. PostgreSQL serializes writers with FOR UPDATE below.
+            if self.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            review = await session.scalar(
+                select(Review).where(Review.id == review_id).with_for_update()
+            )
+            if review is not None:
+                await self._event(session, review_id, kind, data)
+
+    async def events(self, review_id, after=0, limit=200):
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(ReviewEvent)
+                    .where(
+                        ReviewEvent.review_id == review_id, ReviewEvent.sequence > after
+                    )
+                    .order_by(ReviewEvent.sequence)
+                    .limit(limit)
+                )
+            ).all()
+            return [
+                dict(
+                    id=r.sequence, kind=r.kind, data=r.data, at=r.created_at.isoformat()
+                )
+                for r in rows
+            ]
+
+    async def recent(self, limit=50, offset=0):
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(Review, Project.gitlab_project_id)
+                    .join(Project)
+                    .order_by(Review.started_at.desc(), Review.id)
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+            return [
+                dict(
+                    id=r.id,
+                    project_id=p,
+                    mr_iid=r.mr_iid,
+                    head_sha=r.head_sha,
+                    state=r.state,
+                    partial=r.partial,
+                    decision=r.decision,
+                    started_at=r.started_at,
+                )
+                for r, p in rows
+            ]

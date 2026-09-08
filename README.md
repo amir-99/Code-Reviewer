@@ -246,3 +246,22 @@ Never interpret a passing status on a partial/failed review as a clean review.
 
 A Grafana importable dashboard is included at `dashboards/reviewer.json`.
 Point its Prometheus datasource at the authenticated `/metrics` endpoint.
+
+## Operator frontend and live activity
+
+[Review Room](frontend/README.md) is the dashboard in `frontend/`, with a separate
+Docker image. Start it alongside the reviewer with:
+
+```sh
+docker compose -f compose.yml -f compose.frontend.yml up -d --build
+```
+
+Open http://127.0.0.1:8093 and connect using `ADMIN_TOKEN`. The dashboard starts
+reviews from GitLab links, accepts requirement overrides, displays findings and
+reports, and follows live stage-agent, work-unit, and tool activity. It defaults
+to draft reports and preserves project enforcement settings.
+
+The authenticated SSE endpoint is `GET /admin/reviews/{id}/events`, with durable
+resume using the `Last-Event-ID` header. Apply migration `0005` before deploying
+the updated API/worker. See the frontend README for event shapes, configuration,
+tests, and activity retention/capacity considerations.

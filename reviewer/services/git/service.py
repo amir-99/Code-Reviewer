@@ -12,6 +12,7 @@ from uuid import uuid4
 import structlog
 
 from reviewer.context.models import ChangedFile, DiffLine, Hunk
+from reviewer.telemetry.activity import activity
 
 logger = structlog.get_logger()
 
@@ -49,6 +50,7 @@ class GitService:
         self.locks = {}
         self.active = set()
 
+    @activity("tool", "Git read operation")
     async def command(self, *args, cwd=None, limit=20_000_000):
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         env.update(

@@ -3,6 +3,7 @@ from time import monotonic
 from uuid import uuid4
 
 from reviewer.context.models import StaticAnalysisResult
+from reviewer.telemetry.activity import activity
 
 
 class StaticRunner:
@@ -41,6 +42,7 @@ class StaticRunner:
             *tool.command,
         ]
 
+    @activity("tool", "Static analyzer")
     async def run(self, tool, path):
         start = monotonic()
         code = None

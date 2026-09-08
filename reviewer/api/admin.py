@@ -1,7 +1,7 @@
 import hmac
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 
 async def authenticate(request: Request):
@@ -17,13 +17,20 @@ router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
 
 
 @router.get("/reviews")
-async def lookup(request: Request, event_id: str):
+async def lookup(
+    request: Request,
+    event_id: str | None = None,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
     """Resolve a trigger response's event id to its review.
 
     The trigger enqueues and returns; the worker creates the review a moment
     later. Until it does there is nothing to report, which is a queued run
     rather than an error.
     """
+    if event_id is None:
+        return {"reviews": await request.app.state.store.recent(limit, offset)}
     review = await request.app.state.store.by_event(event_id)
     if review is None:
         return {"state": "QUEUED", "event_id": event_id, "findings": []}
@@ -58,6 +65,7 @@ async def inspect(review_id: str, request: Request):
             "error",
         )
     }
+    body["project_id"] = await store.project_number(review)
     body["overrides"] = review.overrides
     body["findings"] = [summarise(f) for f in await store.findings_for(review_id)]
     snapshot = await store.snapshot(review_id) or {}

@@ -66,6 +66,24 @@ async def test_complete_pipeline_with_real_git_and_fake_external_services(
     saved = await store.snapshot(review.id)
     assert not saved["partial"]
     assert len(await store.stages(review.id)) == 7
+    events = await store.events(review.id, limit=2000)
+    agents = [e["data"] for e in events if e["kind"] == "agent"]
+    assert {e["name"] for e in agents if e["status"] == "completed"} == {
+        "purpose",
+        "design",
+        "correctness",
+        "complexity",
+        "tests_",
+        "line_review",
+        "system_context",
+    }
+    assert any(e["kind"] == "unit" and e["data"]["parent_id"] for e in events)
+    assert any(
+        e["kind"] == "tool" and e["data"]["name"] == "Secret scanner" for e in events
+    )
+    assert any(
+        e["kind"] == "state" and e["data"]["state"] == "PUBLISHED" for e in events
+    )
 
 
 async def test_secret_short_circuit_no_model_call(store, history, tmp_path):
@@ -170,3 +188,67 @@ async def test_incremental_push_only_dispatches_affected_files(
     stages = await store.stages(second.id)
     assert stages["correctness"].examined == ["new0.py:unit-0"]
     assert not stages["system_context"].examined
+
+
+async def test_verified_purpose_blocker_stops_before_design(store, history, tmp_path):
+    from reviewer.findings.models import ProposedFinding, VerificationResult
+
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+
+    class Blocker(Echo):
+        async def complete(self, **kwargs):
+            if kwargs["stage"] == "verification":
+                self.calls.append(kwargs)
+                return VerificationResult(
+                    verdict="confirmed",
+                    counterargument="Fixture",
+                    reasoning="Fixture evidence",
+                )
+            result = await super().complete(**kwargs)
+            if kwargs["stage"] == "purpose":
+                result.findings = [
+                    ProposedFinding.model_validate(
+                        {
+                            "anchor": {
+                                "file": "new0.py",
+                                "line_start": 1,
+                                "line_end": 1,
+                            },
+                            "category": "security",
+                            "severity_proposed": "BLOCKER",
+                            "claim": "Fixture security blocker",
+                            "reason": "Fixture",
+                            "impact": "Fixture",
+                            "evidence": [
+                                {
+                                    "file": "new0.py",
+                                    "line_start": 1,
+                                    "line_end": 1,
+                                    "note": "Fixture",
+                                }
+                            ],
+                            "suggested_direction": "Fixture",
+                            "confidence": "high",
+                        }
+                    )
+                ]
+            return result
+
+    llm = Blocker()
+    review = await store.accept(7, 2, head, "purpose-blocker")
+    assert (
+        await pipeline(store, forge, tmp_path, llm=llm).run(review.id)
+        == "TERMINATED_EARLY"
+    )
+    assert [c["stage"] for c in llm.calls] == ["purpose", "verification"]
+    assert "DESIGN_REVIEW" not in (await store.get(review.id)).history

@@ -6,6 +6,7 @@ from reviewer.agents.base import TemplateAgent
 from reviewer.context.partition import partition
 from reviewer.findings.models import ProposedFinding
 from reviewer.orchestrator.budget import BudgetExhausted
+from reviewer.telemetry.activity import activity
 
 
 class StageResult(BaseModel):
@@ -30,6 +31,7 @@ STAGES = {
 }
 
 
+@activity("agent", lambda name, *args, **kwargs: name)
 async def execute(name, bundle, llm, config, context_provider=None, only_paths=None):
     tier, kind = STAGES[name]
     agent = TemplateAgent(name, tier, kind)

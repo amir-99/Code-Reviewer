@@ -6,8 +6,10 @@ from reviewer.context.redaction import Redactor
 from reviewer.context.requirements import collect
 from reviewer.services.forge.gitlab import StaleReview
 from reviewer.services.symbols.index import SymbolIndex
+from reviewer.telemetry.activity import activity
 
 
+@activity("tool", "Collect review context")
 async def build(
     review,
     mr,
@@ -25,6 +27,7 @@ async def build(
 
     base = await git.merge_base(wt, mr.target_branch, review.head_sha)
 
+    @activity("tool", "Read changed code")
     async def code():
         files = await git.diff(
             wt, base, review.head_sha, context_lines=config.review.context_lines
@@ -34,6 +37,7 @@ async def build(
             raise StaleReview("Local and forge diff inventories differ")
         return files
 
+    @activity("tool", "Collect requirements")
     async def requirements():
         from reviewer.context.linkage import resolve
         from reviewer.context.models import Linkage
@@ -150,6 +154,7 @@ async def build(
         except Exception:
             pass
 
+    @activity("tool", "Read requested code context")
     async def context_provider(requests):
         output = {}
         for request in requests[:5]:

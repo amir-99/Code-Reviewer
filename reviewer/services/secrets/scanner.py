@@ -3,6 +3,8 @@ import json
 import tempfile
 from pathlib import Path
 
+from reviewer.telemetry.activity import activity
+
 
 class ScanError(RuntimeError):
     pass
@@ -12,6 +14,7 @@ class SecretScanner:
     def __init__(self, binary="gitleaks"):
         self.binary = binary
 
+    @activity("tool", "Secret scanner")
     async def scan(self, files):
         with tempfile.TemporaryDirectory(prefix="review-scan-") as directory:
             root = Path(directory)
@@ -71,6 +74,7 @@ class FakeSecretScanner:
     def __init__(self, matches=()):
         self.matches = list(matches)
 
+    @activity("tool", "Secret scanner")
     async def scan(self, files):
         return self.matches
 

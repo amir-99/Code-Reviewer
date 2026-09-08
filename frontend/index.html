@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Review Room</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<body>
+<header><a class="brand" href="/">◈ <span>Review Room</span></a><span class="muted">AI code reviewer</span><button id="disconnect" hidden>Disconnect</button></header>
+<main>
+<section id="connect" class="card connect"><p class="eyebrow">OPERATOR WORKSPACE</p><h1>A clearer view of every review.</h1><p class="muted">Follow the analysis, inspect findings, and start reviews from one place.</p><form id="login"><label>Admin token<input id="token" type="password" required autocomplete="off" placeholder="Enter your reviewer admin token"></label><p class="hint">Held in memory for this tab. Sent only to the configured review API.</p><button class="primary">Connect to reviewer →</button></form></section>
+<section id="workspace" hidden>
+<div class="heading"><div><p class="eyebrow">REVIEW OPERATIONS</p><h1>Your review workspace</h1></div><button id="refresh">Refresh reviews</button></div>
+<div class="layout"><aside>
+<section class="card"><h2>Start a review</h2><form id="trigger"><label>GitLab merge request<input name="merge_request_url" type="url" required placeholder="https://gitlab…/merge_requests/42"></label><details><summary>Requirements & report settings</summary><label>Jira story<input name="issue_key" placeholder="TEAM-123"></label><label>Jira epic<input name="epic_key" placeholder="TEAM-100"></label><label>Confluence pages<textarea name="documents" rows="3" placeholder="One URL per line"></textarea></label></details><label>Report mode<select name="report_mode"><option value="draft">Draft — view here</option><option value="applied">Applied — publish per project policy</option><option value="none">None — no report publication</option></select></label><button class="primary" id="start">Start review →</button></form></section>
+<section class="card"><div class="row"><h2>Recent reviews</h2><span class="hint">Latest 50</span></div><div id="reviews" class="reviews"></div></section>
+</aside><section class="detail"><div id="empty" class="card empty"><span class="symbol">◈</span><h2>Every finding has a story.</h2><p class="muted">Select a review to follow its progress, or start one with a merge request link.</p></div><div id="review" hidden>
+<section class="card"><div class="row"><p class="eyebrow" id="identity"></p><span id="live" class="badge">Connecting</span></div><h2 id="state"></h2><p id="metadata" class="muted"></p><div id="stages" class="stages"></div></section>
+<section class="card"><div class="row"><h2>Live activity</h2><span class="hint">Stages · work units · tools</span></div><p class="hint">Operational activity only. Model reasoning and raw tool output stay private.</p><ol id="activity" class="activity" aria-label="Review activity"></ol></section>
+<section class="card"><h2>Findings <span id="count" class="badge">0</span></h2><div id="findings"></div></section>
+<section id="report-section" class="card" hidden><h2>Review report</h2><pre id="report"></pre></section>
+</div></section></div>
+</section><p id="notice" role="status" aria-live="polite"></p>
+</main><footer>Deterministic decisions. Visible progress.</footer>
+</body></html>

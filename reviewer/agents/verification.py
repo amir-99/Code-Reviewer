@@ -4,8 +4,10 @@ from reviewer.agents.base import PROMPTS
 from reviewer.context.framing import INJECTION_RULE, frame
 from reviewer.findings.models import VerificationResult
 from reviewer.findings.validator import read_lines
+from reviewer.telemetry.activity import activity
 
 
+@activity("tool", "Independent verifier")
 async def verify(finding, bundle, llm, redactor):
     a = finding.anchor
     lines = read_lines(bundle.code.worktree_path, a.file) or []

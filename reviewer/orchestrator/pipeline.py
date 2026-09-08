@@ -23,6 +23,7 @@ from reviewer.publish.rereview import full_review, reanchor, resolve_fixed
 from reviewer.services.forge.gitlab import StaleReview
 from reviewer.services.llm.client import GatewayClient
 from reviewer.store.audit import Audit, blob_store
+from reviewer.telemetry.activity import traced_review
 
 logger = structlog.get_logger()
 
@@ -50,6 +51,7 @@ class Pipeline:
         )
         self.llm_factory = llm_factory
 
+    @traced_review
     async def run(self, review_id):
         review = await self.store.get(review_id)
         if not review:
@@ -396,16 +398,17 @@ class Pipeline:
                         ),
                         None,
                     )
-                if blocker:
-                    findings = [blocker]
-                    early = True
-                    logger.info(
-                        "gate_terminated_early",
-                        review_id=review.id,
-                        stage=name,
-                        fingerprint=blocker.fingerprint,
-                        severity=blocker.severity_final,
-                    )
+                    if blocker:
+                        findings = [blocker]
+                        early = True
+                        logger.info(
+                            "gate_terminated_early",
+                            review_id=review.id,
+                            stage=name,
+                            fingerprint=blocker.fingerprint,
+                            severity=blocker.severity_final,
+                        )
+                        break
                 if not early and level >= 5:
                     await self.advance(review, "ANALYSIS_FAN_OUT")
                     names = (

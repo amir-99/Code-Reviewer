@@ -5,6 +5,7 @@ from pathlib import Path
 
 from reviewer.context.framing import INJECTION_RULE, frame
 from reviewer.findings.models import StageEnvelope
+from reviewer.telemetry.activity import activity
 
 PROMPTS = {}
 for path in sorted(
@@ -34,6 +35,7 @@ class StageAgent(ABC):
 
     @abstractmethod
     def build_prompt(self, bundle, unit): ...
+    @activity("unit", "Review work unit")
     async def run(self, bundle, unit, llm, context_provider=None):
         system, user = self.build_prompt(bundle, unit)
         for round_no in range(3):

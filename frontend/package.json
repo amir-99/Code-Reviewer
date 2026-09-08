@@ -1,0 +1,1 @@
+{"name":"review-room","private":true,"type":"module","scripts":{"test":"node --test sse.test.js","check":"node --check app.js && node --check sse.js"}}

@@ -144,3 +144,14 @@ class ReviewSnapshot(Base):
     __tablename__ = "review_snapshots"
     review_id: Mapped[str] = mapped_column(ForeignKey("reviews.id"), primary_key=True)
     data: Mapped[dict] = mapped_column(json_type)
+
+
+class ReviewEvent(Base):
+    __tablename__ = "review_events"
+    review_id: Mapped[str] = mapped_column(ForeignKey("reviews.id"), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    data: Mapped[dict] = mapped_column(json_type)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
