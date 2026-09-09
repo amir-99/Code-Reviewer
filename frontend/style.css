@@ -245,6 +245,40 @@ summary::before { content: "▸ "; display: inline-block; transition: transform 
 details[open] > summary::before { content: "▾ "; }
 details { margin: 4px 0 14px; }
 
+/* Spend: what the review has cost, by the role that spent it. */
+.budget { margin: 4px 0 16px; }
+.budget .hint { margin-top: 7px; }
+.spend-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.spend-table th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+  padding: 0 8px 7px;
+  border-bottom: 1px solid var(--line);
+}
+.spend-table th.num, .spend-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.spend-table td { padding: 8px; border-bottom: 1px solid var(--line-soft); }
+.spend-table td.mono { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.spend-table td.cost { font-weight: 620; }
+.spend-table tbody tr { position: relative; }
+/* The costliest role reads as a full bar, so the row worth changing a model
+   for is visible before any number is read. */
+.spend-table tbody tr td:first-child { position: relative; }
+.spend-table tbody tr td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 1px;
+  height: 2px;
+  width: var(--share, 0);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.spend-table tbody tr:first-child td:first-child::before { background: var(--accent); }
+
 /* Model selection for a manual run: one row per role, default until moved. */
 .model-field { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: 8px; margin-bottom: 6px; }
 .model-field label { font-size: 11px; color: var(--muted); margin: 0; }

@@ -95,6 +95,12 @@ returns:
 Model IDs, context limits and the selectable catalogue are operator
 configuration. Repository `.ai-review.yml` cannot select a model.
 
+Every gateway call is audited with its role, model, tokens and configured cost,
+so the dashboard's Spend tab reports what a review cost and which role spent it
+— successful calls and retries alike, because a stage that burned its budget on
+retries spent that budget. Organization-wide totals stay on `/admin/quality` and
+`/metrics`.
+
 ## Project policy
 
 `config/projects.json` merges organization defaults with per-project overrides:
@@ -309,7 +315,10 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   its review; reports `QUEUED` until the worker admits it.
 - `GET /admin/reviews/{id}`: state, history, status delivery, the review's
   findings, the rendered `report`, `recheck` — the answers the last recheck gave
-  this review's open threads — and `models`, the model each role ran on.
+  this review's open threads — `models`, the model each role ran on, and
+  `spend`: calls, tokens in and out, and cost per role, against the token
+  ceiling the run announced. It is read from the audited calls, so it answers
+  while the review is still running.
 - `POST /admin/reviews/{id}/replay`: fresh review at the current head, keeping
   any context the review was manually triggered with.
 - `POST /admin/reviews/{id}/recheck`: re-judge the comments that review
@@ -325,7 +334,11 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 - `GET /metrics`: Prometheus process/run/fabrication counters.
 
 `MODEL_PRICES` maps exact model IDs to `input` and `output` cost per million
-tokens. It is optional; absent pricing is not represented as free usage.
+tokens. It is optional; absent pricing is not represented as free usage — an
+unpriced call is counted in tokens and reported as unpriced, and any total that
+omits one is shown as a floor (`≥ $x`) rather than a price. With per-role
+selection, price every model a role can resolve to, or the review's cost is
+only partly answerable.
 `OTLP_ENDPOINT` enables export to your internal OpenTelemetry collector.
 
 By default, content-addressed audit objects live in the persistent audit volume

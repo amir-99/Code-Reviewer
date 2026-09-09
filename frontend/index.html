@@ -142,6 +142,7 @@
         <button class="tab" type="button" role="tab" id="tab-activity" data-tab="activity" aria-selected="true" aria-controls="panel-activity">Activity<span class="n" id="tabn-activity">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-findings" data-tab="findings" aria-selected="false" aria-controls="panel-findings">Findings<span class="n" id="tabn-findings">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-recheck" data-tab="recheck" aria-selected="false" aria-controls="panel-recheck">Recheck<span class="n" id="tabn-recheck">0</span></button>
+        <button class="tab" type="button" role="tab" id="tab-spend" data-tab="spend" aria-selected="false" aria-controls="panel-spend">Spend<span class="n" id="tabn-spend">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-report" data-tab="report" aria-selected="false" aria-controls="panel-report">Report<span class="n" id="tabn-report">0</span></button>
       </div>
 
@@ -177,6 +178,22 @@
           <span id="recheck-meta" class="hint"></span>
         </div>
         <div id="recheck-results"></div>
+      </section>
+
+      <section class="card" id="panel-spend" role="tabpanel" aria-labelledby="tab-spend" hidden>
+        <div class="card-head">
+          <h2>Spend <span id="spend-total" class="badge">—</span></h2>
+          <span id="spend-meta" class="hint"></span>
+        </div>
+        <div class="budget">
+          <div id="budget-track" class="track"><div id="budget-fill" class="track-fill"></div></div>
+          <p id="budget-text" class="hint"></p>
+        </div>
+        <table class="spend-table">
+          <thead><tr><th>Role</th><th>Model</th><th class="num">Calls</th><th class="num">In</th><th class="num">Out</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
+          <tbody id="spend-rows"></tbody>
+        </table>
+        <p id="spend-empty" class="empty-line">No model calls have been billed to this review yet.</p>
       </section>
 
       <section class="card" id="panel-report" role="tabpanel" aria-labelledby="tab-report" hidden>

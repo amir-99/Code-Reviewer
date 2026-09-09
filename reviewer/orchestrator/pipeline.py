@@ -150,6 +150,17 @@ class Pipeline:
                 models = resolve(self.settings, config, overrides)
                 selection = assignment(models)
                 await self.store.append_event(review.id, "models", selection)
+                # The ceiling this run is held to, announced by the run itself:
+                # it is the project's, as the merge base configured it, and the
+                # spend report is read against it while the review is still going.
+                await self.store.append_event(
+                    review.id,
+                    "budget",
+                    {
+                        "token_ceiling": config.review.token_ceiling,
+                        "timeout_s": config.review.timeout_s,
+                    },
+                )
                 logger.info("models_resolved", review_id=review.id, models=selection)
                 bundle, redactor, symbols, secrets, context_provider = await build(
                     review,

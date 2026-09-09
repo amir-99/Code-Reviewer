@@ -414,3 +414,152 @@ async def test_a_role_sends_its_configured_effort_and_its_own_context_window(
             timeout_s=2,
         )
     await llm.close()
+
+
+async def test_spend_is_reported_per_role_and_counts_unpriced_models_honestly(
+    store, tmp_path
+):
+    """Tokens and cost are audited per call and add up per role."""
+    from reviewer.telemetry.activity import sink
+
+    def handler(req):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"findings": [], "coverage": {"units_examined": [], "units_skipped": [], "skip_reason": null}}'
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 200},
+            },
+        )
+
+    settings = Settings(
+        gateway_base_url="https://gateway.internal/v1",
+        model_roles={"correctness": "vendor/priced", "complexity": "vendor/unpriced"},
+        # Only one of the two models has a configured price.
+        model_prices={"vendor/priced": {"input": 2.0, "output": 10.0}},
+    )
+    review = await store.accept(7, 2, "c" * 40, "spend")
+    llm = GatewayClient(
+        settings,
+        Audit(store, BlobStore(tmp_path / "blobs")),
+        BudgetTracker(
+            Budget(
+                token_ceiling=1000000,
+                deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+                model_tier={},
+            )
+        ),
+        Redactor(),
+        httpx.MockTransport(handler),
+        models=resolve(settings),
+    )
+    token = sink.set((store, review.id))
+    try:
+        for role in ("correctness", "correctness", "complexity"):
+            await llm.complete(
+                stage=role,
+                tier=role,
+                system="review",
+                user="code",
+                response_model=StageEnvelope,
+                review_id=review.id,
+                max_tokens=100,
+                timeout_s=2,
+            )
+    finally:
+        sink.reset(token)
+        await llm.close()
+
+    spend = await store.spend(review.id)
+    assert spend["calls"] == 3
+    assert spend["tokens_in"] == 3000 and spend["tokens_out"] == 600
+    assert spend["tokens"] == 3600
+    # 2000 in at $2/M plus 400 out at $10/M, and nothing at all for the model
+    # this installation has no price for.
+    assert spend["cost"] == pytest.approx(0.004 + 0.004)
+    assert spend["unpriced_calls"] == 1, "an unpriced call is not a free call"
+    by_role = {row["role"]: row for row in spend["roles"]}
+    assert by_role["correctness"]["calls"] == 2
+    assert by_role["correctness"]["model"] == "vendor/priced"
+    assert by_role["complexity"]["cost"] == 0
+    assert by_role["complexity"]["unpriced_calls"] == 1
+    # Costliest role first: that is the row worth changing a model for.
+    assert spend["roles"][0]["role"] == "correctness"
+    # Every attempt reports its own tokens and cost live, so the dashboard can
+    # total a run that has not finished yet.
+    attempts = [
+        e["data"] for e in await store.events(review.id) if e["kind"] == "llm_attempt"
+    ]
+    assert [(a["tokens_in"], a["tokens_out"]) for a in attempts] == [
+        (1000, 200),
+        (1000, 200),
+        (1000, 200),
+    ]
+    assert [a["cost"] for a in attempts] == [
+        pytest.approx(0.004),
+        pytest.approx(0.004),
+        None,
+    ]
+
+
+async def test_a_failed_call_still_reports_the_tokens_it_spent(store, tmp_path):
+    from reviewer.telemetry.activity import sink
+
+    def handler(req):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "malformed"}}],
+                "usage": {"prompt_tokens": 800, "completion_tokens": 50},
+            },
+        )
+
+    settings = Settings(
+        gateway_base_url="https://gateway.internal/v1",
+        model_roles={"design": "vendor/priced"},
+        model_prices={"vendor/priced": {"input": 2.0, "output": 10.0}},
+    )
+    review = await store.accept(7, 2, "d" * 40, "wasted")
+    llm = GatewayClient(
+        settings,
+        Audit(store, BlobStore(tmp_path / "blobs")),
+        BudgetTracker(
+            Budget(
+                token_ceiling=1000000,
+                deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+                model_tier={},
+            )
+        ),
+        Redactor(),
+        httpx.MockTransport(handler),
+        models=resolve(settings),
+    )
+    token = sink.set((store, review.id))
+    try:
+        with pytest.raises(StageFailed):
+            await llm.complete(
+                stage="design",
+                tier="design",
+                system="review",
+                user="code",
+                response_model=StageEnvelope,
+                review_id=review.id,
+                max_tokens=100,
+                timeout_s=2,
+            )
+    finally:
+        sink.reset(token)
+        await llm.close()
+    spend = await store.spend(review.id)
+    # Both the original call and its reparse are billed: a stage that burned its
+    # budget on retries spent that budget, and the report must show it.
+    assert spend["calls"] == 2 and spend["retries"] == 2
+    assert spend["tokens"] == 2 * 850
+    assert spend["cost"] > 0
+    await llm.close()

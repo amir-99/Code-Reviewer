@@ -1,6 +1,7 @@
 import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk} from './flow.js';
 import {chosenModels, modelFor, roleFor, roleLabel} from './models.js';
+import {addAttempt, cost as money, emptySpend, mergeSpend, tokens as count, usage} from './spend.js';
 
 const $ = id => document.getElementById(id);
 const el = (tag, text, cls) => {
@@ -36,6 +37,8 @@ let modelDefaults = {};         // role -> the model a run uses when none is cho
 let modelCatalog = [];          // model IDs this deployment allows an operator to pick
 const modelChoice = new Map();  // role -> the model chosen for the next manual run
 let reviewModels = {};          // role -> model, as resolved by the review being watched
+let audited = null;             // the review's spend as the last snapshot reported it
+let streamed = emptySpend();    // attempts seen since that snapshot, not yet audited
 
 const group = kind => GROUPS[kind] || kind;
 const shows = kind => activityKind === 'all' || activityKind === group(kind);
@@ -167,11 +170,12 @@ function decisionBadge(decision) {
 
 /* ---------- review header ---------- */
 
-function metric(term, value, {shade = '', mono = false, at = '', elapsed = false} = {}) {
+function metric(term, value, {shade = '', mono = false, at = '', elapsed = false, id = ''} = {}) {
   const box = el('div', '', `metric ${shade}`.trim());
   const detail = el('dd', value, mono ? 'mono' : '');
   if (at) detail.dataset.ago = at;
   if (elapsed) detail.dataset.elapsed = '';
+  if (id) box.id = id;
   box.append(el('dt', term), detail);
   return box;
 }
@@ -221,10 +225,35 @@ function renderHead(review) {
     metric('Commit status', review.status_delivered ? 'delivered' : 'pending',
       {shade: !review.status_delivered && TERMINAL.has(review.state) ? 'warn' : ''}),
     metric('Report mode', overrides.report_mode || 'project default'),
+    metric('Tokens', '—', {mono: true, id: 'metric-tokens'}),
+    metric('Cost', '—', {mono: true, id: 'metric-cost'}),
   );
+  renderHeadSpend();
 
   renderTrail(review.history);
   renderPipeline(review.state, review.history);
+}
+
+// The header answers "what has this cost so far" without leaving the tab that
+// is open; the Spend tab answers "where did it go".
+function renderHeadSpend() {
+  const spend = mergeSpend(audited, streamed);
+  const budget = usage(spend);
+  const tokensBox = $('metric-tokens');
+  const costBox = $('metric-cost');
+  if (tokensBox) {
+    tokensBox.lastChild.textContent = spend.calls ? count(spend.tokens) : '—';
+    tokensBox.className = `metric ${budget && budget.percent >= 90 ? 'bad' : budget && budget.percent >= 70 ? 'warn' : ''}`.trim();
+    tokensBox.title = budget
+      ? `${budget.used.toLocaleString()} of ${budget.ceiling.toLocaleString()} tokens in this review's ceiling`
+      : `${spend.tokens.toLocaleString()} tokens over ${spend.calls} gateway calls`;
+  }
+  if (costBox) {
+    costBox.lastChild.textContent = spend.calls ? money(spend.cost, {unpriced: spend.unpriced_calls}) : '—';
+    costBox.title = spend.unpriced_calls
+      ? `${spend.unpriced_calls} call(s) ran on a model with no configured price, so this is a floor`
+      : 'Configured price of every model call this review made';
+  }
 }
 
 function renderTrail(history) {
@@ -516,6 +545,14 @@ function fillRight(row, status, took, since) {
   } else right.append(el('span', status || 'transition', `badge ${statusTone(status)}`));
 }
 
+// What one gateway attempt spent, said on the row that reports the attempt.
+function attemptSpend(data) {
+  const total = (Number(data.tokens_in) || 0) + (Number(data.tokens_out) || 0);
+  if (!total) return '';
+  const priced = typeof data.cost === 'number' ? ` · ${money(data.cost)}` : ' · unpriced';
+  return ` · ${count(total)} tok${priced}`;
+}
+
 function setModel(row, model) {
   const chip = row.querySelector('.model');
   if (!chip) return;
@@ -593,6 +630,14 @@ function addActivity(item) {
   // The run announces the model it resolved for every role before the first
   // stage starts; it is the record of what produced this review.
   if (kind === 'models') { reviewModels = {...reviewModels, ...data}; paintModels(); }
+  if (kind === 'budget') { audited = {...(audited || emptySpend()), ...data}; renderSpend(); }
+  // Only attempts the snapshot has not already audited: everything at or below
+  // its cursor is a replay of calls already counted in the numbers it carried.
+  if (kind === 'llm_attempt' && Number(item.id) > snapshotSeq) {
+    addAttempt(streamed, data);
+    renderSpend();
+    renderHeadSpend();
+  }
 
   const known = data.activity_id ? activities.get(data.activity_id) : null;
   if (known) {
@@ -617,7 +662,7 @@ function addActivity(item) {
     : data.status;
   const name = kind === 'state' ? labels(data.state)
     : kind === 'agent' ? labels(data.name)
-    : kind === 'llm_attempt' ? `${labels(data.stage)} · attempt ${data.transport_attempt ?? 1}`
+    : kind === 'llm_attempt' ? `${labels(data.stage)} · attempt ${data.transport_attempt ?? 1}${attemptSpend(data)}`
     : kind === 'models' ? `${Object.keys(data).length} roles · ${[...new Set(Object.values(data))].join(' · ')}`
     : String(data.name ?? '');
   const role = roleFor(kind, data, ancestor);
@@ -693,6 +738,53 @@ function showTab(name) {
 }
 for (const tab of all('.tab')) tab.onclick = () => { tabTouched = true; showTab(tab.dataset.tab); };
 
+/* ---------- spend ---------- */
+
+function renderSpend() {
+  const spend = mergeSpend(audited, streamed);
+  const total = money(spend.cost, {unpriced: spend.unpriced_calls});
+  $('tabn-spend').textContent = String(spend.calls);
+  $('spend-total').textContent = total;
+  $('spend-meta').textContent = [
+    `${spend.calls} gateway ${spend.calls === 1 ? 'call' : 'calls'}`,
+    spend.retries ? `${spend.retries} unsuccessful` : null,
+    `${count(spend.tokens_in)} in · ${count(spend.tokens_out)} out`,
+    // Silence about missing prices would read as a complete total.
+    spend.unpriced_calls ? `${spend.unpriced_calls} call(s) on models with no configured price` : null,
+  ].filter(Boolean).join('  ·  ');
+
+  const budget = usage(spend);
+  $('budget-track').hidden = !budget;
+  $('budget-text').textContent = budget
+    ? `${count(budget.used)} of ${count(budget.ceiling)} tokens · ${budget.percent.toFixed(budget.percent < 10 ? 1 : 0)}% of the review's ceiling`
+    : 'This review has not reported a token ceiling.';
+  if (budget) {
+    // Same track the pipeline uses: progress on the fill, tone on the track.
+    $('budget-fill').style.setProperty('--progress', budget.percent);
+    $('budget-track').className = `track ${budget.percent >= 90 ? 'bad' : budget.percent >= 70 ? 'warn' : ''}`.trim();
+  }
+
+  const most = Math.max(1, ...spend.roles.map(row => row.cost || 0), 0.0000001);
+  $('spend-rows').replaceChildren(...spend.roles.map(row => {
+    const line = el('tr');
+    // The share bar is drawn against the costliest role, so the row worth
+    // changing a model for is the one that reads as full.
+    line.style.setProperty('--share', `${Math.min(100, ((row.cost || 0) / most) * 100)}%`);
+    line.append(
+      el('td', roleLabel(row.role)),
+      el('td', row.model || '—', 'mono'),
+      el('td', String(row.calls) + (row.retries ? ` (${row.retries}✗)` : ''), 'num'),
+      el('td', count(row.tokens_in), 'num'),
+      el('td', count(row.tokens_out), 'num'),
+      el('td', count(row.tokens), 'num'),
+      el('td', money(row.cost, {unpriced: row.unpriced_calls}), 'num cost'),
+    );
+    return line;
+  }));
+  $('spend-empty').hidden = spend.roles.length > 0;
+  return spend;
+}
+
 /* ---------- model selection ---------- */
 
 async function loadModels() {
@@ -759,6 +851,11 @@ function render(review) {
   current = review;
   snapshotSeq = Number(review.sequence ?? 0);
   if (review.models) { reviewModels = {...reviewModels, ...review.models}; paintModels(); }
+  // The snapshot is the audited record up to its own cursor, so it replaces
+  // both sides rather than adding to them.
+  audited = review.spend || null;
+  streamed = emptySpend();
+  renderSpend();
   renderHead(review);
   renderFindings();
   renderReport(review.report);
@@ -801,6 +898,8 @@ function select(id) {
   current = null;
   snapshotSeq = 0;
   reviewModels = {};
+  audited = null;
+  streamed = emptySpend();
   tabTouched = false;
   severity = 'all';
   activities.clear();

@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from reviewer.orchestrator.states import TERMINAL, check_transition
@@ -394,6 +394,78 @@ class Store:
                 .limit(1)
             )
             return (row.data or {}).get("status") if row is not None else None
+
+    async def spend(self, review_id):
+        """What one review cost, grouped by the role that spent it.
+
+        Every gateway attempt is counted, successful or not: a stage that burned
+        its budget on retries spent that budget. Cost is only as complete as the
+        configured prices — a call whose model has no price is counted in tokens
+        and reported as unpriced, never as free.
+        """
+        from reviewer.store.models import LLMCall
+
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        LLMCall.stage,
+                        LLMCall.model,
+                        func.count().label("calls"),
+                        func.coalesce(func.sum(LLMCall.tokens_in), 0),
+                        func.coalesce(func.sum(LLMCall.tokens_out), 0),
+                        func.coalesce(func.sum(LLMCall.cost), 0.0),
+                        func.coalesce(
+                            func.sum(case((LLMCall.cost.is_(None), 1), else_=0)), 0
+                        ),
+                        func.coalesce(func.sum(LLMCall.latency_ms), 0),
+                        func.coalesce(
+                            func.sum(case((LLMCall.outcome != "success", 1), else_=0)),
+                            0,
+                        ),
+                    )
+                    .where(LLMCall.review_id == review_id)
+                    .group_by(LLMCall.stage, LLMCall.model)
+                    .order_by(func.sum(LLMCall.cost).desc(), LLMCall.stage)
+                )
+            ).all()
+        roles = [
+            {
+                "role": stage,
+                "model": model,
+                "calls": calls,
+                "retries": retries,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "tokens": tokens_in + tokens_out,
+                "cost": cost,
+                "unpriced_calls": unpriced,
+                "latency_ms": latency,
+            }
+            for (
+                stage,
+                model,
+                calls,
+                tokens_in,
+                tokens_out,
+                cost,
+                unpriced,
+                latency,
+                retries,
+            ) in rows
+        ]
+        return {
+            "roles": roles,
+            "calls": sum(r["calls"] for r in roles),
+            "retries": sum(r["retries"] for r in roles),
+            "tokens_in": sum(r["tokens_in"] for r in roles),
+            "tokens_out": sum(r["tokens_out"] for r in roles),
+            "tokens": sum(r["tokens"] for r in roles),
+            "cost": sum(r["cost"] for r in roles),
+            # A total that omits some calls must say so; a review whose prices
+            # are half configured is not a review that half cost nothing.
+            "unpriced_calls": sum(r["unpriced_calls"] for r in roles),
+        }
 
     async def event_data(self, review_id, kind):
         """The newest event of one kind, or None if the run recorded none.

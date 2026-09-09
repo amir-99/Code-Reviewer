@@ -102,6 +102,17 @@ async def inspect(review_id: str, request: Request):
 
     body["report"] = snapshot.get("report")
     body["recheck"] = snapshot.get("recheck")
+    # What the run has spent so far, against the ceiling it is allowed to spend.
+    # Read live from the audited calls, so it is answerable mid-review and not
+    # only once a snapshot exists.
+    budget = (
+        (snapshot.get("bundle") or {}).get("budget")
+        or await store.event_data(review_id, "budget")
+        or {}
+    )
+    body["spend"] = await store.spend(review_id) | {
+        "token_ceiling": budget.get("token_ceiling")
+    }
     return body
 
 

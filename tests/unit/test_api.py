@@ -137,3 +137,56 @@ async def test_recheck_endpoint_enqueues_for_the_reviewed_merge_request(store):
         assert (
             await client.post(f"/admin/reviews/{review.id}/recheck")
         ).status_code == 401
+
+
+async def test_inspect_reports_spend_against_the_ceiling_the_run_announced(store):
+    """Cost is answerable while the review is still running, not only after it."""
+    from reviewer.store.models import LLMCall
+
+    review = await store.accept(7, 2, "a" * 40, "spend-1")
+    await store.append_event(review.id, "budget", {"token_ceiling": 120000})
+    async with store.sessions.begin() as session:
+        for stage, model, cost in (
+            ("correctness", "vendor/strong", 0.02),
+            ("correctness", "vendor/strong", 0.03),
+            ("line_review", "vendor/cheap", None),
+        ):
+            session.add(
+                LLMCall(
+                    review_id=review.id,
+                    stage=stage,
+                    model=model,
+                    prompt_version="1.0.0",
+                    prompt_hash="h",
+                    prompt_blob_ref="p",
+                    response_blob_ref="r",
+                    tokens_in=1000,
+                    tokens_out=100,
+                    latency_ms=10,
+                    cost=cost,
+                    outcome="success",
+                )
+            )
+    app = create_app(
+        Settings(webhook_secrets={7: "secret"}, admin_token="admin", milestone="M0"),
+        store,
+        FakeQueue(),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        body = (
+            await client.get(
+                f"/admin/reviews/{review.id}",
+                headers={"Authorization": "Bearer admin"},
+            )
+        ).json()
+    spend = body["spend"]
+    assert spend["calls"] == 3
+    assert spend["tokens"] == 3300
+    assert spend["cost"] == pytest.approx(0.05)
+    # The ceiling comes from what the run announced, not from re-reading config
+    # the review may never have used.
+    assert spend["token_ceiling"] == 120000
+    assert spend["unpriced_calls"] == 1
+    assert [row["role"] for row in spend["roles"]] == ["correctness", "line_review"]

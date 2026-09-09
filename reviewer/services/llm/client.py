@@ -219,6 +219,17 @@ class GatewayClient:
                     await asyncio.sleep(0.1 * 2**attempt + random.random() * 0.05)
                 finally:
                     await self.budget.settle(reserve, used)
+                    # Unknown pricing stays None the whole way through: a model
+                    # this installation has no price for did not cost nothing.
+                    cost = (
+                        (
+                            tokens_in * self.prices[model].get("input", 0)
+                            + tokens_out * self.prices[model].get("output", 0)
+                        )
+                        / 1_000_000
+                        if model in self.prices
+                        else None
+                    )
                     await self.audit.write(
                         review_id=str(review_id),
                         stage=stage,
@@ -229,21 +240,16 @@ class GatewayClient:
                         tokens_in=tokens_in,
                         tokens_out=tokens_out,
                         latency_ms=int((time.monotonic() - start) * 1000),
-                        cost=(
-                            (
-                                tokens_in * self.prices[model].get("input", 0)
-                                + tokens_out * self.prices[model].get("output", 0)
-                            )
-                            / 1_000_000
-                        )
-                        if model in self.prices
-                        else None,
+                        cost=cost,
                         outcome=outcome,
                     )
                     await llm_attempt(
                         stage=stage,
                         role=tier,
                         model=model,
+                        tokens_in=tokens_in,
+                        tokens_out=tokens_out,
+                        cost=cost,
                         parse_attempt=parse_attempt + 1,
                         transport_attempt=attempt + 1,
                         outcome=outcome,
