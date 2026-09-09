@@ -1,4 +1,5 @@
 import {matchesFinding} from './findings.js';
+import {apiURL} from './paths.js';
 import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk} from './flow.js';
 import {chosenModels, modelFor, roleFor, roleLabel} from './models.js';
@@ -74,7 +75,7 @@ function notice(message, kind = '') {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch('/api' + path, {...options, headers: {Authorization: `Bearer ${token}`, ...options.headers}});
+  const response = await fetch(apiURL(path), {...options, headers: {Authorization: `Bearer ${token}`, ...options.headers}});
   if (!response.ok) {
     let detail; try { detail = (await response.json()).detail; } catch {}
     const error = new Error(typeof detail === 'string' ? detail : `Request failed (${response.status})`);

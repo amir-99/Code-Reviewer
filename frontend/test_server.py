@@ -37,6 +37,26 @@ class ProxyTests(unittest.TestCase):
         self.assertIn(b"event: complete", handler.wfile.getvalue())
         self.assertEqual(handler.sent, [(200, "text/event-stream")])
 
+    def test_all_browser_modules_are_served_and_packaged(self):
+        import re
+
+        pending = ["app.js"]
+        seen = set()
+        dockerfile = (server.ROOT / "Dockerfile").read_text()
+        included = (server.ROOT / ".dockerignore").read_text().splitlines()
+        while pending:
+            name = pending.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            handler = self.handler("/" + name)
+            handler.do_GET()
+            self.assertEqual(handler.sent, [(200, "text/javascript")])
+            self.assertIn(name, dockerfile)
+            self.assertIn("!" + name, included)
+            source = handler.wfile.getvalue().decode()
+            pending.extend(re.findall(r"from ['\"]\./([^'\"]+)['\"]", source))
+
     def test_no_static_traversal(self):
         handler = self.handler("/../server.py")
         handler.do_GET()

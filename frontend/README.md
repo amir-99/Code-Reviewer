@@ -155,3 +155,28 @@ reconnects wait two seconds. Events currently follow review lifetime; no automat
 activity-row retention policy is installed. Size and retain this table according
 to deployment volume. SSE consumes one API connection and one frontend proxy
 thread per open tab; large deployments should capacity-test concurrent streams.
+
+## Deploy under /agentic/
+
+The same frontend build works at `/` and `/agentic/`: assets, navigation and API
+requests resolve relative to the frontend's location. Keep the trailing slash.
+For `https://review.blubank.ai/agentic/`, add the locations in
+[`nginx.agentic.conf`](nginx.agentic.conf) to the host Nginx's existing HTTPS
+server for `review.blubank.ai`, using that server's TLS configuration.
+
+Start or rebuild the frontend with:
+
+```sh
+docker compose -f compose.yml -f compose.frontend.yml up -d --build
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+The request path is `/agentic/api/admin/...` → Nginx `/api/admin/...` on
+`127.0.0.1:8093` → the frontend proxy `/admin/...` on `http://api:8080`.
+Keep `REVIEWER_API_URL=http://api:8080` in Compose; it is an internal endpoint,
+not the public `/agentic/` URL. No backend route prefix, CORS change or additional
+public port is required. This exposes dashboard admin routes, not GitLab
+webhook routes or FastAPI's documentation UI. Connect using `ADMIN_TOKEN` as
+usual. Nginx must run on the Docker host for the sample localhost upstream to
+work; a containerized ingress needs an upstream reachable on its Docker network.
