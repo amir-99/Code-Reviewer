@@ -4,11 +4,11 @@ services:
     build: ./frontend
     environment:
       REVIEWER_API_URL: http://api:8080
-    ports: ['127.0.0.1:8093:8080']
+    ports: ["8093:8080"]
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     restart: unless-stopped
     depends_on:
-      api: {condition: service_healthy}
+      api: { condition: service_healthy }

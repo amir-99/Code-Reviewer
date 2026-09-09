@@ -20,14 +20,14 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes: [postgres_data:/var/lib/postgresql/data]
     healthcheck:
-      test: [CMD-SHELL, 'pg_isready -U reviewer -d reviewer']
+      test: [CMD-SHELL, "pg_isready -U reviewer -d reviewer"]
       interval: 5s
       timeout: 3s
       retries: 20
     restart: unless-stopped
   redis:
     image: redis:7.4-bookworm@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
-    command: [redis-server, --appendonly, 'yes']
+    command: [redis-server, --appendonly, "yes"]
     volumes: [redis_data:/data]
     healthcheck:
       test: [CMD, redis-cli, ping]
@@ -38,17 +38,17 @@ services:
   migrate:
     <<: *app
     command: [alembic, upgrade, head]
-    restart: 'no'
+    restart: "no"
     healthcheck:
       disable: true
     depends_on:
-      postgres: {condition: service_healthy}
+      postgres: { condition: service_healthy }
   api:
     <<: *app
-    ports: ['127.0.0.1:8092:8080']
+    ports: ["8092:8080"]
     depends_on:
-      migrate: {condition: service_completed_successfully}
-      redis: {condition: service_healthy}
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
   worker:
     <<: *app
     command: [arq, reviewer.worker.WorkerSettings]
@@ -59,8 +59,8 @@ services:
       start_period: 35s
       retries: 3
     depends_on:
-      migrate: {condition: service_completed_successfully}
-      redis: {condition: service_healthy}
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
 volumes:
   postgres_data:
   redis_data:
