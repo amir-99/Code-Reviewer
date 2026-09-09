@@ -46,6 +46,11 @@ class ReviewOverrides(BaseModel):
     # nothing at all. Persisted with the review so a replay reuses the mode the
     # run was triggered with. None means "whatever the project config says".
     report_mode: ReportMode | None = None
+    # Model selection for this run, by role. Roles left out fall back to the
+    # project profile and then the shipped defaults, so a manual run naming no
+    # model behaves exactly like a webhook run. Persisted with the review, so a
+    # replay reruns on the models the run was triggered with.
+    models: dict[str, str] = Field(default_factory=dict)
 
 
 class Hunk(BaseModel):

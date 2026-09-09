@@ -7,7 +7,7 @@ from test_git import git
 from test_git import history as history
 
 from reviewer import worker
-from reviewer.config.schema import Settings
+from reviewer.config.schema import DEFAULT_ROLE_MODELS, Settings
 from reviewer.findings.models import (
     Anchor,
     Coverage,
@@ -471,3 +471,54 @@ async def test_recheck_command_answers_threads_without_running_a_review(
     assert snapshot["recheck"]["at"] and snapshot["findings"]
     # Nothing is left to answer at this head.
     assert (await machine.recheck_now(7, 2)) is None
+
+
+async def test_a_run_resolves_its_models_once_and_records_what_it_used(
+    store, history, tmp_path
+):
+    """Every stage's role is resolved before the first one runs, and reported."""
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    # The operator moved one role for this run only; the rest keep the defaults.
+    review = await store.accept(
+        7,
+        2,
+        head,
+        "models",
+        overrides={"requested_by": "admin", "models": {"correctness": "vendor/strong"}},
+    )
+    tiers = []
+
+    class Recording(Echo):
+        async def complete(self, **kwargs):
+            tiers.append(kwargs["tier"])
+            return await super().complete(**kwargs)
+
+    assert await pipeline(store, forge, tmp_path, llm=Recording()).run(review.id) == (
+        "PUBLISHED"
+    )
+    events = await store.events(review.id, limit=2000)
+    announced = [e for e in events if e["kind"] == "models"]
+    assert len(announced) == 1, "one selection per run, before any stage starts"
+    selection = announced[0]["data"]
+    assert selection["correctness"] == "vendor/strong"
+    assert selection["line_review"] == DEFAULT_ROLE_MODELS["line_review"]
+    assert selection["verification"] == DEFAULT_ROLE_MODELS["verification"]
+    first_stage = next(i for i, e in enumerate(events) if e["kind"] == "agent")
+    assert events.index(announced[0]) < first_stage
+    # Stages ask for their own role rather than a shared tier, so an operator can
+    # price them separately.
+    assert {"purpose", "design", "correctness", "line_review"} <= set(tiers)
+    assert "strong" not in tiers and "fast" not in tiers
+    # The run's own record survives its events: the snapshot carries it too.
+    saved = await store.snapshot(review.id)
+    assert saved["bundle"]["budget"]["model_tier"] == selection

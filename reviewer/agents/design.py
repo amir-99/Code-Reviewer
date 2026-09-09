@@ -3,4 +3,4 @@ from reviewer.agents.base import TemplateAgent
 
 class Agent(TemplateAgent):
     def __init__(self):
-        super().__init__("design", "strong", "whole_change")
+        super().__init__("design", None, "whole_change")

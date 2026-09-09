@@ -22,7 +22,9 @@ async def build(
     config,
     previous=None,
     overrides=None,
+    models=None,
 ):
+    """`models` is the resolved role -> model ID map recorded on the budget."""
     import asyncio
 
     base = await git.merge_base(wt, mr.target_branch, review.head_sha)
@@ -132,7 +134,7 @@ async def build(
         budget=Budget(
             token_ceiling=config.review.token_ceiling,
             deadline_at=started + timedelta(seconds=config.review.timeout_s),
-            model_tier={"strong": "configured", "fast": "configured"},
+            model_tier=models or {},
         ),
         degradations=list(dict.fromkeys(degradations)),
     )

@@ -3,7 +3,12 @@ import pytest
 from conftest import FakeQueue
 
 from reviewer.api.manual import parse_merge_request_url
-from reviewer.config.schema import ProjectConfig, Settings
+from reviewer.config.schema import (
+    DEFAULT_ROLE_MODELS,
+    ROLES,
+    ProjectConfig,
+    Settings,
+)
 from reviewer.context.models import ReviewOverrides
 from reviewer.context.requirements import collect
 from reviewer.main import create_app
@@ -276,3 +281,65 @@ async def test_manual_trigger_carries_report_mode(client_parts):
     assert (
         await post(app, {"merge_request_url": url, "report_mode": "publish"})
     ).status_code == 422
+
+
+async def test_manual_trigger_carries_the_operator_s_model_choice(client_parts):
+    app, queue, _ = client_parts
+    response = await post(
+        app,
+        {
+            "merge_request_url": f"{BASE}/group/proj/-/merge_requests/2",
+            "models": {"correctness": DEFAULT_ROLE_MODELS["verification"]},
+        },
+    )
+    assert response.status_code == 202
+    assert response.json()["models"] == {
+        "correctness": DEFAULT_ROLE_MODELS["verification"]
+    }
+    overrides = queue.jobs[0][1][0]["overrides"]
+    # Only the role the operator moved: every other role stays on project policy,
+    # and the choice is persisted so a replay reruns on the same models.
+    assert overrides["models"] == {"correctness": DEFAULT_ROLE_MODELS["verification"]}
+
+
+async def test_manual_trigger_without_models_runs_on_the_defaults(client_parts):
+    app, queue, _ = client_parts
+    assert (
+        await post(app, {"merge_request_url": f"{BASE}/group/proj/-/merge_requests/2"})
+    ).status_code == 202
+    assert queue.jobs[0][1][0]["overrides"]["models"] == {}
+
+
+async def test_manual_trigger_rejects_unknown_roles_and_unconfigured_models(
+    client_parts,
+):
+    app, queue, _ = client_parts
+    url = f"{BASE}/group/proj/-/merge_requests/2"
+    unknown_role = await post(
+        app, {"merge_request_url": url, "models": {"nope": "a/b"}}
+    )
+    assert unknown_role.status_code == 400
+    assert "nope" in unknown_role.json()["detail"]
+    # A model this deployment is not configured for would otherwise fail one
+    # stage at a time, deep inside the run.
+    unknown_model = await post(
+        app, {"merge_request_url": url, "models": {"design": "attacker/model"}}
+    )
+    assert unknown_model.status_code == 400
+    assert "attacker/model" in unknown_model.json()["detail"]
+    assert queue.jobs == []
+
+
+async def test_models_endpoint_reports_defaults_and_what_may_be_selected(client_parts):
+    app, _, _ = client_parts
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/admin/models", headers={"Authorization": "Bearer admin"}
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["roles"]) == set(ROLES)
+    assert body["defaults"]["line_review"] == DEFAULT_ROLE_MODELS["line_review"]
+    assert set(DEFAULT_ROLE_MODELS.values()) <= set(body["catalog"])

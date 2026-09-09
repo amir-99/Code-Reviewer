@@ -25,7 +25,9 @@ SHARED = "_shared"
 
 class StageAgent(ABC):
     name: str
-    tier: str = "strong"
+    # The model-selection role this agent's calls resolve through. A stage runs
+    # on its own role by default, so operators can price each stage separately.
+    tier: str = ""
     unit_kind: str = "file_group"
 
     @property
@@ -43,7 +45,7 @@ class StageAgent(ABC):
         for round_no in range(3):
             result = await llm.complete(
                 stage=self.name,
-                tier=self.tier,
+                tier=self.tier or self.name,
                 system=system,
                 user=user,
                 response_model=StageEnvelope,
@@ -65,8 +67,8 @@ class StageAgent(ABC):
 
 
 class TemplateAgent(StageAgent):
-    def __init__(self, name, tier="strong", unit_kind="file_group"):
-        self.name, self.tier, self.unit_kind = name, tier, unit_kind
+    def __init__(self, name, tier=None, unit_kind="file_group"):
+        self.name, self.tier, self.unit_kind = name, tier or name, unit_kind
 
     def build_prompt(self, bundle, unit):
         version, template, digest = PROMPTS[self.name]

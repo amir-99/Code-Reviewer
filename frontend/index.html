@@ -70,6 +70,13 @@
             <textarea id="documents" name="documents" rows="3" placeholder="One URL per line"></textarea>
           </div>
         </details>
+        <details id="models-panel">
+          <summary>Models <span id="models-changed" class="badge" hidden>0</span></summary>
+          <p class="hint">Each part of the review picks its own model. Leave a role on its default
+            and this run uses the project&rsquo;s configured model for it.</p>
+          <div id="models"></div>
+          <button id="models-reset" type="button" hidden>Reset to defaults</button>
+        </details>
         <div class="field">
           <label for="mode">Report mode</label>
           <select id="mode" name="report_mode">

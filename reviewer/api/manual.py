@@ -21,6 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from reviewer.api.admin import authenticate
 from reviewer.api.webhooks import ReviewJob
+from reviewer.config.loader import load_project
+from reviewer.config.models import catalog
+from reviewer.config.schema import ROLES
 from reviewer.context.models import (
     ISSUE_KEY_PATTERN,
     ReportMode,
@@ -82,6 +85,29 @@ class ManualReviewRequest(BaseModel):
     # nothing. A project configured for silent enforcement never posts, so
     # "applied" degrades to "none" there rather than overriding the operator.
     report_mode: ReportMode = "applied"
+    # Model per role for this run only. Roles left out run on the project's
+    # configured model, so an operator can move one stage without restating
+    # the rest. Validated against the operator's catalogue below, because a
+    # model this deployment is not configured for would only fail at the
+    # gateway, one stage at a time.
+    models: dict[str, str] = Field(default_factory=dict, max_length=len(ROLES))
+
+
+def check_models(models, settings, project_id=None):
+    """Reject unknown roles and models this installation cannot select."""
+    if not models:
+        return {}
+    unknown = sorted(set(models) - set(ROLES))
+    if unknown:
+        raise HTTPException(400, f"Unknown model roles: {', '.join(unknown)}")
+    config = load_project(settings.config_path, project_id or 0)
+    allowed = set(catalog(settings, config))
+    chosen = sorted({model for model in models.values() if model not in allowed})
+    if chosen:
+        raise HTTPException(
+            400, f"Models are not configured for selection: {', '.join(chosen)}"
+        )
+    return dict(models)
 
 
 def check_document_urls(urls, confluence_base_url):
@@ -122,6 +148,9 @@ async def trigger(body: ManualReviewRequest, request: Request):
         raise HTTPException(502, "GitLab is unreachable") from None
     if mr.state != "opened" or mr.draft:
         raise HTTPException(409, "Merge request is closed, merged or a draft")
+    # Checked against the project's own catalogue, which is why it waits until
+    # the URL has been resolved to a project.
+    models = check_models(body.models, settings, project_id)
     job = ReviewJob(
         project_id=project_id,
         iid=iid,
@@ -137,6 +166,7 @@ async def trigger(body: ManualReviewRequest, request: Request):
             document_urls=list(dict.fromkeys(body.document_urls)),
             requested_by="admin",
             report_mode=body.report_mode,
+            models=models,
         ),
     )
     try:
@@ -151,6 +181,7 @@ async def trigger(body: ManualReviewRequest, request: Request):
             head_sha=mr.head_sha,
             event_id=job.event_id,
             report_mode=body.report_mode,
+            models=models or None,
         )
     except Exception:
         logger.error(
@@ -169,6 +200,7 @@ async def trigger(body: ManualReviewRequest, request: Request):
         "head_sha": mr.head_sha,
         "event_id": job.event_id,
         "report_mode": body.report_mode,
+        "models": models,
         "findings": None,
         "poll": f"/admin/reviews?event_id={job.event_id}",
     }

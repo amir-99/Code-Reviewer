@@ -38,7 +38,7 @@ async def judge(finding, before, after, patch, author_notes, llm, redactor, revi
     version, prompt, digest = PROMPTS["recheck"]
     return await llm.complete(
         stage="recheck",
-        tier="verification",
+        tier="recheck",
         system=prompt + "\n" + INJECTION_RULE,
         user=frame(redactor.text(json.dumps(payload)), "recheck-code"),
         response_model=RecheckResult,

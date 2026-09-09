@@ -395,6 +395,22 @@ class Store:
             )
             return (row.data or {}).get("status") if row is not None else None
 
+    async def event_data(self, review_id, kind):
+        """The newest event of one kind, or None if the run recorded none.
+
+        Used for facts a run announces once — the models it resolved — so a
+        reader that arrives after the event has scrolled out of the feed still
+        sees them.
+        """
+        async with self.sessions() as session:
+            row = await session.scalar(
+                select(ReviewEvent)
+                .where(ReviewEvent.review_id == review_id, ReviewEvent.kind == kind)
+                .order_by(ReviewEvent.sequence.desc())
+                .limit(1)
+            )
+            return row.data if row is not None else None
+
     async def last_sequence(self, review_id):
         """The newest event sequence, so a snapshot can say what it reflects."""
         async with self.sessions() as session:

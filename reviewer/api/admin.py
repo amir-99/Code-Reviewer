@@ -3,6 +3,10 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from reviewer.config.loader import load_project
+from reviewer.config.models import assignment, catalog, resolve
+from reviewer.config.schema import ROLES
+
 
 async def authenticate(request: Request):
     secret = request.app.state.settings.admin_token.get_secret_value()
@@ -14,6 +18,25 @@ async def authenticate(request: Request):
 
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
+
+
+@router.get("/models")
+async def models(request: Request, project_id: int | None = None):
+    """The roles a review selects a model for, and what an operator may choose.
+
+    `defaults` is what a run uses when the operator names nothing, resolved
+    through the same layers a review resolves through, so the dashboard shows
+    the model that will actually run rather than a guess. `catalog` is the set
+    of IDs a manual run may name; it is operator configuration, not a list
+    discovered from the gateway.
+    """
+    settings = request.app.state.settings
+    config = load_project(settings.config_path, project_id or 0)
+    return {
+        "roles": list(ROLES),
+        "defaults": assignment(resolve(settings, config)),
+        "catalog": catalog(settings, config),
+    }
 
 
 @router.get("/reviews")
@@ -71,6 +94,12 @@ async def inspect(review_id: str, request: Request):
     body["overrides"] = review.overrides
     body["findings"] = [summarise(f) for f in await store.findings_for(review_id)]
     snapshot = await store.snapshot(review_id) or {}
+    # The run's own record of which model served each role, so a finished review
+    # still reports what produced it once its events have scrolled away.
+    body["models"] = (snapshot.get("bundle") or {}).get("budget", {}).get(
+        "model_tier"
+    ) or await store.event_data(review_id, "models")
+
     body["report"] = snapshot.get("report")
     body["recheck"] = snapshot.get("recheck")
     return body

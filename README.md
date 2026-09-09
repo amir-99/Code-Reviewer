@@ -41,13 +41,59 @@ Required deployment settings:
 | `JIRA_BASE_URL`, `JIRA_TOKEN` | Jira Data Center REST v2, PAT authentication |
 | `CONFLUENCE_BASE_URL`, `CONFLUENCE_TOKEN` | Confluence Data Center REST content API, PAT |
 | `GATEWAY_BASE_URL`, `GATEWAY_KEY` | Internal OpenAI-compatible gateway, including `/v1` if applicable |
-| `MODEL_STRONG`, `MODEL_FAST`, `MODEL_VERIFIER` | Approved gateway model IDs |
-| `MODEL_CONTEXT_TOKENS` | Approved context-window limit |
+| `MODEL_ROLES` | Optional JSON object of role → approved gateway model ID |
+| `MODEL_LIMITS` | Optional JSON object of model ID → `context_tokens` and `max_output_tokens` |
+| `MODEL_CATALOG` | Optional JSON array of model IDs an operator may select for a manual run |
+| `MODEL_STRONG`, `MODEL_FAST`, `MODEL_VERIFIER` | Legacy tier model IDs, still honoured |
+| `MODEL_CONTEXT_TOKENS` | Approved context-window limit, used for models `MODEL_LIMITS` does not name |
 | `ADMIN_TOKEN` | Bearer token for admin and metrics endpoints |
 
 Confluence's REST content endpoint must be available on your installation.
 Model availability and context limits must be confirmed before connecting real
 projects. No provider SDK or public-provider fallback is used for LLM calls.
+
+## Model selection
+
+Every model-selecting call site is a *role*, and each role is selected
+independently: `purpose`, `design`, `correctness`, `complexity`, `tests_`,
+`line_review`, `system_context`, `verification` and `recheck`. Cost and quality
+are not uniform across a review — one stage runs once over the whole change,
+another runs per file — so the stage that finds bugs and the stage that reads
+lines need not run on the same model, and the verifier should not be the model
+whose own claim it is checking.
+
+Selection is layered, most specific first:
+
+1. the models an operator chose for one manual run,
+2. `models` in the project's `config/projects.json` entry,
+3. `MODEL_ROLES` for the installation,
+4. the shipped defaults,
+5. `MODEL_STRONG` / `MODEL_FAST` / `MODEL_VERIFIER`, for a caller that still
+   asks for a tier by name.
+
+Resolution happens once per review, before any stage runs, so an edit to
+configuration cannot split one review across two models. The resolved map is
+recorded on the review, announced in its activity feed, and reported by
+`GET /admin/reviews/{id}`. `GET /admin/models` returns the roles, the models a
+run would use today, and the catalogue an operator may select from.
+
+A role may also carry limits and effort, which is where per-model differences
+belong — a prompt is sized against the context window of the model that will
+actually receive it, and a stage never asks for more output than its model
+returns:
+
+```json
+{"defaults": {"models": {
+  "default": {"model": "vendor/general"},
+  "roles": {
+    "correctness": {"model": "vendor/strong", "reasoning_effort": "high"},
+    "line_review": {"model": "vendor/cheap", "max_output_tokens": 8192}
+  }
+}}}
+```
+
+Model IDs, context limits and the selectable catalogue are operator
+configuration. Repository `.ai-review.yml` cannot select a model.
 
 ## Project policy
 
@@ -237,7 +283,10 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 
 - `POST /admin/reviews`: trigger a review from a merge request link, with no
   hook involved. The body takes `merge_request_url` plus optional `issue_key`,
-  `epic_key` and `document_urls`. A supplied issue key replaces branch/title/
+  `epic_key`, `document_urls` and `models`, a role → model ID object naming a
+  model for this run only. Roles left out keep the project's own selection, so a
+  run naming nothing behaves exactly like a webhook run; a model outside the
+  catalogue is rejected here rather than failing one stage at a time. A supplied issue key replaces branch/title/
   commit discovery rather than adding to it, a supplied epic key overrides the
   one derived from the story, and the given pages are read before any the issue
   links to. Confluence links are honoured even when the change has no issue at
@@ -259,13 +308,15 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 - `GET /admin/reviews?event_id=...`: resolve a trigger response's event id to
   its review; reports `QUEUED` until the worker admits it.
 - `GET /admin/reviews/{id}`: state, history, status delivery, the review's
-  findings, the rendered `report`, and `recheck`, the answers the last recheck
-  gave this review's open threads.
+  findings, the rendered `report`, `recheck` — the answers the last recheck gave
+  this review's open threads — and `models`, the model each role ran on.
 - `POST /admin/reviews/{id}/replay`: fresh review at the current head, keeping
   any context the review was manually triggered with.
 - `POST /admin/reviews/{id}/recheck`: re-judge the comments that review
   published, at the merge request's current head. Runs no stages and publishes
   no report.
+- `GET /admin/models`: the selectable roles, the model each role resolves to
+  today, and the catalogue a manual run may choose from.
 - `GET /admin/reviews/{id}/audit`: model, prompt/version/hash, token counts,
   latency, outcome and blob references.
 - `GET /admin/quality?project_id=42`: precision, fabrication, coverage, model

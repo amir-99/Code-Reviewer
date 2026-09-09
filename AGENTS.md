@@ -61,6 +61,12 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   Line Review fan out concurrently; System Context follows their aggregation.
 - A gate may terminate on a mechanically valid, verified blocker. Model-proposed
   severity alone cannot terminate a review or fail a status.
+- Each model-selecting call site is a role: the seven stages, `verification`
+  and `recheck`. Resolve models once per review, before any stage runs, through
+  operator overrides, project profile, `MODEL_ROLES`, then the shipped defaults;
+  record the resolved map on the review. Repository YAML must never select a
+  model, and a prompt is sized against the context window of the model that will
+  receive it, not an installation-wide number.
 - Compare reported coverage to dispatched unit IDs. Retry missing coverage once;
   remaining gaps and exhausted budgets make the review partial.
 - Partial and failed reviews fail open. Never turn an unavailable dependency or

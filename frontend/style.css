@@ -245,6 +245,13 @@ summary::before { content: "▸ "; display: inline-block; transition: transform 
 details[open] > summary::before { content: "▾ "; }
 details { margin: 4px 0 14px; }
 
+/* Model selection for a manual run: one row per role, default until moved. */
+.model-field { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: 8px; margin-bottom: 6px; }
+.model-field label { font-size: 11px; color: var(--muted); margin: 0; }
+.model-field select { padding: 6px 8px; font-size: 12px; font-family: var(--mono); }
+.model-field select.chosen { border-color: var(--accent); color: var(--text); }
+#models-changed { margin-left: 6px; }
+
 /* ---------- layout ---------- */
 
 main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
@@ -606,6 +613,25 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
 .activity .name { color: var(--text-dim); }
 .activity li.running .name { color: var(--text); }
 .activity .parent { color: var(--muted); }
+/* The model behind a step. Muted by default so a feed of rows still reads as
+   activity, and given the gateway's own colour where the row is the call. */
+.activity .model {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity li.k-llm_attempt .model { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 35%, var(--line)); }
+.activity li.k-models .kind { color: var(--violet); }
+.activity li.k-models .name { font-family: var(--mono); font-size: 11px; }
 .activity .right { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 .activity .took { font-family: var(--mono); font-size: 10px; color: var(--muted); }
 .activity .took.live { color: var(--amber); }

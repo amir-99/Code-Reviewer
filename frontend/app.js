@@ -1,5 +1,6 @@
 import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk} from './flow.js';
+import {chosenModels, modelFor, roleFor, roleLabel} from './models.js';
 
 const $ = id => document.getElementById(id);
 const el = (tag, text, cls) => {
@@ -19,7 +20,7 @@ const THEME_KEY = 'review-room-theme';
 // Kinds beyond the four the filter chips name, and the chip each belongs under:
 // a gateway attempt is reported inside the LLM tool call it was made for, and
 // the run bracket spans the states of one worker run.
-const GROUPS = {llm_attempt: 'tool', run: 'state'};
+const GROUPS = {llm_attempt: 'tool', run: 'state', models: 'state'};
 const KINDS = {llm_attempt: 'llm'};
 const KEEP = 300;
 
@@ -31,6 +32,10 @@ const running = new Set();
 const stages = new Map();       // agent name -> {status, at, took}
 const stateAt = new Map();      // review state -> when the pipeline entered it
 const nodes = new Map();        // review state -> the flow node's elements
+let modelDefaults = {};         // role -> the model a run uses when none is chosen
+let modelCatalog = [];          // model IDs this deployment allows an operator to pick
+const modelChoice = new Map();  // role -> the model chosen for the next manual run
+let reviewModels = {};          // role -> model, as resolved by the review being watched
 
 const group = kind => GROUPS[kind] || kind;
 const shows = kind => activityKind === 'all' || activityKind === group(kind);
@@ -511,7 +516,26 @@ function fillRight(row, status, took, since) {
   } else right.append(el('span', status || 'transition', `badge ${statusTone(status)}`));
 }
 
-function activityRow(kind, name, parent, at, status, depth) {
+function setModel(row, model) {
+  const chip = row.querySelector('.model');
+  if (!chip) return;
+  chip.textContent = model || '';
+  chip.hidden = !model;
+  chip.title = model ? `Model for this step: ${model}` : '';
+}
+
+// A review announces its models before any stage starts, but a reconnect can
+// replay activity ahead of the snapshot that carries them. Fill the rows that
+// were drawn without one rather than leaving them blank for the whole run.
+function paintModels() {
+  for (const entry of activities.values()) {
+    if (entry.model || !entry.role) continue;
+    const model = reviewModels[entry.role];
+    if (model) { entry.model = model; setModel(entry.row, model); }
+  }
+}
+
+function activityRow(kind, name, parent, at, status, depth, model) {
   const row = el('li', '', `k-${kind}${status === 'started' ? ' running' : ''}`);
   row.style.setProperty('--depth', depth);
   row.dataset.kind = kind;
@@ -521,7 +545,11 @@ function activityRow(kind, name, parent, at, status, depth) {
   const label = el('span', '', 'label');
   label.append(el('span', KINDS[kind] || kind, 'kind'), el('span', name, 'name'));
   if (parent) label.append(el('span', `· ${parent}`, 'parent'));
+  const chip = el('span', '', 'model');
+  chip.hidden = true;
+  label.append(chip);
   row.append(time, label, el('span', '', 'right'));
+  setModel(row, model);
   fillRight(row, status, null, Date.parse(at));
   return row;
 }
@@ -562,6 +590,9 @@ function addActivity(item) {
     else renderPipeline();
   }
   if (kind === 'agent') markStage(item);
+  // The run announces the model it resolved for every role before the first
+  // stage starts; it is the record of what produced this review.
+  if (kind === 'models') { reviewModels = {...reviewModels, ...data}; paintModels(); }
 
   const known = data.activity_id ? activities.get(data.activity_id) : null;
   if (known) {
@@ -578,18 +609,23 @@ function addActivity(item) {
 
   const ancestor = data.parent_id ? activities.get(data.parent_id) : null;
   const depth = kind === 'state' ? 0 : Math.min((ancestor ? ancestor.depth + 1 : 0), 4);
-  // A gateway attempt reports its outcome instead of a start/finish pair.
+  // A gateway attempt reports its outcome instead of a start/finish pair, and a
+  // model selection is a fact about the run rather than a step that runs.
   const status = kind === 'llm_attempt'
     ? (data.outcome === 'success' ? 'completed' : labels(data.outcome) || 'attempt')
+    : kind === 'models' ? 'selected'
     : data.status;
   const name = kind === 'state' ? labels(data.state)
     : kind === 'agent' ? labels(data.name)
     : kind === 'llm_attempt' ? `${labels(data.stage)} · attempt ${data.transport_attempt ?? 1}`
+    : kind === 'models' ? `${Object.keys(data).length} roles · ${[...new Set(Object.values(data))].join(' · ')}`
     : String(data.name ?? '');
-  const row = activityRow(kind, name, ancestor?.name, item.at, status, depth);
+  const role = roleFor(kind, data, ancestor);
+  const model = modelFor(kind, data, role, reviewModels);
+  const row = activityRow(kind, name, ancestor?.name, item.at, status, depth, model);
   if (data.activity_id) {
     row.dataset.activity = data.activity_id;
-    activities.set(data.activity_id, {row, kind, name, depth, status, at: Date.parse(item.at)});
+    activities.set(data.activity_id, {row, kind, name, depth, status, role, model, at: Date.parse(item.at)});
     if (status === 'started') running.add(data.activity_id); else running.delete(data.activity_id);
     countRunning();
   }
@@ -657,6 +693,55 @@ function showTab(name) {
 }
 for (const tab of all('.tab')) tab.onclick = () => { tabTouched = true; showTab(tab.dataset.tab); };
 
+/* ---------- model selection ---------- */
+
+async function loadModels() {
+  const body = await (await request('/admin/models')).json();
+  modelDefaults = body.defaults || {};
+  modelCatalog = body.catalog || [];
+  const roles = (body.roles || Object.keys(modelDefaults)).filter(role => modelDefaults[role]);
+  $('models').replaceChildren(...roles.map(modelField));
+  markModelChoices();
+}
+
+function modelField(role) {
+  const field = el('div', '', 'field model-field');
+  const select = el('select');
+  select.id = `model-${role}`;
+  select.dataset.role = role;
+  // The empty value is not "no model": it is this deployment's own choice for
+  // the role, which is what the run uses when the operator names nothing.
+  const fallback = el('option', `Default — ${modelDefaults[role]}`);
+  fallback.value = '';
+  select.append(fallback);
+  for (const model of modelCatalog) {
+    const option = el('option', model);
+    option.value = model;
+    if (model === modelChoice.get(role)) option.selected = true;
+    select.append(option);
+  }
+  select.onchange = () => {
+    if (select.value) modelChoice.set(role, select.value); else modelChoice.delete(role);
+    markModelChoices();
+  };
+  const label = el('label', roleLabel(role));
+  label.htmlFor = select.id;
+  field.append(label, select);
+  return field;
+}
+
+// Selection is optional and easy to forget about, so say how much of this run
+// is no longer running on the configured defaults.
+function markModelChoices() {
+  const changed = modelChoice.size;
+  $('models-changed').hidden = !changed;
+  $('models-changed').textContent = String(changed);
+  $('models-reset').hidden = !changed;
+  for (const select of all('#models select')) {
+    select.classList.toggle('chosen', Boolean(modelChoice.get(select.dataset.role)));
+  }
+}
+
 /* ---------- streaming ---------- */
 
 function live(state, text) {
@@ -673,6 +758,7 @@ const delay = (ms, signal) => new Promise(resolve => {
 function render(review) {
   current = review;
   snapshotSeq = Number(review.sequence ?? 0);
+  if (review.models) { reviewModels = {...reviewModels, ...review.models}; paintModels(); }
   renderHead(review);
   renderFindings();
   renderReport(review.report);
@@ -714,6 +800,7 @@ function select(id) {
   selected = id;
   current = null;
   snapshotSeq = 0;
+  reviewModels = {};
   tabTouched = false;
   severity = 'all';
   activities.clear();
@@ -769,6 +856,12 @@ $('login').onsubmit = async event => {
     $('connect').hidden = true;
     $('workspace').hidden = false;
     $('disconnect').hidden = false;
+    // Selection is optional: a deployment that cannot report its models still
+    // triggers reviews, they just run on whatever it is configured with.
+    loadModels().catch(() => {
+      $('models-panel').hidden = true;
+      notice('Model selection is unavailable; runs will use the configured defaults.');
+    });
     clearInterval(refreshTimer);
     refreshTimer = setInterval(() => refresh().catch(() => connection('bad', 'API unreachable')), 15000);
   } catch (error) {
@@ -776,6 +869,12 @@ $('login').onsubmit = async event => {
     $('conn').hidden = true;
     notice(error.message, 'error');
   }
+};
+
+$('models-reset').onclick = () => {
+  modelChoice.clear();
+  for (const select of all('#models select')) select.value = '';
+  markModelChoices();
 };
 
 $('disconnect').onclick = () => { controller?.abort(); clearInterval(refreshTimer); token = ''; location.reload(); };
@@ -844,6 +943,10 @@ $('trigger').onsubmit = async event => {
     document_urls: data.get('documents').split('\n').map(line => line.trim()).filter(Boolean),
   };
   for (const key of ['issue_key', 'epic_key']) if (data.get(key).trim()) body[key] = data.get(key).trim();
+  // Only the roles actually moved: every other role stays on project policy,
+  // and a run that names nothing is exactly a webhook run.
+  const models = chosenModels(modelChoice);
+  if (Object.keys(models).length) body.models = models;
   try {
     const job = await (await request('/admin/reviews', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
     notice('Review queued. Waiting for worker admission…', 'ok');

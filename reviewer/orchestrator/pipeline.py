@@ -9,6 +9,7 @@ import structlog
 from reviewer.agents.base import PROMPTS
 from reviewer.agents.verification import verify
 from reviewer.config.loader import load_project
+from reviewer.config.models import assignment, resolve
 from reviewer.context.builder import build
 from reviewer.decision.engine import decide, status
 from reviewer.findings.dedup import deduplicate, fingerprint
@@ -142,6 +143,14 @@ class Pipeline:
                     if review.overrides
                     else None
                 )
+                # Resolved once for the whole run: every stage, the verifier and
+                # the recheck judge use this map, it is recorded on the budget,
+                # and it is announced so the activity feed can name the model
+                # behind each event.
+                models = resolve(self.settings, config, overrides)
+                selection = assignment(models)
+                await self.store.append_event(review.id, "models", selection)
+                logger.info("models_resolved", review_id=review.id, models=selection)
                 bundle, redactor, symbols, secrets, context_provider = await build(
                     review,
                     mr,
@@ -154,6 +163,7 @@ class Pipeline:
                     config,
                     previous,
                     overrides,
+                    selection,
                 )
                 logger.info(
                     "context_collected",
@@ -275,6 +285,7 @@ class Pipeline:
                             ),
                             tracker,
                             redactor,
+                            models=models,
                         )
                     )
                 except ValueError:
@@ -316,14 +327,7 @@ class Pipeline:
                             provenance=Provenance(
                                 agent=name,
                                 prompt_version=PROMPTS[name][0],
-                                model=(
-                                    getattr(llm, "models", {}).get(
-                                        "fast"
-                                        if name in {"complexity", "line_review"}
-                                        else "strong",
-                                        "fake",
-                                    )
-                                ),
+                                model=getattr(llm, "models", {}).get(name, "fake"),
                                 run_id=review.id,
                                 context_bundle_hash=bundle.content_hash(),
                             ),
@@ -733,6 +737,9 @@ class Pipeline:
         url = mr.repository_url or await self.forge.repository_url(project_id)
         # No secret scan runs here, so only the pattern-based redaction applies.
         redactor = Redactor()
+        # A standalone recheck carries no operator overrides: it runs on the
+        # project's own judge, exactly as the recheck inside a review does.
+        recheck_models = resolve(self.settings, config)
         logger.info(
             "recheck_now_start",
             project_id=project_id,
@@ -755,10 +762,11 @@ class Pipeline:
                                     token_ceiling=config.review.token_ceiling,
                                     deadline_at=datetime.now(UTC)
                                     + timedelta(seconds=config.review.timeout_s),
-                                    model_tier={},
+                                    model_tier=assignment(recheck_models),
                                 )
                             ),
                             redactor,
+                            models=recheck_models,
                         )
                     )
                 except ValueError:

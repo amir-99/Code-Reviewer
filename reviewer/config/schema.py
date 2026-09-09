@@ -16,6 +16,75 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# One role per model-selecting call site. Stage roles are named after the stage
+# that makes the call; verification and recheck are separate roles because they
+# are separate jobs — the verifier gates a blocker, the judge answers a thread —
+# and an operator must be able to price and tune them independently.
+ROLES = (
+    "purpose",
+    "design",
+    "correctness",
+    "complexity",
+    "tests_",
+    "line_review",
+    "system_context",
+    "verification",
+    "recheck",
+)
+
+# Roles the code asked for before selection was per-role. Retained so a gateway
+# configured only with MODEL_STRONG/MODEL_FAST/MODEL_VERIFIER keeps working.
+LEGACY_TIERS = {
+    "strong": "model_strong",
+    "fast": "model_fast",
+    "verification": "model_verifier",
+}
+
+# The shipped assignment, applied to any role the operator has not configured.
+# Operator-supplied IDs: change them in projects.json or MODEL_ROLES, not here.
+DEFAULT_ROLE_MODELS = {
+    "purpose": "google/gemini-3.8-flash",
+    "design": "google/gemini-3.8-flash",
+    "correctness": "google/gemini-3.8-flash",
+    "complexity": "deepseek/deepseek-v4-flash",
+    "tests_": "deepseek/deepseek-v4-flash",
+    "line_review": "openai/gpt-5.6-terra",
+    "system_context": "google/gemini-3.8-flash",
+    "verification": "anthropic/claude-sonnet-5",
+    "recheck": "google/gemini-3.8-flash",
+}
+
+MODEL_ID = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$"
+
+
+class ModelSpec(Strict):
+    """One role's model and the limits that model imposes on a call.
+
+    Limits are per model, not per installation: once roles can differ, a single
+    global context window would size a prompt for the wrong model, and a stage
+    asking for more output tokens than the model allows is rejected outright.
+    """
+
+    model: str = Field(pattern=MODEL_ID)
+    context_tokens: int | None = Field(default=None, ge=1000)
+    max_output_tokens: int | None = Field(default=None, ge=256)
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+
+
+class ModelProfile(Strict):
+    """Operator model selection: a fallback for every role, plus overrides."""
+
+    default: ModelSpec | None = None
+    roles: dict[str, ModelSpec] = {}
+
+    @model_validator(mode="after")
+    def known_roles(self):
+        unknown = set(self.roles) - set(ROLES)
+        if unknown:
+            raise ValueError(f"Unknown model roles: {', '.join(sorted(unknown))}")
+        return self
+
+
 class IssueTrackerConfig(Strict):
     project_keys: list[str] = []
     ac_heading: str = "Acceptance Criteria"
@@ -79,6 +148,7 @@ class ProjectConfig(Strict):
     )
     issue_tracker: IssueTrackerConfig = Field(default_factory=IssueTrackerConfig)
     documents: DocumentsConfig = Field(default_factory=DocumentsConfig)
+    models: ModelProfile = Field(default_factory=ModelProfile)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     static_tools: list[StaticTool] = []
     languages: list[Literal["python", "typescript", "go"]] = [
@@ -117,9 +187,20 @@ class Settings(BaseSettings):
     confluence_token: SecretStr = SecretStr("")
     gateway_base_url: str = ""
     gateway_key: SecretStr = SecretStr("")
+    # Legacy tier configuration, still honoured for the "strong"/"fast"/
+    # "verification" tiers a caller may still ask for by name.
     model_strong: str = ""
     model_fast: str = ""
     model_verifier: str = ""
+    # Installation-wide role selection, above the shipped defaults and below
+    # project configuration. JSON object of role -> model ID.
+    model_roles: dict[str, str] = Field(default_factory=dict)
+    # Per-model context and output limits by exact gateway model ID:
+    # {"vendor/model": {"context_tokens": 1000000, "max_output_tokens": 65536}}.
+    model_limits: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # Model IDs an operator may select for a manual run. Empty means the models
+    # this installation is already configured to use.
+    model_catalog: list[str] = Field(default_factory=list)
     model_context_tokens: int = 32000
     classification_header: str = "X-Data-Classification"
     classification: str = "internal-source-code"

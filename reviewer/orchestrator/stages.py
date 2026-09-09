@@ -20,21 +20,23 @@ class StageResult(BaseModel):
     attempts: int = 0
 
 
+# Each stage selects its own model by role, so the unit kind is all that is
+# fixed in code; the model behind the role is operator configuration.
 STAGES = {
-    "purpose": ("strong", "whole_change"),
-    "design": ("strong", "whole_change"),
-    "correctness": ("strong", "file_group"),
-    "complexity": ("fast", "file_group"),
-    "tests_": ("strong", "file_group"),
-    "line_review": ("fast", "file"),
-    "system_context": ("strong", "whole_change"),
+    "purpose": "whole_change",
+    "design": "whole_change",
+    "correctness": "file_group",
+    "complexity": "file_group",
+    "tests_": "file_group",
+    "line_review": "file",
+    "system_context": "whole_change",
 }
 
 
 @activity("agent", lambda name, *args, **kwargs: name)
 async def execute(name, bundle, llm, config, context_provider=None, only_paths=None):
-    tier, kind = STAGES[name]
-    agent = TemplateAgent(name, tier, kind)
+    kind = STAGES[name]
+    agent = TemplateAgent(name, unit_kind=kind)
     units = partition(bundle, kind, config.review.unit_tokens)
     if only_paths is not None:
         units = [u for u in units if set(u.paths) & set(only_paths)]

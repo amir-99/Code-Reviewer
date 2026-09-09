@@ -1,1 +1,1 @@
-{"name":"review-room","private":true,"type":"module","scripts":{"test":"node --test sse.test.js","check":"node --check app.js && node --check sse.js"}}
+{"name":"review-room","private":true,"type":"module","scripts":{"test":"node --test sse.test.js flow.test.js models.test.js","check":"node --check app.js && node --check sse.js && node --check flow.js && node --check models.js"}}

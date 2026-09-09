@@ -42,10 +42,12 @@ class StageFailed(RuntimeError):
 
 
 class GatewayClient:
-    def __init__(self, settings, audit, budget, redactor, transport=None):
+    def __init__(self, settings, audit, budget, redactor, transport=None, models=None):
         from urllib.parse import urlsplit
 
         import httpx
+
+        from reviewer.config.models import resolve
 
         url = urlsplit(settings.gateway_base_url)
         if url.scheme not in {"http", "https"} or not url.hostname or url.username:
@@ -60,13 +62,12 @@ class GatewayClient:
             follow_redirects=False,
             transport=transport,
         )
-        self.models = {
-            "strong": settings.model_strong,
-            "fast": settings.model_fast,
-            "verification": settings.model_verifier or settings.model_strong,
-        }
+        # One resolved model per role, fixed for the life of this client so a
+        # configuration edit cannot move a review onto a different model
+        # halfway through it.
+        self.specs = models if models is not None else resolve(settings)
+        self.models = {role: spec.model for role, spec in self.specs.items()}
         self.audit, self.budget, self.redactor = audit, budget, redactor
-        self.context_limit = settings.model_context_tokens
         self.prices = settings.model_prices
 
     @activity("tool", "LLM gateway")
@@ -91,9 +92,13 @@ class GatewayClient:
         import httpx
         from pydantic import ValidationError
 
-        model = self.models[tier]
-        if not model:
+        spec = self.specs.get(tier)
+        if spec is None or not spec.model:
             raise StageFailed("Model is not configured")
+        model = spec.model
+        # A stage may not ask for more output than its own model will return.
+        if spec.max_output_tokens:
+            max_tokens = min(max_tokens, spec.max_output_tokens)
         system = self.redactor.text(system)
         user = self.redactor.text(user)
         messages = [
@@ -104,7 +109,7 @@ class GatewayClient:
         reserve = (
             len(prompt.encode()) + max_tokens
         )  # conservative byte count upper bound
-        if reserve > self.context_limit:
+        if reserve > spec.context_tokens:
             raise StageFailed("Prompt exceeds configured context window")
         for parse_attempt in range(2):
             prompt = json.dumps(messages, ensure_ascii=False)
@@ -133,24 +138,25 @@ class GatewayClient:
                             ).total_seconds(),
                         ),
                     )
-                    response = await self.client.post(
-                        "chat/completions",
-                        json={
-                            "model": model,
-                            "messages": messages,
-                            "max_tokens": max_tokens,
-                            "response_format": {
-                                "type": "json_schema",
-                                "json_schema": {
-                                    "name": response_model.__name__,
-                                    "strict": True,
-                                    "schema": strict_schema(
-                                        response_model.model_json_schema()
-                                    ),
-                                },
+                    body = {
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "response_format": {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": response_model.__name__,
+                                "strict": True,
+                                "schema": strict_schema(
+                                    response_model.model_json_schema()
+                                ),
                             },
                         },
-                        timeout=timeout,
+                    }
+                    if spec.reasoning_effort:
+                        body["reasoning_effort"] = spec.reasoning_effort
+                    response = await self.client.post(
+                        "chat/completions", json=body, timeout=timeout
                     )
                     response.raise_for_status()
                     data = response.json()
@@ -236,6 +242,8 @@ class GatewayClient:
                     )
                     await llm_attempt(
                         stage=stage,
+                        role=tier,
+                        model=model,
                         parse_attempt=parse_attempt + 1,
                         transport_attempt=attempt + 1,
                         outcome=outcome,
