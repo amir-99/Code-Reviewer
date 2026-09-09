@@ -126,7 +126,7 @@ cannot be selected by repository content.
 Operator-only scheduling controls also live in project defaults or overrides:
 `unit_concurrency` defaults to 2 workers per analysis stage (at most 8 active
 units across the four stages per review). Set it to 1 for sequential units.
-Purpose and Design remain sequential gates; System Context follows aggregation.
+Purpose and Design remain sequential stages; System Context follows aggregation.
 Size concurrency for gateway capacity and the number of concurrent reviews.
 
 `final_stage_token_reserve` defaults to 0. Set an explicit token allowance to
@@ -167,8 +167,8 @@ flowchart LR
   Queue --> Context[SHA-pinned Git + Jira + Confluence]
   Context --> Secrets[Secret scan and redaction]
   Secrets --> Static[Sandboxed static checks]
-  Static --> Purpose[Purpose gate]
-  Purpose --> Design[Design gate]
+  Static --> Purpose[Purpose review]
+  Purpose --> Design[Design review]
   Design --> Fan[Correctness / Complexity / Test / Line review]
   Fan --> System[System context]
   System --> Validate[Evidence validation and verification]
@@ -182,8 +182,10 @@ by GitService. A changed head or inconsistent diff inventory supersedes the run.
 Gitleaks scans before prompt creation, and matches produce deterministic secret
 findings without a model call. Prompt and response persistence is redacted.
 
-Purpose and Design run sequentially; a validated, confirmed blocker terminates
-those gates. Four analysis stages fan out concurrently. Coverage is checked
+Purpose and Design run sequentially and continue after findings. Secret findings
+and security, data-integrity, and prompt-injection blockers are non-blocking
+`SUGGESTION` warnings; they do not terminate the review or fail its status.
+Four analysis stages fan out concurrently. Coverage is checked
 against dispatched unit IDs; each missing unit gets one retry. Truncated or
 failed stages mark the review partial. A verifier sees the claim, code and cited
 evidence, excluding the proposer's severity, confidence and rationale.
@@ -407,7 +409,7 @@ tests, and activity retention/capacity considerations.
 ### Advisory impact
 
 The existing severity enum represents the code-derived disposition and remains
-the sole finding axis used for gating, early termination and inline selection.
+the sole finding axis used for gating and inline selection.
 `impact_level` is a separate advisory assessment: CRITICAL, HIGH, MEDIUM, LOW,
 or null (unknown/not applicable). Models propose it from the failure scenario,
 not category; it is not independently verified and never changes enforcement.

@@ -57,10 +57,11 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   manual run supersedes an in-flight review for its merge request exactly as a
   new push does. Operator overrides are persisted on the review, so the pipeline
   and a later replay both see the context the run was triggered with.
-- Purpose and Design are sequential gates. Correctness, Complexity, Test, and
+- Purpose and Design are sequential stages. Correctness, Complexity, Test, and
   Line Review fan out concurrently; System Context follows their aggregation.
-- A gate may terminate on a mechanically valid, verified blocker. Model-proposed
-  severity alone cannot terminate a review or fail a status.
+- Findings never terminate a review early. Secret findings and normalized BLOCKER
+  findings are advisory SUGGESTION warnings. Preserve validation and verification;
+  other REQUIRED findings retain their existing enforcement behavior.
 - Each model-selecting call site is a role: the seven stages, `verification`
   and `recheck`. Resolve models once per review, before any stage runs, through
   operator overrides, project profile, `MODEL_ROLES`, then the shipped defaults;
@@ -224,7 +225,7 @@ quality results.
 ### Advisory impact
 
 The existing severity enum represents the code-derived disposition and remains
-the sole finding axis used for gating, early termination and inline selection.
+the sole finding axis used for gating and inline selection.
 `impact_level` is a separate advisory assessment: CRITICAL, HIGH, MEDIUM, LOW,
 or null (unknown/not applicable). Models propose it from the failure scenario,
 not category; it is not independently verified and never changes enforcement.

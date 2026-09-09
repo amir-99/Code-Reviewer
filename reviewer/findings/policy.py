@@ -39,5 +39,8 @@ def normalize(f, touched, static_categories=()):
         not f.anchor.in_diff and f.anchor.file not in touched
     ):
         f.status = "suppressed"
+    # Blocker-class defects are advisory warnings under the current policy.
+    if severity == Severity.BLOCKER:
+        severity = Severity.SUGGESTION
     f.severity_final = severity
     return f

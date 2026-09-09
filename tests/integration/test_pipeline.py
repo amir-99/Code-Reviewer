@@ -223,7 +223,10 @@ async def test_complete_pipeline_with_real_git_and_fake_external_services(
     )
 
 
-async def test_secret_short_circuit_no_model_call(store, history, tmp_path):
+@pytest.mark.parametrize("failed_stage", [False, True])
+async def test_secret_warning_continues_redacted_review(
+    store, history, tmp_path, failed_stage
+):
     repo, base, head = history
     forge = FakeForge(
         MergeRequestContext(
@@ -246,13 +249,37 @@ async def test_secret_short_circuit_no_model_call(store, history, tmp_path):
             }
         ]
     )
-    llm = Echo()
+
+    class SecretReview(Echo):
+        async def complete(self, **kwargs):
+            assert "x = 0" not in kwargs["user"]
+            if failed_stage and kwargs["stage"] == "design":
+                raise TimeoutError()
+            return await super().complete(**kwargs)
+
+    (tmp_path / "config.json").write_text('{"defaults":{"enforcement":"gating"}}')
+    llm = SecretReview()
     review = await store.accept(7, 2, head, "secret")
     state = await pipeline(store, forge, tmp_path, scanner, llm).run(review.id)
-    assert state == "TERMINATED_EARLY"
-    assert not llm.calls
-    assert "x = 0" not in json.dumps(await store.snapshot(review.id))
-    assert len(forge.comments) == 2
+    assert state == "PUBLISHED"
+    stages = {c["stage"] for c in llm.calls}
+    assert {
+        "purpose",
+        "correctness",
+        "complexity",
+        "tests_",
+        "line_review",
+        "system_context",
+    } <= stages
+    assert "verification" not in stages  # Secret detection remains deterministic.
+    snapshot = await store.snapshot(review.id)
+    assert "x = 0" not in json.dumps(snapshot)
+    secret = next(f for f in snapshot["findings"] if f["stage"] == "secrets")
+    assert secret["severity_final"] == "SUGGESTION"
+    completed = await store.get(review.id)
+    assert completed.partial == failed_stage
+    assert completed.decision == ("COMMENT_ONLY" if failed_stage else "APPROVE")
+    assert len(forge.comments) >= 2
 
 
 async def test_failed_stage_never_blocks_gating_review(store, history, tmp_path):
@@ -327,7 +354,11 @@ async def test_incremental_push_only_dispatches_affected_files(
     assert not stages["system_context"].examined
 
 
-async def test_verified_purpose_blocker_stops_before_design(store, history, tmp_path):
+@pytest.mark.parametrize("proposing_stage", ["purpose", "design"])
+@pytest.mark.parametrize("category", ["security", "data_integrity", "prompt_injection"])
+async def test_verified_blocker_becomes_warning_and_continues(
+    store, history, tmp_path, proposing_stage, category
+):
     from reviewer.findings.models import ProposedFinding, VerificationResult
 
     repo, base, head = history
@@ -352,7 +383,7 @@ async def test_verified_purpose_blocker_stops_before_design(store, history, tmp_
                     reasoning="Fixture evidence",
                 )
             result = await super().complete(**kwargs)
-            if kwargs["stage"] == "purpose":
+            if kwargs["stage"] == proposing_stage:
                 result.findings = [
                     ProposedFinding.model_validate(
                         {
@@ -361,7 +392,7 @@ async def test_verified_purpose_blocker_stops_before_design(store, history, tmp_
                                 "line_start": 1,
                                 "line_end": 1,
                             },
-                            "category": "security",
+                            "category": category,
                             "severity_proposed": "BLOCKER",
                             "claim": "Fixture security blocker",
                             "reason": "Fixture",
@@ -383,12 +414,25 @@ async def test_verified_purpose_blocker_stops_before_design(store, history, tmp_
 
     llm = Blocker()
     review = await store.accept(7, 2, head, "purpose-blocker")
-    assert (
-        await pipeline(store, forge, tmp_path, llm=llm).run(review.id)
-        == "TERMINATED_EARLY"
-    )
-    assert [c["stage"] for c in llm.calls] == ["purpose", "verification"]
-    assert "DESIGN_REVIEW" not in (await store.get(review.id)).history
+    (tmp_path / "config.json").write_text('{"defaults":{"enforcement":"gating"}}')
+    assert await pipeline(store, forge, tmp_path, llm=llm).run(review.id) == "PUBLISHED"
+    assert {c["stage"] for c in llm.calls} == {
+        "purpose",
+        "design",
+        "correctness",
+        "complexity",
+        "tests_",
+        "line_review",
+        "system_context",
+        "verification",
+    }
+    completed = await store.get(review.id)
+    assert completed.decision == "APPROVE"
+    assert not completed.partial
+    snapshot = await store.snapshot(review.id)
+    warning = next(f for f in snapshot["findings"] if f["category"] == category)
+    assert warning["severity_final"] == "SUGGESTION"
+    assert warning["verification"]["verdict"] == "confirmed"
 
 
 async def test_recheck_answers_open_comments_after_a_push(store, history, tmp_path):

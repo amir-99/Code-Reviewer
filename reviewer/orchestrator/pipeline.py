@@ -239,6 +239,8 @@ class Pipeline:
                             ):
                                 moved.id = str(uuid4())
                                 moved.anchor.commit_sha = review.head_sha
+                                if moved.severity_final == "BLOCKER":
+                                    moved.severity_final = "SUGGESTION"
                                 carried.append(moved)
                 await self.advance(review, "STATIC_ANALYSIS")
                 bundle.static = await asyncio.gather(
@@ -397,41 +399,15 @@ class Pipeline:
                         )
                     return values
 
-                early = bool(secrets)
-                findings = secrets
                 raw = []
                 for name, state in [
                     ("purpose", "PURPOSE_REVIEW"),
                     ("design", "DESIGN_REVIEW"),
                 ]:
-                    if early:
-                        break
                     await self.advance(review, state)
                     result = await stage(name)
                     raw.extend((name, f) for f in result.findings)
-                    checked = await process([(name, f) for f in result.findings])
-                    blocker = next(
-                        (
-                            f
-                            for f in checked
-                            if f.severity_final == "BLOCKER"
-                            and f.verified
-                            and f.status != "discarded"
-                        ),
-                        None,
-                    )
-                    if blocker:
-                        findings = [blocker]
-                        early = True
-                        logger.info(
-                            "gate_terminated_early",
-                            review_id=review.id,
-                            stage=name,
-                            fingerprint=blocker.fingerprint,
-                            severity=blocker.severity_final,
-                        )
-                        break
-                if not early and level >= 5:
+                if level >= 5:
                     await self.advance(review, "ANALYSIS_FAN_OUT")
                     names = (
                         ["tests_"]
@@ -458,10 +434,11 @@ class Pipeline:
                     await self.advance(review, "EVIDENCE_VALIDATION")
                     await self.advance(review, "FINDING_VERIFICATION")
                     findings = deduplicate(
-                        await process(raw) + carried, config.review.merge_distance
+                        secrets + await process(raw) + carried,
+                        config.review.merge_distance,
                     )
-                if not early and level < 5:
-                    findings = await process(raw)
+                if level < 5:
+                    findings = secrets + await process(raw)
                 for r in results.values():
                     if r.failed:
                         bundle.degradations.append("failed_stage:" + r.stage)
@@ -477,11 +454,10 @@ class Pipeline:
                     or "budget_exhausted" in bundle.degradations
                     or "whole_change_summary_truncated" in bundle.degradations
                     or level < 7
-                ) and not secrets
+                )
                 if partial:
                     bundle.degradations.append("partial")
-                if not early:
-                    await self.advance(review, "FINALIZATION")
+                await self.advance(review, "FINALIZATION")
                 decision = decide(
                     SimpleNamespace(partial=partial, complete=True),
                     findings,
@@ -494,7 +470,7 @@ class Pipeline:
                     decision=str(decision),
                     findings_count=len(findings),
                     partial=partial,
-                    early=early,
+                    early=False,
                 )
                 for f in findings:
                     f.provenance.context_bundle_hash = bundle.content_hash()
@@ -519,8 +495,7 @@ class Pipeline:
                     raise StaleReview()
                 # Persist decision before publication. Findings and stage outputs
                 # remain recoverable if the worker is interrupted during posting.
-                if not early:
-                    await self.advance(review, "DECISION")
+                await self.advance(review, "DECISION")
                 if level >= 7:
                     # Answer the comments already on the merge request before
                     # adding more: the author's fixes are what this push is about.
@@ -533,7 +508,7 @@ class Pipeline:
                         previous_head,
                         only_paths,
                         findings + carried,
-                        not partial and not early,
+                        not partial,
                         llm,
                         redactor,
                         overrides.report_mode if overrides else None,
@@ -554,7 +529,7 @@ class Pipeline:
                             data | {"report": report, "recheck": recheck_report},
                         )
                 await self.store.save_findings(review, findings)
-                final = "TERMINATED_EARLY" if early else "PUBLISHED"
+                final = "PUBLISHED"
                 return await self.finish(review, final, decision, config, partial)
         except StaleReview:
             final = "SUPERSEDED"

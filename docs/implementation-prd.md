@@ -617,7 +617,7 @@ Legal transitions live in `states.py` as an explicit adjacency map. Any illegal 
 
 ### 8.2 Execution shape
 
-- `PURPOSE_REVIEW` and `DESIGN_REVIEW` are **sequential gates**. A `BLOCKER` from either terminates the review (`TERMINATED_EARLY`) with that single finding published. Reviewing lines of a structure about to be rewritten is wasted effort for everyone.
+- `PURPOSE_REVIEW` and `DESIGN_REVIEW` are sequential stages and continue after findings. Secret findings and normalized `BLOCKER` findings are advisory `SUGGESTION` warnings; they neither terminate a review nor fail its status. Validation, verification, redaction, and enforcement for other `REQUIRED` findings remain in place. `TERMINATED_EARLY` is retained for historical records.
 - `ANALYSIS_FAN_OUT` runs Correctness, Complexity, Test and Line Review **concurrently** via `asyncio.gather(return_exceptions=True)`. They share the bundle and do not depend on each other.
 - `SYSTEM_CONTEXT_REVIEW` runs after the fan-out and sees the aggregated findings.
 
@@ -753,7 +753,7 @@ The model's `severity_proposed` is an input, never the output.
 Advisory impact.
 
 The existing severity enum represents the code-derived disposition and remains
-the sole finding axis used for gating, early termination and inline selection.
+the sole finding axis used for gating and inline selection.
 `impact_level` is a separate advisory assessment: CRITICAL, HIGH, MEDIUM, LOW,
 or null (unknown/not applicable). Models propose it from the failure scenario,
 not category; it is not independently verified and never changes enforcement.

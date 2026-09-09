@@ -37,11 +37,9 @@ LEGAL = {
     ReviewState.STATIC_ANALYSIS: {ReviewState.PURPOSE_REVIEW},
     ReviewState.PURPOSE_REVIEW: {
         ReviewState.DESIGN_REVIEW,
-        ReviewState.TERMINATED_EARLY,
     },
     ReviewState.DESIGN_REVIEW: {
         ReviewState.ANALYSIS_FAN_OUT,
-        ReviewState.TERMINATED_EARLY,
     },
     ReviewState.ANALYSIS_FAN_OUT: {ReviewState.SYSTEM_CONTEXT_REVIEW},
     ReviewState.SYSTEM_CONTEXT_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
@@ -64,7 +62,7 @@ def check_transition(old: str, new: str) -> None:
         raise ValueError(f"Illegal review transition: {old} -> {new}")
 
 
-# Deterministic short circuits for feature milestones and scanner findings.
+# Short circuits for feature milestones.
 for stage in (
     "CONTEXT_COLLECTION",
     "STATIC_ANALYSIS",
@@ -72,4 +70,3 @@ for stage in (
     "DESIGN_REVIEW",
 ):
     LEGAL[ReviewState(stage)].add(ReviewState.FINALIZATION)
-LEGAL[ReviewState.STATIC_ANALYSIS].add(ReviewState.TERMINATED_EARLY)

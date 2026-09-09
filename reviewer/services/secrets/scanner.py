@@ -98,7 +98,7 @@ def findings(matches, bundle):
         line = int(m["StartLine"])
         rule = m.get("RuleID", "secret")
         # Only newly added lines introduce a credential. Context matches are
-        # still redacted but cannot become a blocking introduced finding.
+        # still redacted but cannot become an introduced finding.
         changed = next((f for f in bundle.code.files if f.path == path), None)
         if not changed or not any(
             diff_line.new_line == line and diff_line.kind == "added"
@@ -139,7 +139,7 @@ def findings(matches, bundle):
                 severity_proposed="BLOCKER",
                 # Credential presence alone does not establish blast radius.
                 impact_level=None,
-                severity_final="BLOCKER",
+                severity_final="SUGGESTION",
                 claim="Credential introduced in source code",
                 reason=f"Secret scanner matched rule {rule}.",
                 impact="The credential may grant unauthorized access.",
