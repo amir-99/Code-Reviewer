@@ -18,6 +18,13 @@ class Severity(StrEnum):
     PRAISE = "PRAISE"
 
 
+class ImpactLevel(StrEnum):
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
 class Confidence(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
@@ -49,6 +56,8 @@ class ProposedFinding(Schema):
     claim: str = Field(max_length=200)
     reason: str = Field(max_length=600)
     impact: str = Field(max_length=600)
+    # Advisory only; null supports historical records and non-defect findings.
+    impact_level: ImpactLevel | None = None
     failure_scenario: str | None = None
     evidence: list[Evidence] = Field(min_length=1)
     suggested_direction: str = Field(max_length=600)

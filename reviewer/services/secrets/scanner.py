@@ -137,6 +137,8 @@ def findings(matches, bundle):
                 ),
                 category="security",
                 severity_proposed="BLOCKER",
+                # Credential presence alone does not establish blast radius.
+                impact_level=None,
                 severity_final="BLOCKER",
                 claim="Credential introduced in source code",
                 reason=f"Secret scanner matched rule {rule}.",

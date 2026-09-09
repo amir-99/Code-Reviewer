@@ -25,6 +25,8 @@ def fingerprint(project_id, path, category, claim, symbol=None):
 
 
 def combine(first, other):
+    # Keep impact_level with the retained claim, impact prose and provenance.
+    # Never take the maximum from a nearby claim describing another risk.
     if ORDER[other.severity_proposed] < ORDER[first.severity_proposed]:
         first.severity_proposed = other.severity_proposed
     seen = {(e.file, e.line_start, e.line_end, e.note) for e in first.evidence}

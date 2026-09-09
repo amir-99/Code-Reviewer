@@ -34,6 +34,10 @@ def icon(severity):
     return SEVERITY_ICON.get(str(severity or ""), "•")
 
 
+def impact_label(f):
+    return str(f.impact_level or "unknown")
+
+
 def location(anchor):
     span = (
         str(anchor.line_start)
@@ -53,6 +57,7 @@ def render(f, explain_url=""):
         "|---|---|",
         f"| 📍 Location | `{cell(location(f.anchor))}` |",
         f"| 🧭 Confidence | {cell(f.confidence)} |",
+        f"| Impact level (advisory) | {cell(impact_label(f))} |",
     ]
     if f.requirement_ref:
         lines.append(f"| 🔗 Requirement | {cell(f.requirement_ref)} |")
@@ -141,9 +146,12 @@ def summary(bundle, decision, findings, summary_findings, overflow, stage_result
 
     lines += ["", "### 🔎 Findings", ""]
     if active:
-        lines += ["| Severity | Category | Location | Claim |", "|---|---|---|---|"]
         lines += [
-            f"| {icon(f.severity_final)} {cell(f.severity_final)} | {cell(f.category)} "
+            "| Disposition | Impact (advisory) | Category | Location | Claim |",
+            "|---|---|---|---|---|",
+        ]
+        lines += [
+            f"| {icon(f.severity_final)} {cell(f.severity_final)} | {cell(impact_label(f))} | {cell(f.category)} "
             f"| `{cell(location(f.anchor))}` | {cell(f.claim)} |"
             for f in sorted(
                 active,
@@ -169,6 +177,7 @@ def summary(bundle, decision, findings, summary_findings, overflow, stage_result
         ]
         lines += [
             f"- {icon(f.severity_final)} **{safe(f.severity_final)}** "
+            f"[impact: {cell(impact_label(f))}, advisory] "
             f"`{cell(location(f.anchor))}` — {oneline(f.claim)} · {oneline(f.reason)}"
             for f in summary_findings
         ]

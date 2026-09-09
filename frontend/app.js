@@ -1,3 +1,4 @@
+import {matchesFinding} from './findings.js';
 import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk} from './flow.js';
 import {chosenModels, modelFor, roleFor, roleLabel} from './models.js';
@@ -13,6 +14,8 @@ const el = (tag, text, cls) => {
 const all = selector => Array.from(document.querySelectorAll(selector));
 
 const SEVERITIES = ['BLOCKER', 'REQUIRED', 'SUGGESTION', 'QUESTION', 'NIT', 'FYI', 'PRAISE'];
+const IMPACTS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'unknown'];
+let impactLevel = 'all';
 const DECISIONS = {APPROVE: 'Approve', REQUEST_CHANGES: 'Request changes', COMMENT_ONLY: 'Comment only'};
 const VERDICTS = {fixed: 'Fixed', partially_fixed: 'Partially fixed', not_fixed: 'Still open',
   obsolete: 'No longer applies', unverifiable: 'Could not verify'};
@@ -221,7 +224,7 @@ function renderHead(review) {
       ? metric('Took', span(finished - started))
       : metric('Elapsed', Number.isFinite(started) ? span(Date.now() - started) : '—', {elapsed: true}),
     metric('Findings', String(findings.length)),
-    metric('High severity', String(high), {shade: high ? 'bad' : 'good'}),
+    metric('Blocker / required', String(high), {shade: high ? 'bad' : 'good'}),
     metric('Commit status', review.status_delivered ? 'delivered' : 'pending',
       {shade: !review.status_delivered && TERMINAL.has(review.state) ? 'warn' : ''}),
     metric('Report mode', overrides.report_mode || 'project default'),
@@ -403,11 +406,25 @@ function renderFindings() {
     ...SEVERITIES.filter(name => counts.get(name)).map(name => chip(name, labels(name), counts.get(name))),
   );
 
-  const shown = (severity === 'all' ? findings : findings.filter(f => f.severity === severity))
+  const impactCounts = new Map();
+  for (const f of findings) {
+    const level = f.impact_level || 'unknown';
+    impactCounts.set(level, (impactCounts.get(level) || 0) + 1);
+  }
+  $('impact-filters').replaceChildren(...['all', ...IMPACTS].map(level => {
+    const button = el('button', level === 'all' ? 'All impacts' : labels(level),
+      `chip${impactLevel === level ? ' on' : ''}`);
+    button.type = 'button';
+    button.append(el('span', String(level === 'all' ? findings.length : impactCounts.get(level) || 0), 'n'));
+    button.onclick = () => { impactLevel = level; renderFindings(); };
+    return button;
+  }));
+
+  const shown = findings.filter(f => matchesFinding(f, severity, impactLevel))
     .slice().sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity));
   $('findings').replaceChildren();
   if (!shown.length) {
-    $('findings').append(el('p', findings.length ? 'No finding at this severity.' : 'No stored findings to show.', 'empty-line'));
+    $('findings').append(el('p', findings.length ? 'No findings match these filters.' : 'No stored findings to show.', 'empty-line'));
     return;
   }
   for (const finding of shown) $('findings').append(findingCard(finding));
@@ -417,6 +434,7 @@ function findingCard(finding) {
   const article = el('article', '', `finding sev-${finding.severity || 'NONE'}`);
   const top = el('div', '', 'top');
   top.append(el('span', labels(finding.severity) || 'finding', `badge ${severityTone(finding.severity)}`));
+  top.append(el('span', `Impact: ${finding.impact_level || 'unknown'} (advisory)`, 'badge'));
   if (finding.category) top.append(el('span', labels(finding.category), 'badge'));
   top.append(el('span', finding.introduced_by_this_change ? 'this change' : 'pre-existing',
     `badge ${finding.introduced_by_this_change ? 'tone-info' : ''}`.trim()));
@@ -902,6 +920,7 @@ function select(id) {
   streamed = emptySpend();
   tabTouched = false;
   severity = 'all';
+  impactLevel = 'all';
   activities.clear();
   running.clear();
   countRunning();

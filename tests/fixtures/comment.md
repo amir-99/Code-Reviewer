@@ -6,6 +6,7 @@
 |---|---|
 | 📍 Location | `f0.py:1` |
 | 🧭 Confidence | high |
+| Impact level (advisory) | unknown |
 
 **Why** — Wrong result
 

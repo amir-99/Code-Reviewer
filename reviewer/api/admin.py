@@ -136,6 +136,7 @@ def summarise(finding):
         "claim": finding.get("claim"),
         "reason": finding.get("reason"),
         "impact": finding.get("impact"),
+        "impact_level": finding.get("impact_level"),
         "failure_scenario": finding.get("failure_scenario"),
         "suggested_direction": finding.get("suggested_direction"),
         "requirement_ref": finding.get("requirement_ref"),

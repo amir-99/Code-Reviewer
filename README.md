@@ -402,3 +402,21 @@ The authenticated SSE endpoint is `GET /admin/reviews/{id}/events`, with durable
 resume using the `Last-Event-ID` header. Apply migration `0005` before deploying
 the updated API/worker. See the frontend README for event shapes, configuration,
 tests, and activity retention/capacity considerations.
+
+
+### Advisory impact
+
+The existing severity enum represents the code-derived disposition and remains
+the sole finding axis used for gating, early termination and inline selection.
+`impact_level` is a separate advisory assessment: CRITICAL, HIGH, MEDIUM, LOW,
+or null (unknown/not applicable). Models propose it from the failure scenario,
+not category; it is not independently verified and never changes enforcement.
+All seven proposing stages use the versioned shared contract requiring the
+nullable field in structured output. Historical findings load with null.
+Deterministic secret detection leaves impact unknown because credential presence
+alone does not establish scope. The unlinked-story notice has no defect impact.
+Deduplication retains impact with the first retained claim, prose and provenance,
+rather than taking the highest impact of merged findings. Verifier inputs exclude
+this attribute. Impact persists in finding JSON, is displayed in reports and the
+dashboard, and can be filtered alongside disposition in the dashboard. No new
+column or index is needed for filtering an already-loaded review snapshot.

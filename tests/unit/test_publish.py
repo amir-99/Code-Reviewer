@@ -212,3 +212,16 @@ async def test_draft_note_requests_match_the_gitlab_api():
         "/api/v4/projects/7/merge_requests/2/draft_notes"
     }
     await forge.close()
+
+
+async def test_advisory_impact_in_inline_and_summary(tmp_path):
+    f = finding()
+    f.impact_level = "HIGH"
+    f.severity_final = "REQUIRED"
+    f.anchor.in_diff = f.anchor.introduced_by_this_change = True
+    assert "| Impact level (advisory) | HIGH |" in render(f)
+    b = bundle(tmp_path, 1)
+    forge = FakeForge(b.mr)
+    report = await Publisher(forge).publish(b, [f], "COMMENT_ONLY", ProjectConfig(), [])
+    assert "Impact (advisory)" in report["summary"]
+    assert "| HIGH | correctness |" in report["summary"]

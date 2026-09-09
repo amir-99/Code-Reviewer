@@ -81,6 +81,7 @@ async def test_inspect_returns_findings_and_drafted_report(store):
     f = finding()
     f.severity_final = "REQUIRED"
     f.status = "verified"
+    f.impact_level = "HIGH"
     await store.save_findings(review, [f])
     await store.save_snapshot(
         review.id,
@@ -101,6 +102,7 @@ async def test_inspect_returns_findings_and_drafted_report(store):
         body = (await client.get(f"/admin/reviews/{review.id}", headers=auth)).json()
         assert [x["claim"] for x in body["findings"]] == [f.claim]
         assert body["findings"][0]["severity"] == "REQUIRED"
+        assert body["findings"][0]["impact_level"] == "HIGH"
         assert body["findings"][0]["file"] == f.anchor.file
         assert body["report"]["summary"] == "# drafted"
         assert body["recheck"]["head_sha"] == "b" * 40
