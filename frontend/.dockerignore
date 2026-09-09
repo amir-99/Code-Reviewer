@@ -3,5 +3,8 @@
 !index.html
 !app.js
 !sse.js
+!flow.js
+!models.js
+!spend.js
 !style.css
 !favicon.svg
