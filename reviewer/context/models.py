@@ -42,9 +42,9 @@ class ReviewOverrides(BaseModel):
     document_urls: list[str] = Field(default_factory=list, max_length=20)
     requested_by: str = Field(default="", max_length=128)
     # How the finished report reaches the merge request. "applied" posts it,
-    # "draft" renders and stores it without writing to GitLab, "none" publishes
-    # nothing at all. Persisted with the review so a replay reuses the mode the
-    # run was triggered with. None means "whatever the project config says".
+    # "draft" queues GitLab draft notes, "none" stores it for the frontend only.
+    # Persisted with the review so replay reuses the selected mode.
+    # None means "whatever the project config says".
     report_mode: ReportMode | None = None
     # Model selection for this run, by role. Roles left out fall back to the
     # project profile and then the shipped defaults, so a manual run naming no

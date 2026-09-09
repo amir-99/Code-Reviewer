@@ -46,7 +46,7 @@ class Publisher:
         `report_mode` is the operator's per-run choice: "applied" posts the
         review, "draft" leaves it on the merge request as GitLab draft notes —
         pending comments only the reviewer account can see, which notify nobody
-        until someone publishes them — and "none" produces nothing. Silent
+        until someone publishes them — and "none" renders only for the frontend. Silent
         enforcement is an operator setting rather than a per-run one, so a
         manual override can downgrade writes to drafts but never introduce them:
         under silent enforcement a drafted run renders the report and writes
@@ -56,6 +56,19 @@ class Publisher:
         mode = report_mode or ("applied" if writes_allowed else "none")
         if mode == "applied" and not writes_allowed:
             mode = "none"
+        if mode == "none" and report_mode == "none":
+            # Explicit frontend-only runs need no forge calls or publication
+            # receipts. The pipeline persists this report in its snapshot.
+            inline, summarized, overflow = select(
+                findings, config.review.max_inline, config.review.max_per_file
+            )
+            return {
+                "mode": "none",
+                "summary": summary(
+                    bundle, decision, findings, inline + summarized, overflow, stages
+                ),
+                "inline": [],
+            }
         if mode == "none":
             logger.info(
                 "publication_skipped",

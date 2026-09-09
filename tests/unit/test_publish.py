@@ -107,13 +107,13 @@ async def test_report_mode_none_and_silent_enforcement_publish_nothing(tmp_path)
     f.anchor.in_diff = True
     f.anchor.introduced_by_this_change = True
     forge = FakeForge(b.mr)
-    assert (
-        await Publisher(forge).publish(
-            b, [f], "COMMENT_ONLY", ProjectConfig(), [], "none"
-        )
-        is None
+    # No forge access is needed to render a frontend-only report.
+    report = await Publisher(object()).publish(
+        b, [f], "COMMENT_ONLY", ProjectConfig(), [], "none"
     )
-    assert forge.comments == []
+    assert report["mode"] == "none" and f.claim in report["summary"]
+    assert report["inline"] == [] and f.status != "published"
+    assert forge.comments == [] and forge.draft_notes == []
     # Silent is an operator setting: a per-run override cannot introduce writes.
     silent = ProjectConfig(enforcement="silent")
     assert (

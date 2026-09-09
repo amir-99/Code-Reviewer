@@ -867,6 +867,12 @@ The decision is then filtered through the enforcement mode:
 
 ---
 
+Manual report mode `none` renders and persists the report for the frontend,
+without publishing GitLab notes, draft notes or recheck replies, resolving
+threads, or marking findings published. Commit statuses remain governed by
+project enforcement. The report is saved in the review snapshot for retrieval
+through the admin API. An explicit `none` run renders even with silent enforcement.
+
 ## 11. Re-review
 
 Triggered by any push to the source branch.

@@ -80,10 +80,9 @@ class ManualReviewRequest(BaseModel):
     issue_key: str | None = Field(default=None, pattern=ISSUE_KEY_PATTERN)
     epic_key: str | None = Field(default=None, pattern=ISSUE_KEY_PATTERN)
     document_urls: list[str] = Field(default_factory=list, max_length=20)
-    # "applied" posts the report on the merge request, "draft" renders it for
-    # GET /admin/reviews/{id} without writing to GitLab, and "none" publishes
-    # nothing. A project configured for silent enforcement never posts, so
-    # "applied" degrades to "none" there rather than overriding the operator.
+    # "applied" posts per project policy; "draft" queues GitLab draft notes;
+    # "none" stores the report for the frontend without GitLab comments.
+    # Project-level silent enforcement always forbids publication writes.
     report_mode: ReportMode = "applied"
     # Model per role for this run only. Roles left out run on the project's
     # configured model, so an operator can move one stage without restating

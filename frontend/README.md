@@ -180,3 +180,9 @@ public port is required. This exposes dashboard admin routes, not GitLab
 webhook routes or FastAPI's documentation UI. Connect using `ADMIN_TOKEN` as
 usual. Nginx must run on the Docker host for the sample localhost upstream to
 work; a containerized ingress needs an upstream reachable on its Docker network.
+
+For manual reviews, select **None — frontend only, no GitLab comments** to keep
+findings and the rendered report in the dashboard. This mode writes no GitLab
+notes, draft notes or recheck replies, and does not resolve threads. Commit
+statuses still follow the project's enforcement policy. Draft mode continues to
+queue GitLab draft notes; applied mode publishes per project policy.

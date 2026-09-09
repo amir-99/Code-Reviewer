@@ -522,3 +522,36 @@ async def test_a_run_resolves_its_models_once_and_records_what_it_used(
     # The run's own record survives its events: the snapshot carries it too.
     saved = await store.snapshot(review.id)
     assert saved["bundle"]["budget"]["model_tier"] == selection
+
+
+async def test_frontend_only_manual_report_is_persisted_without_comments(
+    store, history, tmp_path
+):
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    review = await store.accept(
+        7,
+        2,
+        head,
+        "manual-frontend-only",
+        overrides={"requested_by": "admin", "report_mode": "none"},
+    )
+    assert (
+        await pipeline(store, forge, tmp_path, llm=Reviewing()).run(review.id)
+        == "PUBLISHED"
+    )
+    saved = await store.snapshot(review.id)
+    assert saved["report"]["mode"] == "none"
+    assert "The assigned value is never checked" in saved["report"]["summary"]
+    assert saved["report"]["inline"] == []
+    assert forge.comments == [] and forge.draft_notes == []
+    assert all(f["status"] != "published" for f in saved["findings"])
