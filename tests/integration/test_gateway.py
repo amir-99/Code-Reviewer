@@ -563,3 +563,110 @@ async def test_a_failed_call_still_reports_the_tokens_it_spent(store, tmp_path):
     assert spend["tokens"] == 2 * 850
     assert spend["cost"] > 0
     await llm.close()
+
+
+@pytest.mark.parametrize("content", [None, [], {}, 42])
+async def test_invalid_content_is_audited_without_masking_failure(
+    store, tmp_path, content
+):
+    def handler(req):
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": content}}]}
+        )
+
+    budget = BudgetTracker(
+        Budget(
+            token_ceiling=100000,
+            deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+            model_tier={},
+        )
+    )
+    llm = GatewayClient(
+        Settings(
+            gateway_base_url="https://gateway.internal/v1", model_strong="approved"
+        ),
+        Audit(store, BlobStore(tmp_path / "blobs")),
+        budget,
+        Redactor(),
+        httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(StageFailed, match="Structured output invalid"):
+            await llm.complete(
+                stage="defect_review",
+                tier="strong",
+                system="review",
+                user="code",
+                response_model=StageEnvelope,
+                review_id="invalid-content",
+                max_tokens=100,
+                timeout_s=2,
+            )
+        async with store.sessions() as session:
+            calls = (await session.scalars(select(LLMCall))).all()
+        assert len(calls) == 2
+        assert all(c.outcome == "invalid_output" for c in calls)
+        assert budget.reserved == 0 and budget.budget.tokens_used > 0
+    finally:
+        await llm.close()
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        None,
+        [],
+        {"prompt_tokens": None, "completion_tokens": "10"},
+        {"prompt_tokens": -1, "completion_tokens": True},
+    ],
+)
+async def test_bad_usage_keeps_conservative_accounting(store, tmp_path, usage):
+    def handler(req):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"findings": [], "coverage": {"units_examined": [], "units_skipped": [], "skip_reason": null}}'
+                        }
+                    }
+                ],
+                "usage": usage,
+            },
+        )
+
+    budget = BudgetTracker(
+        Budget(
+            token_ceiling=100000,
+            deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+            model_tier={},
+        )
+    )
+    llm = GatewayClient(
+        Settings(
+            gateway_base_url="https://gateway.internal/v1", model_strong="approved"
+        ),
+        Audit(store, BlobStore(tmp_path / "blobs")),
+        budget,
+        Redactor(),
+        httpx.MockTransport(handler),
+    )
+    try:
+        await llm.complete(
+            stage="defect_review",
+            tier="strong",
+            system="review",
+            user="code",
+            response_model=StageEnvelope,
+            review_id="bad-usage",
+            max_tokens=100,
+            timeout_s=2,
+        )
+        async with store.sessions() as session:
+            calls = (await session.scalars(select(LLMCall))).all()
+        assert len(calls) == 1 and calls[0].outcome == "success"
+        assert calls[0].tokens_out == 100 and calls[0].tokens_in > 0
+        assert budget.reserved == 0
+    finally:
+        await llm.close()

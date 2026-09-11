@@ -103,3 +103,14 @@ test('an empty history still reads the state it was given', () => {
   assert.equal(status(flow, 'CONTEXT_COLLECTION'), 'active');
   assert.equal(status(flow, 'INIT'), 'skipped');
 });
+
+test('standard reviews show the combined stage and preserve partial coverage', () => {
+  const history = ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'DEFECT_REVIEW',
+    'EVIDENCE_VALIDATION', 'FINDING_VERIFICATION', 'FINALIZATION', 'DECISION', 'PUBLISHED'];
+  const flow = walk('PUBLISHED', history, new Map([['defect_review', {status: 'partial'}]]));
+  assert.equal(status(flow, 'DEFECT_REVIEW'), 'warn');
+  assert.equal(status(flow, 'FINDING_VERIFICATION'), 'done');
+  assert.equal(flow.steps.some(step => step.state === 'PURPOSE_REVIEW'), false);
+  assert.equal(flow.steps.some(step => step.lanes.length), false);
+  assert.equal(flow.percent, 100);
+});

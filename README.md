@@ -55,7 +55,7 @@ projects. No provider SDK or public-provider fallback is used for LLM calls.
 ## Model selection
 
 Every model-selecting call site is a *role*, and each role is selected
-independently: `purpose`, `design`, `correctness`, `complexity`, `tests_`,
+independently: `defect_review` (standard mode), `purpose`, `design`, `correctness`, `complexity`, `tests_`,
 `line_review`, `system_context`, `verification` and `recheck`. Cost and quality
 are not uniform across a review — one stage runs once over the whole change,
 another runs per file — so the stage that finds bugs and the stage that reads
@@ -86,7 +86,7 @@ returns:
 {"defaults": {"models": {
   "default": {"model": "vendor/general"},
   "roles": {
-    "correctness": {"model": "vendor/strong", "reasoning_effort": "high"},
+    "defect_review": {"model": "vendor/strong", "reasoning_effort": "high"},
     "line_review": {"model": "vendor/cheap", "max_output_tokens": 8192}
   }
 }}}
@@ -124,9 +124,15 @@ operator-only enforcement, executable commands, model endpoints and credentials
 cannot be selected by repository content.
 
 Operator-only scheduling controls also live in project defaults or overrides:
-`unit_concurrency` defaults to 2 workers per analysis stage (at most 8 active
-units across the four stages per review). Set it to 1 for sequential units.
-Purpose and Design remain sequential stages; System Context follows aggregation.
+`analysis_mode` defaults to `standard`: one combined `defect_review` stage
+reviews behavior, security, data integrity, concurrency and concrete test gaps.
+Set `analysis_mode: "deep"` in operator project configuration to retain the seven
+stages, including design and maintainability analysis. Repository YAML cannot
+select this setting. Milestones below M5 retain their limited legacy stages;
+they do not imply a complete review.
+`unit_concurrency` defaults to 2 concurrent chunks in standard mode. Deep mode
+uses two workers per analysis stage, up to eight concurrent units per review.
+Set it to 1 for sequential units within each stage.
 `verification_concurrency` defaults to 2 workers (range 1–16). Evidence validation
 and deduplication precede verification; cited context is scanned before verifier
 calls start. Verification completion order never changes finding order. Set it
@@ -142,8 +148,8 @@ setting against the installation's approved gateway capacity.
 
 Phase time controls are operator-only project settings. `finalization_reserve_s`
 defaults to 180 seconds: analysis stops that long before the review deadline.
-System Context receives the first half of the remaining model-work allowance,
-and verification can use the rest. `publication_reserve_s` defaults to 30 seconds
+In standard mode the remaining model-work allowance is available to verification.
+In deep mode System Context receives its first half, followed by verification. `publication_reserve_s` defaults to 30 seconds
 and stops model work before reporting and cleanup. For short reviews, these
 reserves are capped at one quarter and one tenth of the total deadline.
 `unit_timeout_s` defaults to 120 seconds for all context rounds, transport retries,
@@ -152,13 +158,22 @@ dispatched unit in the gateway schema, and the retry explicitly supplies that
 expected ID; empty or conflicting coverage remains partial. Reaching a cutoff records skipped units
 and a partial review; recovery never renews the original deadline.
 
+Standard mode packs intact diff hunks and their surrounding context into chunks,
+splitting oversized hunks only between lines. Related changed tests/imports are
+attached when they fit. A single line exceeding the unit allowance is explicitly
+skipped. Each attempt permits one additional context round. The compact contract
+allows at most three concrete findings per chunk with up to two evidence ranges;
+models must flag omitted findings, making the review partial. Anchor hashes and
+other derived fields are populated in code. Impact remains nullable and advisory.
+
 `stage_output_tokens` defaults to 4096 for proposing stages, additionally bounded
 by each role's configured model output limit. Increase it if measured output
 truncation warrants it. Triage uses `triage_unit_tokens` (12000 bytes by default)
 and selects at most `triage_max_units` (24), further limited by remaining time,
 unit timeout, and concurrency. Selection visits one chunk per file before more
 chunks, prioritizing changed source code. Every omitted unit remains explicitly
-skipped; triage always produces a partial review.
+skipped; triage always produces a partial review. Standard triage runs the general
+defect reviewer; deep triage retains the legacy Test-only detailed pass.
 
 Completed unit results are redacted and checkpointed in `review_units` before
 that worker takes another unit. Recovery reuses only matching prompt, model,
@@ -166,7 +181,8 @@ configuration, SHA, and initial-context hashes. It retains already completed
 coverage even after the deadline expires. A killed in-flight unit can be repeated;
 completed units are preserved. Apply Alembic revision `0006` before starting the
 updated worker. Models and project settings are frozen on each review at its
-first execution; changes apply to new reviews. The shipped Complexity and Test
+first execution; changes apply to new reviews. Frozen configurations predating
+`analysis_mode` retain the deep workflow on recovery. The shipped Complexity and Test
 roles now both use `google/gemini-3.8-flash`.
 
 `final_stage_token_reserve` defaults to 0. Set an explicit token allowance to
@@ -207,11 +223,8 @@ flowchart LR
   Queue --> Context[SHA-pinned Git + Jira + Confluence]
   Context --> Secrets[Secret scan and redaction]
   Secrets --> Static[Sandboxed static checks]
-  Static --> Purpose[Purpose review]
-  Purpose --> Design[Design review]
-  Design --> Fan[Correctness / Complexity / Test / Line review]
-  Fan --> System[System context]
-  System --> Validate[Evidence validation and verification]
+  Static --> Defects[Combined defect review / concurrent chunks]
+  Defects --> Validate[Evidence validation and independent verification]
   Validate --> Policy[Severity, deduplication, noise caps]
   Policy --> Publish[Comments and deterministic status]
 ```
@@ -222,10 +235,10 @@ by GitService. A changed head or inconsistent diff inventory supersedes the run.
 Gitleaks scans before prompt creation, and matches produce deterministic secret
 findings without a model call. Prompt and response persistence is redacted.
 
-Purpose and Design run sequentially and continue after findings. Secret findings
+In optional deep mode, Purpose and Design run sequentially and continue after findings. Secret findings
 and security, data-integrity, and prompt-injection blockers are non-blocking
 `SUGGESTION` warnings; they do not terminate the review or fail its status.
-Four analysis stages fan out concurrently. Coverage is checked
+Deep mode fans out four analysis stages; standard mode reviews each chunk once. Coverage is checked
 against dispatched unit IDs; each missing unit gets one retry. Truncated or
 failed stages mark the review partial. A verifier sees the claim, code and cited
 evidence, excluding the proposer's severity, confidence and rationale.

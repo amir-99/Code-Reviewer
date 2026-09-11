@@ -15,6 +15,7 @@ export const FLOW = [
   {state: 'INIT', label: 'Admit', note: 'admission'},
   {state: 'CONTEXT_COLLECTION', label: 'Context', note: 'repository, requirements'},
   {state: 'STATIC_ANALYSIS', label: 'Static analysis', note: 'scanners'},
+  {state: 'DEFECT_REVIEW', label: 'Defect review', stage: 'defect_review', note: 'concurrent chunks'},
   {state: 'PURPOSE_REVIEW', label: 'Purpose', stage: 'purpose', note: 'gate'},
   {state: 'DESIGN_REVIEW', label: 'Design', stage: 'design', note: 'gate'},
   {state: 'ANALYSIS_FAN_OUT', label: 'Analysis', note: 'concurrent', lanes: [
@@ -55,11 +56,15 @@ export function spans(history = [], at = new Map()) {
 export function walk(state, history = [], stages = new Map(), at = new Map()) {
   const walked = history.length ? history : [state];
   const seen = new Set(walked);
-  const reached = Math.max(0, ...[...walked, state].map(s => PIPELINE.indexOf(s)));
+  const standard = seen.has('DEFECT_REVIEW') || state === 'DEFECT_REVIEW' || stages.has('defect_review');
+  const deepStates = new Set(['PURPOSE_REVIEW', 'DESIGN_REVIEW', 'ANALYSIS_FAN_OUT', 'SYSTEM_CONTEXT_REVIEW']);
+  const flow = FLOW.filter(s => standard ? !deepStates.has(s.state) : s.state !== 'DEFECT_REVIEW');
+  const pipeline = flow.map(s => s.state);
+  const reached = Math.max(0, ...[...walked, state].map(s => pipeline.indexOf(s)));
   const terminal = TERMINAL.has(state);
   const took = spans(walked, at);
 
-  const steps = FLOW.map((spec, index) => {
+  const steps = flow.map((spec, index) => {
     let status = index < reached ? (seen.has(spec.state) ? 'done' : 'skipped')
       : index > reached ? (terminal ? 'skipped' : 'pending')
       : !terminal ? 'active'
@@ -98,7 +103,7 @@ export function walk(state, history = [], stages = new Map(), at = new Map()) {
     terminal,
     // Only a published review has walked the whole pipeline. A failed, cancelled
     // or superseded one stopped where it stopped and must not read as finished.
-    percent: Math.round((reached / (PIPELINE.length - 1)) * 100),
+    percent: Math.round((reached / (pipeline.length - 1)) * 100),
     tone: FAILED.has(state) ? 'bad' : HALTED.has(state) ? 'warn' : '',
   };
 }

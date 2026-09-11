@@ -10,7 +10,7 @@
 // is not something to show an operator.
 export const ROLE_LABELS = {
   purpose: 'Purpose', design: 'Design', correctness: 'Correctness', complexity: 'Complexity',
-  tests_: 'Tests', line_review: 'Line review', system_context: 'System context',
+  defect_review: 'Defect review', tests_: 'Tests', line_review: 'Line review', system_context: 'System context',
   verification: 'Verification', recheck: 'Recheck',
 };
 

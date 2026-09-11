@@ -271,7 +271,7 @@ function renderTrail(history) {
 
 /* ---------- pipeline flow ---------- */
 
-function buildFlow() {
+function buildFlow(steps = walk("INIT").steps) {
   nodes.clear();
   const flow = $('flow');
   flow.replaceChildren();
@@ -283,7 +283,7 @@ function buildFlow() {
     return box;
   };
   // The flow's own shape, read from an unstarted review: labels and lanes only.
-  walk('INIT').steps.forEach((step, index) => {
+  steps.forEach((step, index) => {
     if (index) flow.append(el('i', '', 'link'));
     const node = cell('node', step.label);
     node.dataset.node = step.state;
@@ -324,6 +324,7 @@ function paint(target, step) {
 
 function renderPipeline(state = current?.state ?? 'INIT', history = current?.history ?? []) {
   const flow = walk(state, history, stages, stateAt);
+  if (flow.steps.length !== nodes.size || flow.steps.some(step => !nodes.has(step.state))) buildFlow(flow.steps);
   $('track-fill').style.setProperty('--progress', flow.percent);
   $('track').className = `track${flow.terminal ? '' : ' running'}${flow.tone ? ` ${flow.tone}` : ''}`;
   for (const step of flow.steps) {

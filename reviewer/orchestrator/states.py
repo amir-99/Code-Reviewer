@@ -5,6 +5,7 @@ class ReviewState(StrEnum):
     INIT = "INIT"
     CONTEXT_COLLECTION = "CONTEXT_COLLECTION"
     STATIC_ANALYSIS = "STATIC_ANALYSIS"
+    DEFECT_REVIEW = "DEFECT_REVIEW"
     PURPOSE_REVIEW = "PURPOSE_REVIEW"
     DESIGN_REVIEW = "DESIGN_REVIEW"
     ANALYSIS_FAN_OUT = "ANALYSIS_FAN_OUT"
@@ -34,7 +35,11 @@ TERMINAL = frozenset(
 LEGAL = {
     ReviewState.INIT: {ReviewState.CONTEXT_COLLECTION, ReviewState.FINALIZATION},
     ReviewState.CONTEXT_COLLECTION: {ReviewState.STATIC_ANALYSIS},
-    ReviewState.STATIC_ANALYSIS: {ReviewState.PURPOSE_REVIEW},
+    ReviewState.STATIC_ANALYSIS: {
+        ReviewState.PURPOSE_REVIEW,
+        ReviewState.DEFECT_REVIEW,
+    },
+    ReviewState.DEFECT_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
     ReviewState.PURPOSE_REVIEW: {
         ReviewState.DESIGN_REVIEW,
     },

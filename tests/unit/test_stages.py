@@ -64,7 +64,7 @@ class Echo:
 
 async def test_forty_files_covered_and_fanout_parallel(tmp_path):
     b = bundle(tmp_path)
-    config = ProjectConfig()
+    config = ProjectConfig(analysis_mode="deep")
     assert len(partition(b)) == 40
     start = time.monotonic()
     results = await fan_out(b, Echo(), config)

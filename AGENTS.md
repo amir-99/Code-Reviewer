@@ -57,13 +57,19 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   manual run supersedes an in-flight review for its merge request exactly as a
   new push does. Operator overrides are persisted on the review, so the pipeline
   and a later replay both see the context the run was triggered with.
-- Purpose and Design are sequential stages. Correctness, Complexity, Test, and
-  Line Review fan out concurrently; System Context follows their aggregation.
+- Standard mode runs one combined Defect Review over concurrent coherent diff
+  chunks, then evidence validation, independent verification and reporting.
+  Operator-only `analysis_mode=deep` retains sequential Purpose and Design,
+  concurrent Correctness/Complexity/Test/Line Review and final System Context.
+  Frozen runs without analysis_mode retain deep mode; lower milestones retain
+  their limited stage behavior. Standard triage uses the combined defect review.
+  The compact contract caps findings at three per chunk; flagged omissions and
+  oversized unexamined lines make coverage partial.
 - Findings never terminate a review early. Secret findings and normalized BLOCKER
   findings are advisory SUGGESTION warnings. Preserve validation and verification;
   other REQUIRED findings retain their existing enforcement behavior.
-- Each model-selecting call site is a role: the seven stages, `verification`
-  and `recheck`. Resolve models once per review, before any stage runs, through
+- Each model-selecting call site is a role: `defect_review`, the seven deep stages,
+  `verification` and `recheck`. Resolve models once per review, before any stage runs, through
   operator overrides, project profile, `MODEL_ROLES`, then the shipped defaults;
   record the resolved map on the review. Repository YAML must never select a
   model, and a prompt is sized against the context window of the model that will
@@ -229,8 +235,9 @@ the sole finding axis used for gating and inline selection.
 `impact_level` is a separate advisory assessment: CRITICAL, HIGH, MEDIUM, LOW,
 or null (unknown/not applicable). Models propose it from the failure scenario,
 not category; it is not independently verified and never changes enforcement.
-All seven proposing stages use the versioned shared contract requiring the
-nullable field in structured output. Historical findings load with null.
+All proposing stages require the nullable field in structured output through
+their versioned contracts (compact for Defect Review, shared for deep stages).
+Historical findings load with null.
 Deterministic secret detection leaves impact unknown because credential presence
 alone does not establish scope. The unlinked-story notice has no defect impact.
 Deduplication retains impact with the first retained claim, prose and provenance,

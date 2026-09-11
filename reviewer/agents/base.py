@@ -26,7 +26,9 @@ for path in sorted(
 SHARED = "_shared"
 
 
-def unit_response_model(unit_id):
+def unit_response_model(unit_id, compact=False):
+    from reviewer.agents.defects import DefectEnvelope
+
     # Constrain IDs in the gateway schema as well as checking coverage in code.
     # Empty coverage stays representable and triggers the one coverage retry.
     coverage = create_model(
@@ -36,7 +38,9 @@ def unit_response_model(unit_id):
         units_skipped=(list[Literal[unit_id]], ...),
     )
     return create_model(
-        "UnitStageEnvelope", __base__=StageEnvelope, coverage=(coverage, ...)
+        "UnitStageEnvelope",
+        __base__=DefectEnvelope if compact else StageEnvelope,
+        coverage=(coverage, ...),
     )
 
 
@@ -51,7 +55,8 @@ class StageAgent(ABC):
     @property
     def prompt_version(self):
         # The shared contract is versioned independently, so record both.
-        return f"{PROMPTS[self.name][0]}+shared.{PROMPTS[SHARED][0]}"
+        shared = "_compact" if self.name == "defect_review" else SHARED
+        return f"{PROMPTS[self.name][0]}+shared.{PROMPTS[shared][0]}"
 
     @abstractmethod
     def build_prompt(self, bundle, unit): ...
@@ -71,8 +76,10 @@ class StageAgent(ABC):
             )
         initial_user = user
         context = {}
-        response_model = unit_response_model(unit.id)
-        for round_no in range(3):
+        compact = self.name == "defect_review"
+        response_model = unit_response_model(unit.id, compact)
+        rounds = 2 if compact else 3
+        for round_no in range(rounds):
             result = await llm.complete(
                 stage=self.name,
                 tier=self.tier or self.name,
@@ -84,6 +91,8 @@ class StageAgent(ABC):
                 timeout_s=90,
                 prompt_version=self.prompt_version,
             )
+            if compact and hasattr(result, "expand"):
+                result = result.expand()
             if unit.id not in result.coverage.units_examined:
                 await record(
                     "coverage_mismatch",
@@ -95,7 +104,11 @@ class StageAgent(ABC):
                         explicitly_skipped=unit.id in result.coverage.units_skipped,
                     ),
                 )
-            if not result.context_requests or not context_provider or round_no == 2:
+            if (
+                not result.context_requests
+                or not context_provider
+                or round_no == rounds - 1
+            ):
                 return result
             extra = await context_provider(result.context_requests)
             if extra and all(
@@ -137,7 +150,7 @@ class TemplateAgent(StageAgent):
         user = frame(
             json.dumps(
                 {
-                    "unit": unit.model_dump(),
+                    "unit": unit.model_dump(exclude={"omitted"}),
                     "requirements": requirements,
                     "aggregated_findings": bundle.aggregated_findings
                     if self.name == "system_context"
@@ -148,6 +161,10 @@ class TemplateAgent(StageAgent):
             "review-context",
         )
         return (
-            template + "\n" + PROMPTS[SHARED][1] + "\n" + INJECTION_RULE,
+            template
+            + "\n"
+            + PROMPTS["_compact" if self.name == "defect_review" else SHARED][1]
+            + "\n"
+            + INJECTION_RULE,
             user,
         )

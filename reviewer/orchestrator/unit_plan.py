@@ -54,6 +54,10 @@ def plan(bundle, config, kind, stage, only_paths):
 def identity(agent, bundle, unit, llm, config):
     system, user = agent.build_prompt(bundle, unit)
     spec = getattr(llm, "specs", {}).get(agent.name)
+    config_data = config.model_dump(mode="json")
+    if config.analysis_mode == "deep":
+        # Preserve checkpoint identities from before analysis_mode was explicit.
+        config_data.pop("analysis_mode", None)
     data = dict(
         schema=1,
         stage=agent.name,
@@ -64,6 +68,6 @@ def identity(agent, bundle, unit, llm, config):
         model=asdict(spec)
         if is_dataclass(spec)
         else getattr(llm, "models", {}).get(agent.name),
-        config=config.model_dump(mode="json"),
+        config=config_data,
     )
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()

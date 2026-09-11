@@ -27,6 +27,7 @@ class StageResult(BaseModel):
 # Each stage selects its own model by role, so the unit kind is all that is
 # fixed in code; the model behind the role is operator configuration.
 STAGES = {
+    "defect_review": "hunks",
     "purpose": "whole_change",
     "design": "whole_change",
     "correctness": "file_group",
@@ -84,7 +85,7 @@ async def execute(
             result = StageResult(stage=name)
             completed[index] = result
             remaining = (stage_deadline - datetime.now(UTC)).total_seconds()
-            if exhausted or unit.id not in selected or remaining <= 0:
+            if exhausted or unit.omitted or unit.id not in selected or remaining <= 0:
                 result.partial = True
                 result.skipped.append(unit.id)
                 continue
@@ -104,8 +105,14 @@ async def execute(
                         result.findings.extend(
                             f
                             for f in envelope.findings
-                            if name != "correctness" or f.failure_scenario
+                            if name not in {"correctness", "defect_review"}
+                            or f.failure_scenario
                         )
+                        if getattr(envelope, "findings_truncated", False):
+                            result.partial = True
+                            result.notes.append(
+                                "Additional findings omitted by the per-unit limit"
+                            )
                         if envelope.notes_for_summary:
                             result.notes.append(envelope.notes_for_summary)
                         if (
@@ -163,7 +170,9 @@ async def execute(
 
 async def fan_out(bundle, llm, config, context_provider=None, only_paths=None):
     names = ["correctness", "complexity", "tests_", "line_review"]
-    if "triage_mode" in bundle.degradations:
+    if config.analysis_mode == "standard":
+        names = ["defect_review"]
+    elif "triage_mode" in bundle.degradations:
         names = ["tests_"]
     results = await asyncio.gather(
         *(execute(n, bundle, llm, config, context_provider, only_paths) for n in names),

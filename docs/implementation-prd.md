@@ -1,3 +1,16 @@
+> September 2026 workflow amendment: the operator default is now `analysis_mode=standard`.
+> Context collection, secret scanning and static analysis are followed by one combined
+> `defect_review` stage over concurrent coherent diff chunks, then mechanical validation,
+> deduplication, independent verification and deterministic reporting. Purpose, Design,
+> the four overlapping analysis stages and System Context remain available through
+> operator-only `analysis_mode=deep`. Standard triage uses the combined defect reviewer.
+> The compact versioned contract caps findings at three per chunk and requires an
+> explicit truncation flag; omissions remain partial. It excludes code-derived anchor
+> metadata and permits one additional context round per attempt. Existing enforcement,
+> redaction, audit, checkpoint, recovery, milestone and publication guarantees remain.
+> Frozen runs without this setting retain the legacy deep workflow. This amendment
+> supersedes the default seven-stage sequence described below.
+
 # AI Code Review Agent — Implementation PRD
 
 **Version:** 1.0

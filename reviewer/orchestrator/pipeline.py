@@ -31,6 +31,11 @@ from reviewer.telemetry.activity import traced_review
 logger = structlog.get_logger()
 
 
+def frozen_config(data):
+    # Runs frozen before the combined reviewer shipped retain their stage graph.
+    return ProjectConfig.model_validate({"analysis_mode": "deep", **data})
+
+
 class Pipeline:
     def __init__(
         self,
@@ -63,7 +68,7 @@ class Pipeline:
             return
         project = await self.store.project_number(review)
         config = (
-            ProjectConfig.model_validate(review.execution_config["config"])
+            frozen_config(review.execution_config["config"])
             if review.execution_config
             else load_project(self.settings.config_path, project)
         )
@@ -164,7 +169,7 @@ class Pipeline:
                             },
                         ),
                     )
-                config = ProjectConfig.model_validate(execution["config"])
+                config = frozen_config(execution["config"])
                 level = min(level, int(config.milestone[1:]))
                 models = {
                     role: ResolvedModel(**spec)
@@ -406,44 +411,54 @@ class Pipeline:
                     return values
 
                 raw = []
-                for name, state in [
-                    ("purpose", "PURPOSE_REVIEW"),
-                    ("design", "DESIGN_REVIEW"),
-                ]:
-                    await self.advance(review, state)
-                    result = await stage(name)
-                    raw.extend((name, f) for f in result.findings)
-                if level >= 5:
-                    await self.advance(review, "ANALYSIS_FAN_OUT")
-                    names = (
-                        ["tests_"]
-                        if "triage_mode" in bundle.degradations
-                        else ["correctness", "complexity", "tests_", "line_review"]
-                    )
-                    fan = await asyncio.gather(
-                        *(stage(n) for n in names), return_exceptions=True
-                    )
-                    from reviewer.orchestrator.stages import StageResult
+                if config.analysis_mode == "standard" and level >= 5:
+                    await self.advance(review, "DEFECT_REVIEW")
+                    result = await stage("defect_review")
+                    raw.extend(("defect_review", f) for f in result.findings)
+                else:
+                    for name, state in [
+                        ("purpose", "PURPOSE_REVIEW"),
+                        ("design", "DESIGN_REVIEW"),
+                    ]:
+                        await self.advance(review, state)
+                        result = await stage(name)
+                        raw.extend((name, f) for f in result.findings)
+                    if level >= 5:
+                        await self.advance(review, "ANALYSIS_FAN_OUT")
+                        names = (
+                            ["tests_"]
+                            if "triage_mode" in bundle.degradations
+                            else ["correctness", "complexity", "tests_", "line_review"]
+                        )
+                        fan = await asyncio.gather(
+                            *(stage(n) for n in names), return_exceptions=True
+                        )
+                        from reviewer.orchestrator.stages import StageResult
 
-                    for stage_name, item in zip(names, fan):
-                        if isinstance(item, Exception):
-                            results[stage_name] = StageResult(
-                                stage=stage_name, failed=True, partial=True
-                            )
-                    raw.extend(
-                        (r.stage, f)
-                        for r in fan
-                        if not isinstance(r, Exception)
-                        for f in r.findings
-                    )
-                    await self.advance(review, "SYSTEM_CONTEXT_REVIEW")
-                    # Include aggregated claims as data for the system stage.
-                    bundle.aggregated_findings = [
-                        {"stage": n, "claim": f.claim, "anchor": f.anchor.model_dump()}
-                        for n, f in raw
-                    ][:100]
-                    result = await stage("system_context")
-                    raw.extend(("system_context", f) for f in result.findings)
+                        for stage_name, item in zip(names, fan):
+                            if isinstance(item, Exception):
+                                results[stage_name] = StageResult(
+                                    stage=stage_name, failed=True, partial=True
+                                )
+                        raw.extend(
+                            (r.stage, f)
+                            for r in fan
+                            if not isinstance(r, Exception)
+                            for f in r.findings
+                        )
+                        await self.advance(review, "SYSTEM_CONTEXT_REVIEW")
+                        # Include aggregated claims as data for the system stage.
+                        bundle.aggregated_findings = [
+                            {
+                                "stage": n,
+                                "claim": f.claim,
+                                "anchor": f.anchor.model_dump(),
+                            }
+                            for n, f in raw
+                        ][:100]
+                        result = await stage("system_context")
+                        raw.extend(("system_context", f) for f in result.findings)
+                if level >= 5:
                     await self.advance(review, "EVIDENCE_VALIDATION")
                     await self.advance(review, "FINDING_VERIFICATION")
                     findings = deduplicate(
@@ -817,6 +832,7 @@ class Pipeline:
             "INIT",
             "CONTEXT_COLLECTION",
             "STATIC_ANALYSIS",
+            "DEFECT_REVIEW",
             "PURPOSE_REVIEW",
             "DESIGN_REVIEW",
             "ANALYSIS_FAN_OUT",

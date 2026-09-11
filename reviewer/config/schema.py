@@ -21,6 +21,7 @@ class Strict(BaseModel):
 # are separate jobs — the verifier gates a blocker, the judge answers a thread —
 # and an operator must be able to price and tune them independently.
 ROLES = (
+    "defect_review",
     "purpose",
     "design",
     "correctness",
@@ -43,6 +44,7 @@ LEGACY_TIERS = {
 # The shipped assignment, applied to any role the operator has not configured.
 # Operator-supplied IDs: change them in projects.json or MODEL_ROLES, not here.
 DEFAULT_ROLE_MODELS = {
+    "defect_review": "google/gemini-3.8-flash",
     "purpose": "google/gemini-3.8-flash",
     "design": "google/gemini-3.8-flash",
     "correctness": "google/gemini-3.8-flash",
@@ -140,6 +142,7 @@ class StaticTool(Strict):
 
 class ProjectConfig(Strict):
     # Operator-only controls; repository YAML cannot set these.
+    analysis_mode: Literal["standard", "deep"] = "standard"
     unit_concurrency: int = Field(default=2, ge=1, le=16)
     verification_concurrency: int = Field(default=2, ge=1, le=16)
     finalization_reserve_s: float = Field(default=180, ge=0, le=600)

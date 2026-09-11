@@ -70,7 +70,10 @@ class Reviewing:
         user = unescape(kwargs["user"])
         ids = re.findall(r'"id": "([^"]+:unit-\d+)"', user)
         findings = []
-        if kwargs["stage"] == "correctness" and "added: x = 0" in user:
+        if (
+            kwargs["stage"] in {"correctness", "defect_review"}
+            and "added: x = 0" in user
+        ):
             findings = [
                 ProposedFinding(
                     anchor=Anchor(file="new0.py", line_start=1, line_end=1),
@@ -98,7 +101,12 @@ class Reviewing:
         )
 
 
-def pipeline(store, forge, tmp_path, scanner=None, llm=None):
+def pipeline(store, forge, tmp_path, scanner=None, llm=None, mode="deep"):
+    # These legacy scenarios exercise the optional seven-stage workflow.
+    path = tmp_path / "config.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    config.setdefault("defaults", {}).setdefault("analysis_mode", mode)
+    path.write_text(json.dumps(config))
     settings = Settings(milestone="M9", config_path=tmp_path / "config.json")
     return Pipeline(
         store,
@@ -703,3 +711,68 @@ async def test_recovery_keeps_frozen_models_and_config_without_resolving_again(
     monkeypatch.setattr("reviewer.orchestrator.pipeline.resolve", forbidden)
     assert await pipeline(store, forge, tmp_path).run(review.id) == "PUBLISHED"
     assert (await store.get(review.id)).execution_config == frozen
+
+
+@pytest.mark.parametrize("triage", [False, True])
+async def test_standard_review_uses_one_proposer_and_verifies_findings(
+    store, history, tmp_path, triage
+):
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    config = {"defaults": {"analysis_mode": "standard", "enforcement": "gating"}}
+    if triage:
+        config["defaults"]["review"] = {"max_changed_lines": 1}
+        config["defaults"]["triage_max_units"] = 2
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    class WireReview(Reviewing):
+        async def complete(self, **kwargs):
+            result = await super().complete(**kwargs)
+            if kwargs["stage"] != "defect_review":
+                return result
+            findings = []
+            for finding in result.findings:
+                data = finding.model_dump(exclude={"reason", "severity_proposed"})
+                data["anchor"] = finding.anchor.model_dump(
+                    include={"file", "line_start", "line_end", "symbol"}
+                )
+                data["evidence"] = [
+                    e.model_dump(include={"file", "line_start", "line_end"})
+                    for e in finding.evidence
+                ]
+                findings.append(data)
+            return kwargs["response_model"].model_validate(
+                dict(
+                    findings=findings,
+                    findings_truncated=False,
+                    coverage=result.coverage.model_dump(),
+                    context_requests=[],
+                    notes_for_summary="",
+                )
+            )
+
+    llm = WireReview()
+    review = await store.accept(7, 2, head, "standard")
+    machine = pipeline(store, forge, tmp_path, llm=llm, mode="standard")
+    assert await machine.run(review.id) == "PUBLISHED"
+    stages = await store.stages(review.id)
+    assert set(stages) == {"defect_review"}
+    snapshot = await store.snapshot(review.id)
+    assert snapshot["partial"] == triage
+    defects = [f for f in snapshot["findings"] if f["stage"] == "defect_review"]
+    assert defects and all(f["verification"]["verdict"] == "confirmed" for f in defects)
+    assert bool(stages["defect_review"].skipped) == triage
+    if triage:
+        assert forge.statuses[-1]["state"] == "success"
+    before = len(forge.comments)
+    assert await machine.run(review.id) == "PUBLISHED"
+    assert len(forge.comments) == before

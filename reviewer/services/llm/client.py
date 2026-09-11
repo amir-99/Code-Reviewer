@@ -245,6 +245,8 @@ class GatewayClient:
                         raise httpx.ReadTimeout("Gateway wall-clock deadline") from None
                     response.raise_for_status()
                     data = response.json()
+                    if not isinstance(data, dict):
+                        raise TypeError("Invalid response envelope")
                     choice = data["choices"][0]
                     if not isinstance(choice, dict):
                         raise TypeError("Invalid response envelope")
@@ -261,13 +263,23 @@ class GatewayClient:
                         )
                         else "unknown"
                     )
-                    response_text = choice["message"]["content"]
-                    tokens_in = data.get("usage", {}).get(
-                        "prompt_tokens", len(prompt.encode())
-                    )
-                    tokens_out = data.get("usage", {}).get(
-                        "completion_tokens", len(response_text.encode())
-                    )
+                    message = choice.get("message")
+                    if not isinstance(message, dict) or not isinstance(
+                        message.get("content"), str
+                    ):
+                        raise TypeError("Invalid response content")
+                    response_text = message["content"]
+                    usage = data.get("usage")
+                    if not isinstance(usage, dict):
+                        usage = {}
+                    # Invalid or missing usage must not break mandatory audit or
+                    # release an optimistic token reservation. Booleans aren't counts.
+                    reported_in = usage.get("prompt_tokens")
+                    reported_out = usage.get("completion_tokens")
+                    if type(reported_in) is int and reported_in >= 0:
+                        tokens_in = reported_in
+                    if type(reported_out) is int and reported_out >= 0:
+                        tokens_out = reported_out
                     used = tokens_in + tokens_out
                     value = response_model.model_validate_json(response_text)
                     outcome = "success"
