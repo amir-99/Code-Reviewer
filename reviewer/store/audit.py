@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from reviewer.store.models import LLMCall
+from reviewer.telemetry.activity import activity
 
 
 class BlobStore:
@@ -36,6 +37,7 @@ class Audit:
     def __init__(self, store, blobs):
         self.store, self.blobs = store, blobs
 
+    @activity("storage", "LLM audit persistence")
     async def write(self, *, prompt, response, **fields):
         import inspect
 

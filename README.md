@@ -333,7 +333,24 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 - `GET /admin/quality?project_id=42`: precision, fabrication, coverage, model
   latency, token usage and configured cost, grouped by project/stage/category/
   prompt version/model. Unknown precision or pricing is explicitly reported.
-- `GET /metrics`: Prometheus process/run/fabrication counters.
+- `GET /metrics`: Prometheus process/run/fabrication counters, quality gauges,
+  and `reviewer_operation_duration_seconds` histograms reconstructed from
+  retained activity events, so worker timings are visible in the API process.
+  Labels are operation kind, code-defined name, and outcome; review IDs are
+  kept in logs rather than metric labels. Historical events without durations
+  are omitted. Retention removes observations; these are not lifetime totals.
+
+Activity logs carry review/activity/parent IDs and monotonic durations for
+stages, units, context collection, gateway attempts, budget waits, and audit
+persistence. Stage dispatch/coverage events show unit counts, concurrency,
+retries, and missing coverage. Database logs separate activity connection
+checkout, review-row locking, sequence allocation, and total transaction time.
+Nested operation timings overlap and must not be added together. Gateway
+attempt timing includes transport/retry handling but excludes audit persistence;
+budget waits are reported separately for attempts that reached the gateway.
+Optional activity writes time out after one second and log a metadata-only
+warning; mandatory audit and stage persistence retain their existing behavior.
+Missing telemetry is not evidence of fast execution or complete coverage.
 
 `MODEL_PRICES` maps exact model IDs to `input` and `output` cost per million
 tokens. It is optional; absent pricing is not represented as free usage — an

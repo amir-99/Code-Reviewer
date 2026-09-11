@@ -6,7 +6,7 @@ from reviewer.agents.base import TemplateAgent
 from reviewer.context.partition import partition
 from reviewer.findings.models import ProposedFinding
 from reviewer.orchestrator.budget import BudgetExhausted
-from reviewer.telemetry.activity import activity
+from reviewer.telemetry.activity import activity, record
 
 
 class StageResult(BaseModel):
@@ -42,6 +42,15 @@ async def execute(name, bundle, llm, config, context_provider=None, only_paths=N
         units = [u for u in units if set(u.paths) & set(only_paths)]
     # Workers consume the iterator without awaiting between reads. Keep results
     # in dispatch order, regardless of model completion order.
+    await record(
+        "stage_dispatch",
+        dict(
+            name=name,
+            units=len(units),
+            concurrency=config.unit_concurrency if kind != "whole_change" else 1,
+            triage="triage_mode" in bundle.degradations,
+        ),
+    )
     pending = iter(enumerate(units))
     completed = {}
     exhausted = False
@@ -99,6 +108,17 @@ async def execute(name, bundle, llm, config, context_provider=None, only_paths=N
         result.attempts += item.attempts
         result.partial |= item.partial
         result.failed |= item.failed
+    await record(
+        "stage_coverage",
+        dict(
+            name=name,
+            examined=len(result.examined),
+            skipped=len(result.skipped),
+            attempts=result.attempts,
+            failed=result.failed,
+            partial=result.partial,
+        ),
+    )
     return result
 
 

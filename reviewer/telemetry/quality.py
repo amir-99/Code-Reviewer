@@ -8,6 +8,7 @@ from reviewer.store.models import (
     LLMCall,
     Project,
     Review,
+    ReviewEvent,
     ReviewStage,
 )
 
@@ -126,4 +127,66 @@ async def prometheus(store):
         for field, gauge in gauges.items():
             if row[field] is not None and not (field == "cost" and row["cost_unknown"]):
                 gauge.labels(*(str(row[x]) for x in labels)).set(row[field])
+    await performance_metrics(store, registry)
     return generate_latest(registry)
+
+
+async def performance_metrics(store, registry):
+    """Export worker timings from durable events, even in a separate API process.
+
+    Counts cover retained events, not process lifetime. Old events without
+    durations are omitted rather than interpreted as zero-latency operations.
+    """
+    import math
+
+    from prometheus_client import Histogram
+
+    duration = Histogram(
+        "reviewer_operation_duration_seconds",
+        "Operation wall time from retained activity events; nested times overlap",
+        ["kind", "name", "status"],
+        buckets=(0.01, 0.05, 0.1, 0.5, 1, 5, 15, 30, 60, 120, 300, 600, 1200),
+        registry=registry,
+    )
+    async with store.sessions() as session:
+        rows = await session.stream(
+            select(ReviewEvent.kind, ReviewEvent.data)
+            .where(
+                ReviewEvent.kind.in_(
+                    [
+                        "pipeline",
+                        "agent",
+                        "unit",
+                        "tool",
+                        "wait",
+                        "storage",
+                        "llm_attempt",
+                    ]
+                )
+            )
+            .execution_options(yield_per=500)
+        )
+        async for kind, data in rows:
+            wait = data.get("budget_wait_ms")
+            if (
+                kind == "llm_attempt"
+                and isinstance(wait, (int, float))
+                and math.isfinite(wait)
+                and wait >= 0
+            ):
+                duration.labels(
+                    "wait", "Token budget reservation", "completed"
+                ).observe(wait / 1000)
+            elapsed = data.get("duration_ms")
+            if (
+                not isinstance(elapsed, (int, float))
+                or not math.isfinite(elapsed)
+                or elapsed < 0
+            ):
+                continue
+            name = data.get("role") if kind == "llm_attempt" else data.get("name")
+            status = (
+                data.get("outcome") if kind == "llm_attempt" else data.get("status")
+            )
+            if name and status and status != "started":
+                duration.labels(kind, name, status).observe(elapsed / 1000)

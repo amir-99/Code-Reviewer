@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from reviewer.telemetry.activity import activity, llm_attempt
+from reviewer.telemetry.activity import activity, llm_attempt, log, sink
 
 
 class LLMClient(Protocol):
@@ -115,7 +115,23 @@ class GatewayClient:
             prompt = json.dumps(messages, ensure_ascii=False)
             reserve = len(prompt.encode()) + max_tokens
             for attempt in range(3):
-                await self.budget.reserve(reserve, stage=stage)
+                wait_start = time.monotonic()
+                if sink.get() is not None:
+                    log.info(
+                        "budget_wait_started", review_id=str(review_id), stage=stage
+                    )
+                try:
+                    await self.budget.reserve(reserve, stage=stage)
+                finally:
+                    budget_wait_ms = (time.monotonic() - wait_start) * 1000
+                    if sink.get() is not None:
+                        log.info(
+                            "budget_wait_finished",
+                            review_id=str(review_id),
+                            stage=stage,
+                            duration_ms=budget_wait_ms,
+                        )
+
                 start = time.monotonic()
                 response_text = ""
                 outcome = "transport_error"
@@ -230,6 +246,7 @@ class GatewayClient:
                         if model in self.prices
                         else None
                     )
+                    latency_ms = int((time.monotonic() - start) * 1000)
                     await self.audit.write(
                         review_id=str(review_id),
                         stage=stage,
@@ -239,11 +256,13 @@ class GatewayClient:
                         response=self.redactor.text(response_text),
                         tokens_in=tokens_in,
                         tokens_out=tokens_out,
-                        latency_ms=int((time.monotonic() - start) * 1000),
+                        latency_ms=latency_ms,
                         cost=cost,
                         outcome=outcome,
                     )
                     await llm_attempt(
+                        duration_ms=latency_ms,
+                        budget_wait_ms=budget_wait_ms,
                         stage=stage,
                         role=tier,
                         model=model,

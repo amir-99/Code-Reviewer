@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from reviewer.orchestrator.states import TERMINAL, check_transition
 from reviewer.store.models import Project, Review, ReviewEvent, ReviewStage, utcnow
+from reviewer.telemetry.activity import storage_timing
 
 
 class Store:
@@ -369,16 +370,20 @@ class Store:
         )
 
     async def append_event(self, review_id, kind, data):
-        async with self.sessions.begin() as session:
-            # SQLite has no row locks; acquire its writer lock before reading the
-            # sequence. PostgreSQL serializes writers with FOR UPDATE below.
-            if self.engine.dialect.name == "sqlite":
-                await session.execute(text("BEGIN IMMEDIATE"))
-            review = await session.scalar(
-                select(Review).where(Review.id == review_id).with_for_update()
-            )
-            if review is not None:
-                await self._event(session, review_id, kind, data)
+        with storage_timing("Activity transaction", review_id):
+            async with self.sessions.begin() as session:
+                with storage_timing("Activity connection checkout", review_id):
+                    await session.connection()
+                with storage_timing("Activity review lock", review_id):
+                    # SQLite has no row locks: take its writer lock first.
+                    if self.engine.dialect.name == "sqlite":
+                        await session.execute(text("BEGIN IMMEDIATE"))
+                    review = await session.scalar(
+                        select(Review).where(Review.id == review_id).with_for_update()
+                    )
+                if review is not None:
+                    with storage_timing("Activity sequence allocation", review_id):
+                        await self._event(session, review_id, kind, data)
 
     async def run_state(self, review_id):
         """The status of the newest run marker, or None if no run was recorded.

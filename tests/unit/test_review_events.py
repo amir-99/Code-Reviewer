@@ -239,3 +239,78 @@ async def test_closing_a_run_never_fails_the_review(store):
 
     await open_run(Broken(), "review")
     await close_run(Broken(), "review")
+
+
+async def test_activity_durations_and_logs_exclude_private_arguments(store):
+    from structlog.testing import capture_logs
+
+    review = await store.accept(7, 2, "a" * 40, "timed")
+
+    @activity("tool", "Read code")
+    async def work(private):
+        return private
+
+    token = sink.set((store, review.id))
+    try:
+        with capture_logs() as logs:
+            assert await work("private-code") == "private-code"
+    finally:
+        sink.reset(token)
+    events = await store.events(review.id)
+    assert events[-1]["data"]["duration_ms"] >= 0
+    assert "duration_ms" not in events[-2]["data"]
+    assert any(row["event"] == "activity_write_finished" for row in logs)
+    assert "private-code" not in str(logs)
+
+
+async def test_hung_optional_telemetry_is_cancelled_without_failing_work(monkeypatch):
+    from importlib import import_module
+
+    module = import_module("reviewer.telemetry.activity")
+    monkeypatch.setattr(module, "EVENT_TIMEOUT_S", 0.01)
+    cancelled = []
+
+    class HungStore:
+        async def append_event(self, *args):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+    @activity("tool", "Read code")
+    async def work():
+        return 42
+
+    token = sink.set((HungStore(), "review"))
+    try:
+        async with asyncio.timeout(1):
+            assert await work() == 42
+    finally:
+        sink.reset(token)
+    assert len(cancelled) == 2
+
+
+async def test_cancellation_records_duration_and_propagates():
+    events = []
+    entered = asyncio.Event()
+
+    class RecordingStore:
+        async def append_event(self, review_id, kind, data):
+            events.append(data)
+
+    @activity("tool", "Read code")
+    async def work():
+        entered.set()
+        await asyncio.Event().wait()
+
+    token = sink.set((RecordingStore(), "review"))
+    try:
+        task = asyncio.create_task(work())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        sink.reset(token)
+    assert events[-1]["status"] == "cancelled"
+    assert events[-1]["duration_ms"] >= 0

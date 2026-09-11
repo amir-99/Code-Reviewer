@@ -37,7 +37,7 @@ class StageAgent(ABC):
 
     @abstractmethod
     def build_prompt(self, bundle, unit): ...
-    @activity("unit", "Review work unit")
+    @activity("unit", lambda self, *args, **kwargs: self.name)
     async def run(self, bundle, unit, llm, context_provider=None):
         system, user = self.build_prompt(bundle, unit)
         initial_user = user
