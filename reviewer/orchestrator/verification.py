@@ -1,15 +1,17 @@
 """Bounded independent verification after validation and deduplication."""
 
 import asyncio
+from datetime import UTC, datetime
 
 from reviewer.agents.verification import verify
 from reviewer.findings.models import ContextRequest, VerificationResult
 from reviewer.findings.policy import needs_verification
 from reviewer.orchestrator.budget import BudgetExhausted
+from reviewer.orchestrator.deadlines import cutoff
 
 
 def unavailable(finding, bundle, error):
-    if isinstance(error, BudgetExhausted):
+    if isinstance(error, (BudgetExhausted, TimeoutError)):
         if "budget_exhausted" not in bundle.degradations:
             bundle.degradations.append("budget_exhausted")
     finding.verification = VerificationResult(
@@ -20,8 +22,18 @@ def unavailable(finding, bundle, error):
 
 
 async def verify_findings(
-    findings, bundle, llm, redactor, context_provider, concurrency
+    findings, bundle, llm, redactor, context_provider, concurrency, config=None
 ):
+    def remaining():
+        if config is None:
+            return None
+        seconds = (
+            cutoff(bundle, config, "verification") - datetime.now(UTC)
+        ).total_seconds()
+        if seconds <= 0:
+            raise BudgetExhausted("Verification deadline exhausted")
+        return min(config.unit_timeout_s, seconds)
+
     ready = []
     # Scan every candidate's cited context before any verifier prompt is built.
     # This also ensures secrets discovered for later candidates redact earlier ones.
@@ -39,7 +51,8 @@ async def verify_findings(
             ]
             # The context provider accepts at most five requests per invocation.
             for offset in range(0, len(requests), 5):
-                await context_provider(requests[offset : offset + 5])
+                async with asyncio.timeout(remaining()):
+                    await context_provider(requests[offset : offset + 5])
         except Exception as error:
             unavailable(finding, bundle, error)
         else:
@@ -50,7 +63,8 @@ async def verify_findings(
     async def worker():
         for finding in pending:
             try:
-                await verify(finding, bundle, llm, redactor)
+                async with asyncio.timeout(remaining()):
+                    await verify(finding, bundle, llm, redactor)
             except Exception as error:
                 unavailable(finding, bundle, error)
 

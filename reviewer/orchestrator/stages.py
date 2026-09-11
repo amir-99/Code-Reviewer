@@ -1,16 +1,20 @@
 import asyncio
+import hashlib
+from datetime import UTC, datetime
 
 from pydantic import BaseModel
 
 from reviewer.agents.base import TemplateAgent
-from reviewer.context.partition import partition
 from reviewer.findings.models import ProposedFinding
 from reviewer.orchestrator.budget import BudgetExhausted
+from reviewer.orchestrator.deadlines import cutoff
+from reviewer.orchestrator.unit_plan import identity, plan
 from reviewer.telemetry.activity import activity, record
 
 
 class StageResult(BaseModel):
     stage: str
+    input_hash: str = ""
     findings: list[ProposedFinding] = []
     examined: list[str] = []
     skipped: list[str] = []
@@ -34,19 +38,33 @@ STAGES = {
 
 
 @activity("agent", lambda name, *args, **kwargs: name)
-async def execute(name, bundle, llm, config, context_provider=None, only_paths=None):
+async def execute(
+    name,
+    bundle,
+    llm,
+    config,
+    context_provider=None,
+    only_paths=None,
+    store=None,
+    redactor=None,
+    previous=None,
+):
     kind = STAGES[name]
     agent = TemplateAgent(name, unit_kind=kind)
-    units = partition(bundle, kind, config.review.unit_tokens)
-    if only_paths is not None:
-        units = [u for u in units if set(u.paths) & set(only_paths)]
-    # Workers consume the iterator without awaiting between reads. Keep results
-    # in dispatch order, regardless of model completion order.
+    agent.max_output_tokens = config.stage_output_tokens
+    units, selected = plan(bundle, config, kind, name, only_paths)
+    hashes = {u.id: identity(agent, bundle, u, llm, config) for u in units}
+    stage_hash = hashlib.sha256("".join(hashes.values()).encode()).hexdigest()
+    if previous is not None and previous.input_hash == stage_hash:
+        return previous
+    cached = await store.unit_results(bundle.review_id, name) if store else {}
     await record(
         "stage_dispatch",
         dict(
             name=name,
             units=len(units),
+            selected=len(selected),
+            recovered=sum(h in cached for h in hashes.values()),
             concurrency=config.unit_concurrency if kind != "whole_change" else 1,
             triage="triage_mode" in bundle.degradations,
         ),
@@ -54,51 +72,72 @@ async def execute(name, bundle, llm, config, context_provider=None, only_paths=N
     pending = iter(enumerate(units))
     completed = {}
     exhausted = False
+    stage_deadline = cutoff(bundle, config, name)
 
     async def worker():
         nonlocal exhausted
         for index, unit in pending:
+            key = hashes[unit.id]
+            if key in cached:
+                completed[index] = StageResult.model_validate(cached[key])
+                continue
             result = StageResult(stage=name)
             completed[index] = result
-            if exhausted:
+            remaining = (stage_deadline - datetime.now(UTC)).total_seconds()
+            if exhausted or unit.id not in selected or remaining <= 0:
                 result.partial = True
                 result.skipped.append(unit.id)
                 continue
-            for attempt in range(2):
-                result.attempts += 1
-                try:
-                    envelope = await agent.run(
-                        bundle,
-                        unit,
-                        llm,
-                        None if name == "line_review" else context_provider,
-                    )
-                    result.findings.extend(
-                        f
-                        for f in envelope.findings
-                        if name != "correctness" or f.failure_scenario
-                    )
-                    if envelope.notes_for_summary:
-                        result.notes.append(envelope.notes_for_summary)
-                    if unit.id in envelope.coverage.units_examined:
-                        result.examined.append(unit.id)
-                        break
-                except BudgetExhausted:
-                    exhausted = True
-                    break
-                except Exception:
-                    result.failed = True
-                    break
+            try:
+                # One wall-clock allowance covers context rounds, transport retries,
+                # and the single coverage retry. External cancellation still propagates.
+                async with asyncio.timeout(min(config.unit_timeout_s, remaining)):
+                    for attempt in range(2):
+                        result.attempts += 1
+                        envelope = await agent.run(
+                            bundle,
+                            unit,
+                            llm,
+                            None if name == "line_review" else context_provider,
+                            bool(attempt),
+                        )
+                        result.findings.extend(
+                            f
+                            for f in envelope.findings
+                            if name != "correctness" or f.failure_scenario
+                        )
+                        if envelope.notes_for_summary:
+                            result.notes.append(envelope.notes_for_summary)
+                        if (
+                            unit.id in envelope.coverage.units_examined
+                            and unit.id not in envelope.coverage.units_skipped
+                        ):
+                            result.examined.append(unit.id)
+                            break
+            except BudgetExhausted:
+                exhausted = True
+            except TimeoutError:
+                result.notes.append(
+                    "Unit deadline reached; remaining coverage is unknown"
+                )
+                await record("unit_deadline", dict(name=name, attempts=result.attempts))
+            except Exception:
+                result.failed = True
             if not result.examined:
                 result.skipped.append(unit.id)
                 result.partial = True
+            if store:
+                # Required persistence: errors escape, never masquerade as coverage.
+                data = result.model_dump(mode="json")
+                if redactor is not None:
+                    data = redactor.object(data)
+                await store.save_unit(bundle.review_id, name, key, data)
 
-    # TaskGroup drains cancelled children before the pipeline cleans its worktree.
     concurrency = config.unit_concurrency if kind != "whole_change" else 1
     async with asyncio.TaskGroup() as group:
         for _ in range(min(concurrency, len(units))):
             group.create_task(worker())
-    result = StageResult(stage=name)
+    result = StageResult(stage=name, input_hash=stage_hash)
     for index in sorted(completed):
         item = completed[index]
         result.findings.extend(item.findings)

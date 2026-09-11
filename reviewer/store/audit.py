@@ -47,7 +47,7 @@ class Audit:
             prompt_ref = await prompt_ref
         if inspect.isawaitable(response_ref):
             response_ref = await response_ref
-        async with self.store.sessions.begin() as session:
+        async with self.store.transaction() as session:
             session.add(
                 LLMCall(
                     prompt_hash=hashlib.sha256(prompt.encode()).hexdigest(),

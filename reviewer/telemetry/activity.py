@@ -23,14 +23,16 @@ def storage_timing(name, review_id):
     """Time database phases without recursive event writes or cancellation points."""
     started = monotonic()
     status = "completed"
-    log.info("storage_started", name=name, review_id=str(review_id))
+    log.debug("storage_started", name=name, review_id=str(review_id))
     try:
         yield
     except BaseException:
         status = "failed"
         raise
     finally:
-        log.info(
+        elapsed = (monotonic() - started) * 1000
+        writer = log.warning if elapsed >= 500 or status != "completed" else log.debug
+        writer(
             "storage_finished",
             name=name,
             review_id=str(review_id),
@@ -63,7 +65,12 @@ async def record(kind, data):
         status = "cancelled"
         raise
     finally:
-        log.info(
+        writer = (
+            log.warning
+            if monotonic() - started >= 0.5 or status != "completed"
+            else log.debug
+        )
+        writer(
             "activity_write_finished",
             review_id=str(review_id),
             kind=kind,

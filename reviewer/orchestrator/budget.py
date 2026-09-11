@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 
 class BudgetExhausted(RuntimeError):
@@ -7,11 +7,16 @@ class BudgetExhausted(RuntimeError):
 
 
 class BudgetTracker:
-    def __init__(self, budget, final_stage_token_reserve=0):
+    def __init__(self, budget, final_stage_token_reserve=0, deadline_reserve_s=0):
         self.budget = budget
+        self.deadline_reserve_s = deadline_reserve_s
         self.condition = asyncio.Condition()
         self.reserved = 0
         self.final_stage_token_reserve = final_stage_token_reserve
+
+    @property
+    def deadline_at(self):
+        return self.budget.deadline_at - timedelta(seconds=self.deadline_reserve_s)
 
     async def reserve(self, tokens, *, stage=None):
         # Final stages share the operator's protected allowance. Gates may still
@@ -24,9 +29,7 @@ class BudgetTracker:
         ceiling = self.budget.token_ceiling - protected
         async with self.condition:
             while True:
-                remaining = (
-                    self.budget.deadline_at - datetime.now(UTC)
-                ).total_seconds()
+                remaining = (self.deadline_at - datetime.now(UTC)).total_seconds()
                 if remaining <= 0 or self.budget.tokens_used + tokens > ceiling:
                     raise BudgetExhausted("Review budget exhausted")
                 if self.budget.tokens_used + self.reserved + tokens <= ceiling:

@@ -97,7 +97,7 @@ class GatewayClient:
         try:
             try:
                 remaining = (
-                    self.budget.budget.deadline_at - datetime.now(UTC)
+                    self.budget.deadline_at - datetime.now(UTC)
                 ).total_seconds()
                 if remaining <= 0:
                     raise BudgetExhausted(
@@ -212,7 +212,7 @@ class GatewayClient:
                         max(
                             0.001,
                             (
-                                self.budget.budget.deadline_at
+                                self.budget.deadline_at
                                 - __import__("datetime").datetime.now(
                                     __import__("datetime").UTC
                                 )
@@ -236,9 +236,13 @@ class GatewayClient:
                     }
                     if spec.reasoning_effort:
                         body["reasoning_effort"] = spec.reasoning_effort
-                    response = await self.client.post(
-                        "chat/completions", json=body, timeout=timeout
-                    )
+                    try:
+                        async with asyncio.timeout(timeout):
+                            response = await self.client.post(
+                                "chat/completions", json=body, timeout=timeout
+                            )
+                    except TimeoutError:
+                        raise httpx.ReadTimeout("Gateway wall-clock deadline") from None
                     response.raise_for_status()
                     data = response.json()
                     choice = data["choices"][0]

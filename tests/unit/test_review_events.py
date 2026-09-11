@@ -259,7 +259,10 @@ async def test_activity_durations_and_logs_exclude_private_arguments(store):
     events = await store.events(review.id)
     assert events[-1]["data"]["duration_ms"] >= 0
     assert "duration_ms" not in events[-2]["data"]
-    assert any(row["event"] == "activity_write_finished" for row in logs)
+    assert any(row["event"] == "activity_event" for row in logs)
+    assert all(
+        row["log_level"] == "debug" for row in logs if row["event"] == "storage_started"
+    )
     assert "private-code" not in str(logs)
 
 

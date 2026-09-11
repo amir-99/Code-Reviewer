@@ -655,3 +655,51 @@ async def test_pipeline_verifies_independent_findings_concurrently(
         if (f.get("verification") or {}).get("verdict") == "confirmed"
     ]
     assert [f["anchor"]["file"] for f in confirmed] == ["new0.py", "new1.py"]
+
+
+async def test_recovery_keeps_frozen_models_and_config_without_resolving_again(
+    store, history, tmp_path, monkeypatch
+):
+    import asyncio
+
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    review = await store.accept(7, 2, head, "frozen-recovery")
+    original = store.save_stage
+
+    async def interrupted(review_id, result):
+        await original(review_id, result)
+        if result.stage == "purpose":
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(store, "save_stage", interrupted)
+    with pytest.raises(asyncio.CancelledError):
+        await pipeline(store, forge, tmp_path).run(review.id)
+    frozen = (await store.get(review.id)).execution_config
+    monkeypatch.setattr(store, "save_stage", original)
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "defaults": {
+                    "models": {"roles": {"tests_": {"model": "changed/model"}}},
+                    "unit_concurrency": 1,
+                }
+            }
+        )
+    )
+
+    def forbidden(*args):
+        raise AssertionError("Recovery must use the persisted selection")
+
+    monkeypatch.setattr("reviewer.orchestrator.pipeline.resolve", forbidden)
+    assert await pipeline(store, forge, tmp_path).run(review.id) == "PUBLISHED"
+    assert (await store.get(review.id)).execution_config == frozen

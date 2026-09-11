@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from dataclasses import asdict
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -8,7 +9,8 @@ import structlog
 
 from reviewer.agents.base import PROMPTS
 from reviewer.config.loader import load_project
-from reviewer.config.models import assignment, resolve
+from reviewer.config.models import ResolvedModel, assignment, resolve
+from reviewer.config.schema import ProjectConfig
 from reviewer.context.builder import build
 from reviewer.decision.engine import decide, status
 from reviewer.findings.dedup import deduplicate, fingerprint
@@ -60,7 +62,11 @@ class Pipeline:
             logger.warning("review_not_found", review_id=review_id)
             return
         project = await self.store.project_number(review)
-        config = load_project(self.settings.config_path, project)
+        config = (
+            ProjectConfig.model_validate(review.execution_config["config"])
+            if review.execution_config
+            else load_project(self.settings.config_path, project)
+        )
         level = min(int(self.settings.milestone[1:]), int(config.milestone[1:]))
         logger.info(
             "pipeline_start",
@@ -74,8 +80,6 @@ class Pipeline:
         if review.state in TERMINAL:
             snapshot = await self.store.snapshot(review.id)
             if snapshot and snapshot.get("config"):
-                from reviewer.config.schema import ProjectConfig
-
                 config = ProjectConfig.model_validate(snapshot["config"])
             if not review.status_delivered:
                 recovered = status(
@@ -130,7 +134,7 @@ class Pipeline:
                     ).decode()
                 except Exception:
                     repository_yaml = None
-                if repository_yaml:
+                if repository_yaml and review.execution_config is None:
                     config = load_project(
                         self.settings.config_path, project, repository_yaml
                     )
@@ -148,7 +152,24 @@ class Pipeline:
                 # the recheck judge use this map, it is recorded on the budget,
                 # and it is announced so the activity feed can name the model
                 # behind each event.
-                models = resolve(self.settings, config, overrides)
+                execution = review.execution_config
+                if execution is None:
+                    models = resolve(self.settings, config, overrides)
+                    execution = await self.store.freeze_execution(
+                        review.id,
+                        dict(
+                            config=config.model_dump(mode="json"),
+                            models={
+                                role: asdict(spec) for role, spec in models.items()
+                            },
+                        ),
+                    )
+                config = ProjectConfig.model_validate(execution["config"])
+                level = min(level, int(config.milestone[1:]))
+                models = {
+                    role: ResolvedModel(**spec)
+                    for role, spec in execution["models"].items()
+                }
                 selection = assignment(models)
                 await self.store.append_event(review.id, "models", selection)
                 # The ceiling this run is held to, announced by the run itself:
@@ -286,7 +307,11 @@ class Pipeline:
                             ).where(LLMCall.review_id == review.id)
                         )
                     )
-                tracker = BudgetTracker(bundle.budget, config.final_stage_token_reserve)
+                tracker = BudgetTracker(
+                    bundle.budget,
+                    config.final_stage_token_reserve,
+                    min(config.publication_reserve_s, config.review.timeout_s / 10),
+                )
                 try:
                     llm = (
                         self.llm_factory(bundle, redactor)
@@ -308,21 +333,23 @@ class Pipeline:
                     bundle.degradations.append("gateway_unconfigured")
 
                 async def stage(name):
-                    if name not in results:
-                        results[name] = await execute(
-                            name,
-                            bundle,
-                            llm,
-                            config,
-                            context_provider,
-                            system_paths if name == "system_context" else only_paths,
-                        )
-                        from reviewer.orchestrator.stages import StageResult
+                    results[name] = await execute(
+                        name,
+                        bundle,
+                        llm,
+                        config,
+                        context_provider,
+                        system_paths if name == "system_context" else only_paths,
+                        self.store,
+                        redactor,
+                        results.get(name),
+                    )
+                    from reviewer.orchestrator.stages import StageResult
 
-                        results[name] = StageResult.model_validate(
-                            redactor.object(results[name].model_dump(mode="json"))
-                        )
-                        await self.store.save_stage(review.id, results[name])
+                    results[name] = StageResult.model_validate(
+                        redactor.object(results[name].model_dump(mode="json"))
+                    )
+                    await self.store.save_stage(review.id, results[name])
                     return results[name]
 
                 async def process(raw):
@@ -361,6 +388,7 @@ class Pipeline:
                             redactor,
                             context_provider,
                             config.verification_concurrency,
+                            config=config,
                         )
                     for f in values:
                         categories = {
@@ -395,6 +423,13 @@ class Pipeline:
                     fan = await asyncio.gather(
                         *(stage(n) for n in names), return_exceptions=True
                     )
+                    from reviewer.orchestrator.stages import StageResult
+
+                    for stage_name, item in zip(names, fan):
+                        if isinstance(item, Exception):
+                            results[stage_name] = StageResult(
+                                stage=stage_name, failed=True, partial=True
+                            )
                     raw.extend(
                         (r.stage, f)
                         for r in fan
@@ -430,6 +465,7 @@ class Pipeline:
                     or llm is None
                     or "prompt_requirements_truncated" in bundle.degradations
                     or "budget_exhausted" in bundle.degradations
+                    or "triage_mode" in bundle.degradations
                     or "whole_change_summary_truncated" in bundle.degradations
                     or level < 7
                 )
@@ -727,7 +763,11 @@ class Pipeline:
                                     deadline_at=datetime.now(UTC)
                                     + timedelta(seconds=config.review.timeout_s),
                                     model_tier=assignment(recheck_models),
-                                )
+                                ),
+                                deadline_reserve_s=min(
+                                    config.publication_reserve_s,
+                                    config.review.timeout_s / 10,
+                                ),
                             ),
                             redactor,
                             models=recheck_models,

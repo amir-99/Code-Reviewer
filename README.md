@@ -140,6 +140,35 @@ appears as `kind="wait", name="Gateway capacity"` in duration metrics. With
 multiple worker processes, total capacity is the sum of their limits; size this
 setting against the installation's approved gateway capacity.
 
+Phase time controls are operator-only project settings. `finalization_reserve_s`
+defaults to 180 seconds: analysis stops that long before the review deadline.
+System Context receives the first half of the remaining model-work allowance,
+and verification can use the rest. `publication_reserve_s` defaults to 30 seconds
+and stops model work before reporting and cleanup. For short reviews, these
+reserves are capped at one quarter and one tenth of the total deadline.
+`unit_timeout_s` defaults to 120 seconds for all context rounds, transport retries,
+and the single coverage retry together. Coverage IDs are constrained to the
+dispatched unit in the gateway schema, and the retry explicitly supplies that
+expected ID; empty or conflicting coverage remains partial. Reaching a cutoff records skipped units
+and a partial review; recovery never renews the original deadline.
+
+`stage_output_tokens` defaults to 4096 for proposing stages, additionally bounded
+by each role's configured model output limit. Increase it if measured output
+truncation warrants it. Triage uses `triage_unit_tokens` (12000 bytes by default)
+and selects at most `triage_max_units` (24), further limited by remaining time,
+unit timeout, and concurrency. Selection visits one chunk per file before more
+chunks, prioritizing changed source code. Every omitted unit remains explicitly
+skipped; triage always produces a partial review.
+
+Completed unit results are redacted and checkpointed in `review_units` before
+that worker takes another unit. Recovery reuses only matching prompt, model,
+configuration, SHA, and initial-context hashes. It retains already completed
+coverage even after the deadline expires. A killed in-flight unit can be repeated;
+completed units are preserved. Apply Alembic revision `0006` before starting the
+updated worker. Models and project settings are frozen on each review at its
+first execution; changes apply to new reviews. The shipped Complexity and Test
+roles now both use `google/gemini-3.8-flash`.
+
 `final_stage_token_reserve` defaults to 0. Set an explicit token allowance to
 protect System Context and independent verification from earlier stages. It
 must be smaller than `review.token_ceiling` and is shared by those final stages;
@@ -356,6 +385,9 @@ stages, units, context collection, gateway attempts, budget waits, and audit
 persistence. Stage dispatch/coverage events show unit counts, concurrency,
 retries, and missing coverage. Database logs separate activity connection
 checkout, review-row locking, sequence allocation, and total transaction time.
+Routine database/write timings use DEBUG; operations taking at least 500 ms and
+failed writes retain warnings. `LOG_LEVEL=INFO` is the default; use DEBUG to
+inspect all database phases.
 Nested operation timings overlap and must not be added together. Gateway
 attempt timing includes transport/retry handling but excludes audit persistence;
 budget waits are reported separately for attempts that reached the gateway.

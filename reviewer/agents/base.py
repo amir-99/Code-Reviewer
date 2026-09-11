@@ -2,10 +2,13 @@ import json
 from abc import ABC, abstractmethod
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
+
+from pydantic import create_model
 
 from reviewer.context.framing import INJECTION_RULE, frame
-from reviewer.findings.models import StageEnvelope
-from reviewer.telemetry.activity import activity
+from reviewer.findings.models import Coverage, StageEnvelope
+from reviewer.telemetry.activity import activity, record
 
 PROMPTS = {}
 for path in sorted(
@@ -23,12 +26,27 @@ for path in sorted(
 SHARED = "_shared"
 
 
+def unit_response_model(unit_id):
+    # Constrain IDs in the gateway schema as well as checking coverage in code.
+    # Empty coverage stays representable and triggers the one coverage retry.
+    coverage = create_model(
+        "UnitCoverage",
+        __base__=Coverage,
+        units_examined=(list[Literal[unit_id]], ...),
+        units_skipped=(list[Literal[unit_id]], ...),
+    )
+    return create_model(
+        "UnitStageEnvelope", __base__=StageEnvelope, coverage=(coverage, ...)
+    )
+
+
 class StageAgent(ABC):
     name: str
     # The model-selection role this agent's calls resolve through. A stage runs
     # on its own role by default, so operators can price each stage separately.
     tier: str = ""
     unit_kind: str = "file_group"
+    max_output_tokens: int = 4096
 
     @property
     def prompt_version(self):
@@ -38,25 +56,52 @@ class StageAgent(ABC):
     @abstractmethod
     def build_prompt(self, bundle, unit): ...
     @activity("unit", lambda self, *args, **kwargs: self.name)
-    async def run(self, bundle, unit, llm, context_provider=None):
+    async def run(self, bundle, unit, llm, context_provider=None, coverage_retry=False):
         system, user = self.build_prompt(bundle, unit)
+        if coverage_retry:
+            user += "\n" + frame(
+                json.dumps(
+                    {
+                        "coverage_retry": True,
+                        "expected_unit_id": unit.id,
+                        "instruction": "Return coverage for this exact unit ID; mark skipped if not examined.",
+                    }
+                ),
+                "coverage-retry",
+            )
         initial_user = user
         context = {}
+        response_model = unit_response_model(unit.id)
         for round_no in range(3):
             result = await llm.complete(
                 stage=self.name,
                 tier=self.tier or self.name,
                 system=system,
                 user=user,
-                response_model=StageEnvelope,
+                response_model=response_model,
                 review_id=bundle.review_id,
-                max_tokens=16000,
+                max_tokens=self.max_output_tokens,
                 timeout_s=90,
                 prompt_version=self.prompt_version,
             )
+            if unit.id not in result.coverage.units_examined:
+                await record(
+                    "coverage_mismatch",
+                    dict(
+                        name=self.name,
+                        context_round=round_no + 1,
+                        coverage_retry=coverage_retry,
+                        reported_examined=len(result.coverage.units_examined),
+                        explicitly_skipped=unit.id in result.coverage.units_skipped,
+                    ),
+                )
             if not result.context_requests or not context_provider or round_no == 2:
                 return result
             extra = await context_provider(result.context_requests)
+            if extra and all(
+                context.get(path) == value for path, value in extra.items()
+            ):
+                return result
             context.update(extra)
             user = (
                 initial_user

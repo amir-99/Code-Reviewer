@@ -16,7 +16,7 @@ def create_app(settings=None, store=None, queue=None, forge=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        configure()
+        configure(settings.log_level)
         app.state.store = store or Store(settings.database_url.get_secret_value())
         app.state.queue = queue or await create_pool(
             RedisSettings.from_dsn(settings.redis_url.get_secret_value())

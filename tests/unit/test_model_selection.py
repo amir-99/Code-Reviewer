@@ -40,7 +40,8 @@ def test_every_role_resolves_to_a_model_by_default():
     assert set(ROLES) <= set(resolved)
     assert assignment(resolved) == DEFAULT_ROLE_MODELS
     # Stages that were one tier before are separately selectable now.
-    assert resolved["correctness"].model != resolved["complexity"].model
+    assert resolved["correctness"].model == resolved["complexity"].model
+    assert resolved["tests_"].model == "google/gemini-3.8-flash"
     assert resolved["verification"].model != resolved["line_review"].model
 
 

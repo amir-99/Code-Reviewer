@@ -43,6 +43,7 @@ class Review(Base):
     partial: Mapped[bool] = mapped_column(default=False)
     # Operator-supplied context for a manually triggered review; NULL for hooks.
     overrides: Mapped[dict | None] = mapped_column(json_type)
+    execution_config: Mapped[dict | None] = mapped_column(json_type)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
@@ -155,3 +156,11 @@ class ReviewEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
+
+
+class ReviewUnit(Base):
+    __tablename__ = "review_units"
+    review_id: Mapped[str] = mapped_column(ForeignKey("reviews.id"), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(32), primary_key=True)
+    input_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    data: Mapped[dict] = mapped_column(json_type)

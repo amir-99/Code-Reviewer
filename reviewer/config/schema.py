@@ -46,8 +46,8 @@ DEFAULT_ROLE_MODELS = {
     "purpose": "google/gemini-3.8-flash",
     "design": "google/gemini-3.8-flash",
     "correctness": "google/gemini-3.8-flash",
-    "complexity": "deepseek/deepseek-v4-flash",
-    "tests_": "deepseek/deepseek-v4-flash",
+    "complexity": "google/gemini-3.8-flash",
+    "tests_": "google/gemini-3.8-flash",
     "line_review": "openai/gpt-5.6-terra",
     "system_context": "google/gemini-3.8-flash",
     "verification": "anthropic/claude-sonnet-5",
@@ -142,6 +142,12 @@ class ProjectConfig(Strict):
     # Operator-only controls; repository YAML cannot set these.
     unit_concurrency: int = Field(default=2, ge=1, le=16)
     verification_concurrency: int = Field(default=2, ge=1, le=16)
+    finalization_reserve_s: float = Field(default=180, ge=0, le=600)
+    publication_reserve_s: float = Field(default=30, ge=0, le=120)
+    unit_timeout_s: float = Field(default=120, gt=0, le=600)
+    stage_output_tokens: int = Field(default=4096, ge=256, le=16000)
+    triage_max_units: int = Field(default=24, ge=1, le=200)
+    triage_unit_tokens: int = Field(default=12000, ge=256, le=20000)
     final_stage_token_reserve: int = Field(default=0, ge=0)
     enforcement: Literal["silent", "advisory", "gating"] = "advisory"
     milestone: Literal["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"] = (
@@ -189,6 +195,7 @@ class Settings(BaseSettings):
     gateway_base_url: str = ""
     gateway_key: SecretStr = SecretStr("")
     gateway_concurrency: int = Field(default=8, ge=1, le=64)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # Legacy tier configuration, still honoured for the "strong"/"fast"/
     # "verification" tiers a caller may still ask for by name.
     model_strong: str = ""

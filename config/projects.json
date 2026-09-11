@@ -22,6 +22,16 @@
     "static_tools": [],
     "review": {
       "token_ceiling": 8000000
+    },
+    "models": {
+      "roles": {
+        "complexity": {
+          "model": "google/gemini-3.8-flash"
+        },
+        "tests_": {
+          "model": "google/gemini-3.8-flash"
+        }
+      }
     }
   },
   "projects": {}

@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from sqlalchemy import case, func, select, text
@@ -11,7 +13,21 @@ from reviewer.telemetry.activity import storage_timing
 class Store:
     def __init__(self, url: str):
         self.engine = create_async_engine(url, pool_pre_ping=True)
+        self._sqlite_writer = asyncio.Lock()
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def transaction(self):
+        # SQLite has one writer. Queue before opening a transaction so cancellation
+        # cannot strand a busy BEGIN in aiosqlite's background thread. PostgreSQL
+        # continues to use concurrent transactions with its existing row locks.
+        if self.engine.dialect.name == "sqlite":
+            async with self._sqlite_writer:
+                async with self.sessions.begin() as session:
+                    yield session
+        else:
+            async with self.sessions.begin() as session:
+                yield session
 
     async def get(self, review_id: str):
         async with self.sessions() as session:
@@ -20,7 +36,7 @@ class Store:
     async def accept(
         self, project_id: int, iid: int, sha: str, event_id: str, overrides=None
     ):
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             # PostgreSQL row locking serializes admission per project. Projects
             # are provisioned by startup or an authenticated manual request,
             # never created from untrusted hooks.
@@ -67,7 +83,7 @@ class Store:
             return review
 
     async def transition(self, review_id: str, state: str, **fields):
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             review = await session.scalar(
                 select(Review).where(Review.id == review_id).with_for_update()
             )
@@ -84,12 +100,12 @@ class Store:
             return review
 
     async def mark_status(self, review_id: str):
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             review = await session.get(Review, review_id)
             review.status_delivered = True
 
     async def noop(self, review_id: str):
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             if not await session.get(ReviewStage, (review_id, "noop")):
                 session.add(
                     ReviewStage(
@@ -105,7 +121,7 @@ class Store:
         else:
             from sqlalchemy.dialects.postgresql import insert
 
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             for project_id in sorted(set(ids)):
                 await session.execute(
                     insert(Project)
@@ -157,7 +173,7 @@ class Store:
     async def save_snapshot(self, review_id, data):
         from reviewer.store.models import ReviewSnapshot
 
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             row = await session.get(ReviewSnapshot, review_id)
             if row:
                 row.data = data
@@ -213,8 +229,54 @@ class Store:
             ).first()
             return (row[0], row[1]) if row else (None, None)
 
+    async def freeze_execution(self, review_id, proposed):
+        async with self.transaction() as session:
+            if self.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            review = await session.scalar(
+                select(Review).where(Review.id == review_id).with_for_update()
+            )
+            if review.execution_config is None:
+                review.execution_config = proposed
+            return review.execution_config
+
+    async def unit_results(self, review_id, stage):
+        from reviewer.store.models import ReviewUnit
+
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(ReviewUnit).where(
+                        ReviewUnit.review_id == str(review_id),
+                        ReviewUnit.stage == stage,
+                    )
+                )
+            ).all()
+            return {row.input_hash: row.data for row in rows}
+
+    async def save_unit(self, review_id, stage, input_hash, data):
+        from reviewer.store.models import ReviewUnit
+
+        # Same review lock as stage/event persistence; safe under redelivery.
+        async with self.transaction() as session:
+            if self.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            await session.scalar(
+                select(Review).where(Review.id == str(review_id)).with_for_update()
+            )
+            row = await session.get(ReviewUnit, (str(review_id), stage, input_hash))
+            if row is None:
+                session.add(
+                    ReviewUnit(
+                        review_id=str(review_id),
+                        stage=stage,
+                        input_hash=input_hash,
+                        data=data,
+                    )
+                )
+
     async def save_stage(self, review_id, result):
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             row = await session.get(ReviewStage, (review_id, result.stage))
             data = dict(
                 status="failed" if result.failed else "passed",
@@ -245,7 +307,7 @@ class Store:
     async def save_findings(self, review, findings):
         from reviewer.store.models import FindingRow
 
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             for f in findings:
                 row = await session.get(FindingRow, f.id)
                 data = dict(
@@ -267,7 +329,7 @@ class Store:
     async def record_comment(self, finding_id, discussion):
         from reviewer.store.models import PublishedComment
 
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             if not await session.get(PublishedComment, finding_id):
                 session.add(
                     PublishedComment(
@@ -281,7 +343,7 @@ class Store:
         """Record that a published comment's thread was closed by the reviewer."""
         from reviewer.store.models import PublishedComment
 
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             row = await session.get(PublishedComment, finding_id)
             if row and row.resolved_at is None:
                 row.resolved_at = utcnow()
@@ -296,7 +358,7 @@ class Store:
     async def outcome(self, project_id, iid, fingerprint, outcome, reason, user):
         from reviewer.store.models import FindingOutcome
 
-        async with self.sessions.begin() as session:
+        async with self.transaction() as session:
             # Command retries must not count the same feedback repeatedly.
             exists = await session.scalar(
                 select(FindingOutcome).where(
@@ -371,7 +433,7 @@ class Store:
 
     async def append_event(self, review_id, kind, data):
         with storage_timing("Activity transaction", review_id):
-            async with self.sessions.begin() as session:
+            async with self.transaction() as session:
                 with storage_timing("Activity connection checkout", review_id):
                     await session.connection()
                 with storage_timing("Activity review lock", review_id):

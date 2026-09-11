@@ -13,8 +13,8 @@ logger = structlog.get_logger()
 
 
 async def startup(ctx):
-    configure()
     settings = Settings()
+    configure(settings.log_level)
     from reviewer.telemetry import configure_traces
 
     configure_traces(settings.otlp_endpoint)
