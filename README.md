@@ -127,7 +127,18 @@ Operator-only scheduling controls also live in project defaults or overrides:
 `unit_concurrency` defaults to 2 workers per analysis stage (at most 8 active
 units across the four stages per review). Set it to 1 for sequential units.
 Purpose and Design remain sequential stages; System Context follows aggregation.
-Size concurrency for gateway capacity and the number of concurrent reviews.
+`verification_concurrency` defaults to 2 workers (range 1–16). Evidence validation
+and deduplication precede verification; cited context is scanned before verifier
+calls start. Verification completion order never changes finding order. Set it
+to 1 to restore sequential verification.
+
+`GATEWAY_CONCURRENCY` defaults to 8 (range 1–64), shared by all reviews and
+rechecks in one worker process. It caps concurrent logical gateway calls,
+including their retries and audit work. Waiting consumes the review deadline,
+but starts no transport attempt and consumes no token reservation. Queue wait
+appears as `kind="wait", name="Gateway capacity"` in duration metrics. With
+multiple worker processes, total capacity is the sum of their limits; size this
+setting against the installation's approved gateway capacity.
 
 `final_stage_token_reserve` defaults to 0. Set an explicit token allowance to
 protect System Context and independent verification from earlier stages. It

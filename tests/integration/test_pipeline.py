@@ -599,3 +599,59 @@ async def test_frontend_only_manual_report_is_persisted_without_comments(
     assert saved["report"]["inline"] == []
     assert forge.comments == [] and forge.draft_notes == []
     assert all(f["status"] != "published" for f in saved["findings"])
+
+
+async def test_pipeline_verifies_independent_findings_concurrently(
+    store, history, tmp_path
+):
+    import asyncio
+
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+
+    class Parallel(Reviewing):
+        def __init__(self):
+            super().__init__()
+            self.active = 0
+            self.peak = 0
+            self.both = asyncio.Event()
+
+        async def complete(self, **kwargs):
+            if kwargs["response_model"] is VerificationResult:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+                if self.active == 2:
+                    self.both.set()
+                try:
+                    await asyncio.wait_for(self.both.wait(), 2)
+                    return await super().complete(**kwargs)
+                finally:
+                    self.active -= 1
+            result = await super().complete(**kwargs)
+            if result.findings:
+                another = result.findings[0].model_copy(deep=True)
+                another.anchor.file = "new1.py"
+                another.evidence[0].file = "new1.py"
+                result.findings.append(another)
+            return result
+
+    llm = Parallel()
+    review = await store.accept(7, 2, head, "parallel-verification")
+    assert await pipeline(store, forge, tmp_path, llm=llm).run(review.id) == "PUBLISHED"
+    assert llm.peak == 2 and llm.active == 0
+    snapshot = await store.snapshot(review.id)
+    confirmed = [
+        f
+        for f in snapshot["findings"]
+        if (f.get("verification") or {}).get("verdict") == "confirmed"
+    ]
+    assert [f["anchor"]["file"] for f in confirmed] == ["new0.py", "new1.py"]

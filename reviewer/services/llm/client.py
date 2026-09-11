@@ -1,11 +1,16 @@
 """Audited, budgeted, schema-constrained internal gateway client."""
 
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from time import monotonic
 from typing import Protocol
 from uuid import UUID
 
 from pydantic import BaseModel
 
-from reviewer.telemetry.activity import activity, llm_attempt, log, sink
+from reviewer.orchestrator.budget import BudgetExhausted
+from reviewer.telemetry.activity import activity, llm_attempt, log, record, sink
 
 
 class LLMClient(Protocol):
@@ -42,7 +47,16 @@ class StageFailed(RuntimeError):
 
 
 class GatewayClient:
-    def __init__(self, settings, audit, budget, redactor, transport=None, models=None):
+    def __init__(
+        self,
+        settings,
+        audit,
+        budget,
+        redactor,
+        transport=None,
+        models=None,
+        semaphore=None,
+    ):
         from urllib.parse import urlsplit
 
         import httpx
@@ -69,9 +83,60 @@ class GatewayClient:
         self.models = {role: spec.model for role, spec in self.specs.items()}
         self.audit, self.budget, self.redactor = audit, budget, redactor
         self.prices = settings.model_prices
+        self.semaphore = (
+            semaphore
+            if semaphore is not None
+            else asyncio.Semaphore(settings.gateway_concurrency)
+        )
+
+    @asynccontextmanager
+    async def slot(self):
+        started = monotonic()
+        acquired = False
+        outcome = "completed"
+        try:
+            try:
+                remaining = (
+                    self.budget.budget.deadline_at - datetime.now(UTC)
+                ).total_seconds()
+                if remaining <= 0:
+                    raise BudgetExhausted(
+                        "Review deadline exhausted waiting for gateway capacity"
+                    )
+                try:
+                    async with asyncio.timeout(remaining):
+                        await self.semaphore.acquire()
+                        acquired = True
+                except TimeoutError:
+                    raise BudgetExhausted(
+                        "Review deadline exhausted waiting for gateway capacity"
+                    ) from None
+            except BaseException as exc:
+                outcome = (
+                    "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+                )
+                raise
+            finally:
+                await record(
+                    "wait",
+                    dict(
+                        name="Gateway capacity",
+                        status=outcome,
+                        duration_ms=(monotonic() - started) * 1000,
+                    ),
+                )
+            yield
+        finally:
+            # Includes cancellation during optional telemetry after acquisition.
+            if acquired:
+                self.semaphore.release()
 
     @activity("tool", "LLM gateway")
-    async def complete(
+    async def complete(self, **kwargs):
+        async with self.slot():
+            return await self._complete(**kwargs)
+
+    async def _complete(
         self,
         *,
         stage,

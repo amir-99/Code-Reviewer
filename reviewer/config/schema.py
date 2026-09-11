@@ -141,6 +141,7 @@ class StaticTool(Strict):
 class ProjectConfig(Strict):
     # Operator-only controls; repository YAML cannot set these.
     unit_concurrency: int = Field(default=2, ge=1, le=16)
+    verification_concurrency: int = Field(default=2, ge=1, le=16)
     final_stage_token_reserve: int = Field(default=0, ge=0)
     enforcement: Literal["silent", "advisory", "gating"] = "advisory"
     milestone: Literal["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"] = (
@@ -187,6 +188,7 @@ class Settings(BaseSettings):
     confluence_token: SecretStr = SecretStr("")
     gateway_base_url: str = ""
     gateway_key: SecretStr = SecretStr("")
+    gateway_concurrency: int = Field(default=8, ge=1, le=64)
     # Legacy tier configuration, still honoured for the "strong"/"fast"/
     # "verification" tiers a caller may still ask for by name.
     model_strong: str = ""

@@ -7,18 +7,18 @@ from uuid import uuid4
 import structlog
 
 from reviewer.agents.base import PROMPTS
-from reviewer.agents.verification import verify
 from reviewer.config.loader import load_project
 from reviewer.config.models import assignment, resolve
 from reviewer.context.builder import build
 from reviewer.decision.engine import decide, status
 from reviewer.findings.dedup import deduplicate, fingerprint
-from reviewer.findings.models import Finding, Provenance, VerificationResult
-from reviewer.findings.policy import needs_verification, normalize
+from reviewer.findings.models import Finding, Provenance
+from reviewer.findings.policy import normalize
 from reviewer.findings.validator import validate
 from reviewer.orchestrator.budget import BudgetTracker
 from reviewer.orchestrator.stages import execute
 from reviewer.orchestrator.states import TERMINAL
+from reviewer.orchestrator.verification import verify_findings
 from reviewer.publish.publisher import Publisher
 from reviewer.publish.rereview import full_review, reanchor
 from reviewer.services.forge.gitlab import StaleReview
@@ -51,6 +51,7 @@ class Pipeline:
             static,
         )
         self.llm_factory = llm_factory
+        self.gateway_slots = asyncio.Semaphore(settings.gateway_concurrency)
 
     @traced_review
     async def run(self, review_id):
@@ -299,6 +300,7 @@ class Pipeline:
                             tracker,
                             redactor,
                             models=models,
+                            semaphore=self.gateway_slots,
                         )
                     )
                 except ValueError:
@@ -351,40 +353,16 @@ class Pipeline:
                         else:
                             await self.store.save_findings(review, [f])
                     values = deduplicate(values, config.review.merge_distance)
+                    if level >= 6:
+                        await verify_findings(
+                            values,
+                            bundle,
+                            llm,
+                            redactor,
+                            context_provider,
+                            config.verification_concurrency,
+                        )
                     for f in values:
-                        if (
-                            needs_verification(f)
-                            and level >= 6
-                            and (not f.validation or f.validation.evidence_valid)
-                        ):
-                            try:
-                                from reviewer.findings.models import ContextRequest
-
-                                # Scan all cited files before an independent verifier sees them.
-                                await context_provider(
-                                    [
-                                        ContextRequest(
-                                            kind="file",
-                                            target=path,
-                                            reason="verification evidence",
-                                        )
-                                        for path in dict.fromkeys(
-                                            [f.anchor.file]
-                                            + [e.file for e in f.evidence]
-                                        )
-                                    ]
-                                )
-                                await verify(f, bundle, llm, redactor)
-                            except Exception as verification_error:
-                                from reviewer.orchestrator.budget import BudgetExhausted
-
-                                if isinstance(verification_error, BudgetExhausted):
-                                    bundle.degradations.append("budget_exhausted")
-                                f.verification = VerificationResult(
-                                    verdict="uncertain",
-                                    counterargument="Verification unavailable",
-                                    reasoning="Cannot confirm within budget",
-                                )
                         categories = {
                             c
                             for tool in config.static_tools
@@ -753,6 +731,7 @@ class Pipeline:
                             ),
                             redactor,
                             models=recheck_models,
+                            semaphore=self.gateway_slots,
                         )
                     )
                 except ValueError:

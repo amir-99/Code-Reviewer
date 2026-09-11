@@ -75,6 +75,11 @@ async def test_final_stages_can_use_protected_allowance():
 def test_repository_cannot_override_scheduling_controls(tmp_path):
     from reviewer.config.loader import load_project
 
-    for setting in ("unit_concurrency: 16", "final_stage_token_reserve: 0"):
+    for setting in (
+        "unit_concurrency: 16",
+        "verification_concurrency: 16",
+        "final_stage_token_reserve: 0",
+        "gateway_concurrency: 64",
+    ):
         with pytest.raises(ValueError, match="operator-only"):
             load_project(tmp_path / "missing.json", 7, setting)
