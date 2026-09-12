@@ -23,7 +23,7 @@ class LLMClient(Protocol):
         user: str,
         response_model: type[BaseModel],
         review_id: UUID,
-        max_tokens: int,
+        max_tokens: int | None = None,
         timeout_s: float,
     ) -> BaseModel: ...
 
@@ -145,7 +145,7 @@ class GatewayClient:
         user,
         response_model,
         review_id,
-        max_tokens,
+        max_tokens=None,
         timeout_s,
         prompt_version="1.0.0",
     ):
@@ -161,24 +161,23 @@ class GatewayClient:
         if spec is None or not spec.model:
             raise StageFailed("Model is not configured")
         model = spec.model
-        # A stage may not ask for more output than its own model will return.
-        if spec.max_output_tokens:
-            max_tokens = min(max_tokens, spec.max_output_tokens)
+        # Legacy max_tokens arguments and model output caps are accepted for
+        # compatibility, but never constrain generation. The gateway/model owns
+        # its output capacity. Reserve the context window where affordable and
+        # account actual usage afterwards. Near the review ceiling, reserve the
+        # remaining allowance; an uncapped in-flight response can exceed it, but
+        # settlement prevents any further calls once the budget is spent.
         system = self.redactor.text(system)
         user = self.redactor.text(user)
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        prompt = json.dumps(messages, ensure_ascii=False)
-        reserve = (
-            len(prompt.encode()) + max_tokens
-        )  # conservative byte count upper bound
-        if reserve > spec.context_tokens:
-            raise StageFailed("Prompt exceeds configured context window")
         for parse_attempt in range(2):
             prompt = json.dumps(messages, ensure_ascii=False)
-            reserve = len(prompt.encode()) + max_tokens
+            prompt_tokens = len(prompt.encode())
+            if prompt_tokens >= spec.context_tokens:
+                raise StageFailed("Prompt exceeds configured context window")
             for attempt in range(3):
                 wait_start = time.monotonic()
                 if sink.get() is not None:
@@ -186,7 +185,11 @@ class GatewayClient:
                         "budget_wait_started", review_id=str(review_id), stage=stage
                     )
                 try:
-                    await self.budget.reserve(reserve, stage=stage)
+                    reserve = await self.budget.reserve(
+                        spec.context_tokens,
+                        stage=stage,
+                        minimum_tokens=prompt_tokens + 1,
+                    )
                 finally:
                     budget_wait_ms = (time.monotonic() - wait_start) * 1000
                     if sink.get() is not None:
@@ -203,9 +206,11 @@ class GatewayClient:
                 finish_reason = None
                 validation_failure = None
                 transport_failure = None
-                used = reserve
-                tokens_in = len(prompt.encode())
-                tokens_out = max_tokens
+                # Without valid usage, charge the full possible context rather
+                # than inventing a low completion count from an omitted cap.
+                used = spec.context_tokens
+                tokens_in = prompt_tokens
+                tokens_out = spec.context_tokens - prompt_tokens
                 try:
                     timeout = min(
                         timeout_s,
@@ -222,7 +227,6 @@ class GatewayClient:
                     body = {
                         "model": model,
                         "messages": messages,
-                        "max_tokens": max_tokens,
                         "response_format": {
                             "type": "json_schema",
                             "json_schema": {
@@ -282,6 +286,10 @@ class GatewayClient:
                         tokens_out = reported_out
                     used = tokens_in + tokens_out
                     value = response_model.model_validate_json(response_text)
+                    if finish_reason == "length":
+                        # Even parseable JSON cannot establish complete coverage
+                        # when the gateway says generation was cut short.
+                        raise ValueError("Gateway output truncated")
                     outcome = "success"
                     return value
                 except (
@@ -293,7 +301,9 @@ class GatewayClient:
                 ) as exc:
                     outcome = "invalid_output"
                     validation_failure = (
-                        "invalid_json"
+                        "output_truncated"
+                        if finish_reason == "length"
+                        else "invalid_json"
                         if isinstance(exc, ValidationError)
                         and any(e["type"] == "json_invalid" for e in exc.errors())
                         else "schema_validation"
@@ -361,7 +371,11 @@ class GatewayClient:
                 {
                     "role": "system",
                     "content": system
-                    + " Your previous response failed schema validation. Return only a valid schema object.",
+                    + (
+                        " Your previous response reached the gateway output limit. Return a concise valid schema object."
+                        if finish_reason == "length"
+                        else " Your previous response failed schema validation. Return only a valid schema object."
+                    ),
                 },
                 {"role": "user", "content": user},
             ]

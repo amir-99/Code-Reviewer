@@ -43,7 +43,6 @@ async def judge(finding, before, after, patch, author_notes, llm, redactor, revi
         user=frame(redactor.text(json.dumps(payload)), "recheck-code"),
         response_model=RecheckResult,
         review_id=review_id,
-        max_tokens=2000,
         timeout_s=90,
         prompt_version=version,
     )

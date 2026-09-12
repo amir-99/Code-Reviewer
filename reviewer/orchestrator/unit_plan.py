@@ -1,25 +1,21 @@
-"""Deterministic unit identity and bounded, breadth-first triage selection."""
+"""Deterministic unit identity and breadth-first scheduling of every chunk."""
 
 import hashlib
 import json
 from collections import defaultdict
 from dataclasses import asdict, is_dataclass
-from datetime import UTC, datetime
 
 from reviewer.context.partition import partition
-from reviewer.orchestrator.deadlines import cutoff
 
 
 def plan(bundle, config, kind, stage, only_paths):
-    triage = "triage_mode" in bundle.degradations and kind != "whole_change"
-    limit = config.triage_unit_tokens if triage else config.review.unit_tokens
-    units = partition(bundle, kind, limit)
+    units = partition(bundle, kind, config.review.unit_tokens)
     if only_paths is not None:
         units = [u for u in units if set(u.paths) & set(only_paths)]
-    if not triage:
+    if kind == "whole_change":
         return units, {u.id for u in units}
     # Visit one chunk per file before visiting a second chunk. Large files cannot
-    # monopolize triage. Prioritize executable source over non-code changes.
+    # monopolize the remaining budget. Prioritize source over non-code changes.
     groups = defaultdict(list)
     changed = {
         f.path: sum(line.kind != "context" for line in f.lines)
@@ -35,20 +31,12 @@ def plan(bundle, config, kind, stage, only_paths):
             p,
         ),
     )
-    remaining = max(
-        0, (cutoff(bundle, config, stage) - datetime.now(UTC)).total_seconds()
-    )
-    # A conservative unit estimate prevents dispatching a plan that cannot fit.
-    capacity = min(
-        config.triage_max_units,
-        int(remaining * config.unit_concurrency / config.unit_timeout_s),
-    )
-    selected = []
+    ordered = []
     for part in range(max((len(v) for v in groups.values()), default=0)):
         for path in paths:
-            if part < len(groups[path]) and len(selected) < capacity:
-                selected.append(groups[path][part].id)
-    return units, set(selected)
+            if part < len(groups[path]):
+                ordered.append(groups[path][part])
+    return ordered, {u.id for u in ordered}
 
 
 def identity(agent, bundle, unit, llm, config):
@@ -59,7 +47,7 @@ def identity(agent, bundle, unit, llm, config):
         # Preserve checkpoint identities from before analysis_mode was explicit.
         config_data.pop("analysis_mode", None)
     data = dict(
-        schema=1,
+        schema=2,
         stage=agent.name,
         system=system,
         user=user,

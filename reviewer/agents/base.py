@@ -50,7 +50,7 @@ class StageAgent(ABC):
     # on its own role by default, so operators can price each stage separately.
     tier: str = ""
     unit_kind: str = "file_group"
-    max_output_tokens: int = 4096
+    context_tokens: int | None = None
 
     @property
     def prompt_version(self):
@@ -87,7 +87,6 @@ class StageAgent(ABC):
                 user=user,
                 response_model=response_model,
                 review_id=bundle.review_id,
-                max_tokens=self.max_output_tokens,
                 timeout_s=90,
                 prompt_version=self.prompt_version,
             )
@@ -137,34 +136,66 @@ class TemplateAgent(StageAgent):
             "mr_title": bundle.mr.title,
             "mr_description": bundle.mr.description,
         }
-        # Keep requirement context within a conservative shared prompt allocation.
-        encoded = json.dumps(requirements)
-        if len(encoded.encode()) > 12000:
-            requirements = {
-                "truncated_requirements": encoded.encode()[:12000].decode(
-                    errors="replace"
-                )
-            }
-            if "prompt_requirements_truncated" not in bundle.degradations:
-                bundle.degradations.append("prompt_requirements_truncated")
-        user = frame(
-            json.dumps(
-                {
-                    "unit": unit.model_dump(exclude={"omitted"}),
-                    "requirements": requirements,
-                    "aggregated_findings": bundle.aggregated_findings
-                    if self.name == "system_context"
-                    else [],
-                    "static": [s.model_dump() for s in bundle.static],
-                }
-            ),
-            "review-context",
-        )
-        return (
+        system = (
             template
             + "\n"
             + PROMPTS["_compact" if self.name == "defect_review" else SHARED][1]
             + "\n"
-            + INJECTION_RULE,
-            user,
+            + INJECTION_RULE
         )
+
+        def render(requirements):
+            return frame(
+                json.dumps(
+                    {
+                        "unit": unit.model_dump(exclude={"omitted"}),
+                        "requirements": requirements,
+                        "aggregated_findings": bundle.aggregated_findings
+                        if self.name == "system_context"
+                        else [],
+                        "static": [s.model_dump() for s in bundle.static],
+                    }
+                ),
+                "review-context",
+            )
+
+        # Use the receiving model's window instead of a universal 12 KB cutoff.
+        # Leave a quarter of that window for output; this sizes input only and
+        # does not impose a generation cap. Fakes without model metadata retain
+        # the historical conservative requirements allocation.
+        encoded = json.dumps(requirements)
+        user = render(requirements)
+        input_limit = self.context_tokens * 3 // 4 if self.context_tokens else None
+
+        def fits(user, size):
+            if input_limit is None:
+                return size <= 12000
+            return (
+                len(
+                    json.dumps(
+                        [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        ensure_ascii=False,
+                    ).encode()
+                )
+                <= input_limit
+            )
+
+        raw = encoded.encode()
+        if not fits(user, len(raw)):
+            low, high = 0, len(raw)
+            while low < high:
+                middle = (low + high + 1) // 2
+                candidate = render(
+                    {"truncated_requirements": raw[:middle].decode(errors="ignore")}
+                )
+                if fits(candidate, middle):
+                    low = middle
+                else:
+                    high = middle - 1
+            user = render({"truncated_requirements": raw[:low].decode(errors="ignore")})
+            if "prompt_requirements_truncated" not in bundle.degradations:
+                bundle.degradations.append("prompt_requirements_truncated")
+        return system, user

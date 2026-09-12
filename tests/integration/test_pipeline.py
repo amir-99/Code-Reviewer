@@ -232,8 +232,9 @@ async def test_complete_pipeline_with_real_git_and_fake_external_services(
 
 
 @pytest.mark.parametrize("failed_stage", [False, True])
+@pytest.mark.parametrize("mode", ["standard", "deep"])
 async def test_secret_warning_continues_redacted_review(
-    store, history, tmp_path, failed_stage
+    store, history, tmp_path, failed_stage, mode
 ):
     repo, base, head = history
     forge = FakeForge(
@@ -258,28 +259,40 @@ async def test_secret_warning_continues_redacted_review(
         ]
     )
 
+    attempted_stages = set()
+
     class SecretReview(Echo):
         async def complete(self, **kwargs):
+            attempted_stages.add(kwargs["stage"])
             assert "x = 0" not in kwargs["user"]
-            if failed_stage and kwargs["stage"] == "design":
+            if failed_stage and kwargs["stage"] == (
+                "defect_review" if mode == "standard" else "design"
+            ):
                 raise TimeoutError()
             return await super().complete(**kwargs)
 
     (tmp_path / "config.json").write_text('{"defaults":{"enforcement":"gating"}}')
     llm = SecretReview()
     review = await store.accept(7, 2, head, "secret")
-    state = await pipeline(store, forge, tmp_path, scanner, llm).run(review.id)
+    state = await pipeline(store, forge, tmp_path, scanner, llm, mode=mode).run(
+        review.id
+    )
     assert state == "PUBLISHED"
-    stages = {c["stage"] for c in llm.calls}
-    assert {
-        "purpose",
-        "correctness",
-        "complexity",
-        "tests_",
-        "line_review",
-        "system_context",
-    } <= stages
-    assert "verification" not in stages  # Secret detection remains deterministic.
+    expected_stages = (
+        {"defect_review"}
+        if mode == "standard"
+        else {
+            "purpose",
+            "design",
+            "correctness",
+            "complexity",
+            "tests_",
+            "line_review",
+            "system_context",
+        }
+    )
+    assert expected_stages <= attempted_stages
+    assert "verification" not in attempted_stages  # Secrets remain deterministic.
     snapshot = await store.snapshot(review.id)
     assert "x = 0" not in json.dumps(snapshot)
     secret = next(f for f in snapshot["findings"] if f["stage"] == "secrets")
@@ -713,9 +726,9 @@ async def test_recovery_keeps_frozen_models_and_config_without_resolving_again(
     assert (await store.get(review.id)).execution_config == frozen
 
 
-@pytest.mark.parametrize("triage", [False, True])
+@pytest.mark.parametrize("legacy_limits", [False, True])
 async def test_standard_review_uses_one_proposer_and_verifies_findings(
-    store, history, tmp_path, triage
+    store, history, tmp_path, legacy_limits
 ):
     repo, base, head = history
     forge = FakeForge(
@@ -729,7 +742,7 @@ async def test_standard_review_uses_one_proposer_and_verifies_findings(
     )
     forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
     config = {"defaults": {"analysis_mode": "standard", "enforcement": "gating"}}
-    if triage:
+    if legacy_limits:
         config["defaults"]["review"] = {"max_changed_lines": 1}
         config["defaults"]["triage_max_units"] = 2
     (tmp_path / "config.json").write_text(json.dumps(config))
@@ -767,12 +780,47 @@ async def test_standard_review_uses_one_proposer_and_verifies_findings(
     stages = await store.stages(review.id)
     assert set(stages) == {"defect_review"}
     snapshot = await store.snapshot(review.id)
-    assert snapshot["partial"] == triage
+    assert not snapshot["partial"]
+    assert "triage_mode" not in snapshot["bundle"]["degradations"]
     defects = [f for f in snapshot["findings"] if f["stage"] == "defect_review"]
     assert defects and all(f["verification"]["verdict"] == "confirmed" for f in defects)
-    assert bool(stages["defect_review"].skipped) == triage
-    if triage:
-        assert forge.statuses[-1]["state"] == "success"
+    assert not stages["defect_review"].skipped
     before = len(forge.comments)
     assert await machine.run(review.id) == "PUBLISHED"
     assert len(forge.comments) == before
+
+
+async def test_large_change_reviews_clock_source_and_excludes_only_lockfiles(
+    store, history, tmp_path
+):
+    repo, base, _ = history
+    (repo / "clock_test.go").write_text("package clock\n" + "// changed line\n" * 3100)
+    (repo / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "Add clock tests and lockfile")
+    head = git(repo, "rev-parse", "HEAD")
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    review = await store.accept(7, 2, head, "large-change")
+    assert (
+        await pipeline(store, forge, tmp_path, llm=Echo(), mode="standard").run(
+            review.id
+        )
+        == "PUBLISHED"
+    )
+    snapshot = await store.snapshot(review.id)
+    assert snapshot["bundle"]["code"]["total_changed_lines"] > 3000
+    files = {f["path"]: f for f in snapshot["bundle"]["code"]["files"]}
+    assert not files["clock_test.go"]["is_excluded"]
+    assert files["package-lock.json"]["is_excluded"]
+    stage = (await store.stages(review.id))["defect_review"]
+    assert any(unit.startswith("clock_test.go:") for unit in stage.examined)
+    assert not stage.skipped and not snapshot["partial"]

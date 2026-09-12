@@ -138,8 +138,6 @@ async def build(
         ),
         degradations=list(dict.fromkeys(degradations)),
     )
-    if bundle.code.total_changed_lines > config.review.max_changed_lines:
-        bundle.degradations.append("triage_mode")
     from reviewer.services.secrets.scanner import findings
 
     secret_findings = findings(matches, bundle)

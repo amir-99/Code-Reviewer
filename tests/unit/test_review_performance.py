@@ -150,17 +150,23 @@ async def test_analysis_cutoff_preserves_final_stages(tmp_path):
     )
 
 
-async def test_triage_selects_bounded_breadth_first_units_and_reports_omissions(
+async def test_legacy_triage_limits_do_not_skip_units_when_time_remains(
     tmp_path,
 ):
     b = bundle(tmp_path, 4)
+    # Ten seconds of analysis remain: the old worst-case estimate selected zero
+    # chunks despite these responses finishing well inside the real deadline.
+    b.budget.deadline_at = datetime.now(UTC) + timedelta(seconds=190)
     b.degradations.append("triage_mode")
     b.code.files[0].lines[0].text = "x" * 10000
-    config = ProjectConfig(triage_unit_tokens=256, triage_max_units=3)
+    config = ProjectConfig(
+        review={"unit_tokens": 256}, triage_unit_tokens=256, triage_max_units=3
+    )
     result = await execute("tests_", b, Echo(), config)
-    assert result.examined == ["f0.py:unit-0", "f1.py:unit-0", "f2.py:unit-0"]
-    assert "f0.py:unit-1" in result.skipped and "f3.py:unit-0" in result.skipped
-    assert result.partial and result.attempts == 3
+    assert result.examined[:4] == [f"f{i}.py:unit-0" for i in range(4)]
+    assert "f0.py:unit-1" in result.examined
+    assert not result.skipped and not result.partial
+    assert result.attempts == len(result.examined) > 3
 
 
 async def test_coverage_retry_explicitly_requests_exact_id(tmp_path):
@@ -181,6 +187,41 @@ async def test_coverage_retry_explicitly_requests_exact_id(tmp_path):
     from html import unescape
 
     assert '"coverage_retry": true' in unescape(prompts[-1])
+
+
+@pytest.mark.parametrize("context_tokens", [16000, 100000])
+async def test_requirements_use_receiving_model_context_window(
+    tmp_path, context_tokens
+):
+    from reviewer.config.models import ResolvedModel
+
+    b = bundle(tmp_path, 1)
+    b.mr.description = "Requirement detail. " * 1000
+    prompts = []
+
+    class Capture(Echo):
+        specs = {"tests_": ResolvedModel("tests_", "configured-model", context_tokens)}
+
+        async def complete(self, **kwargs):
+            prompts.append(kwargs)
+            return await super().complete(**kwargs)
+
+    result = await execute("tests_", b, Capture(), ProjectConfig())
+    assert result.examined
+    call = prompts[0]
+    messages = [
+        {"role": "system", "content": call["system"]},
+        {"role": "user", "content": call["user"]},
+    ]
+    assert (
+        len(json.dumps(messages, ensure_ascii=False).encode())
+        <= context_tokens * 3 // 4
+    )
+    assert ("prompt_requirements_truncated" in b.degradations) == (
+        context_tokens == 16000
+    )
+    if context_tokens == 100000:
+        assert b.mr.description in call["user"]
 
 
 async def test_execution_config_is_frozen_on_review(store):

@@ -72,6 +72,28 @@ async def test_final_stages_can_use_protected_allowance():
     assert budget.budget.tokens_used == 100
 
 
+async def test_uncapped_response_accounts_overrun_and_stops_further_dispatch():
+    budget = tracker(protected=20)
+    reserved = await budget.reserve(1000, stage="correctness", minimum_tokens=10)
+    assert reserved == 80
+    await budget.settle(reserved, 120)
+    assert budget.reserved == 0 and budget.budget.tokens_used == 120
+    with pytest.raises(BudgetExhausted):
+        await budget.reserve(1000, stage="verification", minimum_tokens=10)
+
+
+async def test_uncapped_budget_waits_for_refund_and_requires_room_for_prompt():
+    budget = tracker()
+    first = await budget.reserve(1000, minimum_tokens=10)
+    waiting = asyncio.create_task(budget.reserve(1000, minimum_tokens=10))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    await budget.settle(first, 95)
+    with pytest.raises(BudgetExhausted):
+        await asyncio.wait_for(waiting, 1)
+    assert budget.reserved == 0
+
+
 def test_repository_cannot_override_scheduling_controls(tmp_path):
     from reviewer.config.loader import load_project
 

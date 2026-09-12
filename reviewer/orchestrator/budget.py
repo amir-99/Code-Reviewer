@@ -18,7 +18,7 @@ class BudgetTracker:
     def deadline_at(self):
         return self.budget.deadline_at - timedelta(seconds=self.deadline_reserve_s)
 
-    async def reserve(self, tokens, *, stage=None):
+    async def reserve(self, tokens, *, stage=None, minimum_tokens=None):
         # Final stages share the operator's protected allowance. Gates may still
         # verify blockers immediately using the verification tier.
         protected = (
@@ -30,11 +30,19 @@ class BudgetTracker:
         async with self.condition:
             while True:
                 remaining = (self.deadline_at - datetime.now(UTC)).total_seconds()
-                if remaining <= 0 or self.budget.tokens_used + tokens > ceiling:
+                available = ceiling - self.budget.tokens_used
+                reservation = (
+                    min(tokens, available) if minimum_tokens is not None else tokens
+                )
+                if (
+                    remaining <= 0
+                    or reservation > available
+                    or reservation < (minimum_tokens or tokens)
+                ):
                     raise BudgetExhausted("Review budget exhausted")
-                if self.budget.tokens_used + self.reserved + tokens <= ceiling:
-                    self.reserved += tokens
-                    return
+                if self.reserved + reservation <= available:
+                    self.reserved += reservation
+                    return reservation
                 # In-flight calls may return unused reservations. Do not turn
                 # temporary contention into permanently missing coverage.
                 try:

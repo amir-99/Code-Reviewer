@@ -99,7 +99,7 @@ async def test_transport_retries_exactly_twice_and_audits(store, tmp_path):
 @pytest.mark.parametrize(
     ("content", "finish_reason", "expected"),
     [
-        ("malformed-private-content", "length", "invalid_json"),
+        ("malformed-private-content", "length", "output_truncated"),
         ("{}", "private-upstream-value", "schema_validation"),
     ],
 )
@@ -198,7 +198,7 @@ async def test_concurrent_gateway_calls_wait_for_budget_and_keep_audits(
 
     budget = BudgetTracker(
         Budget(
-            token_ceiling=250,
+            token_ceiling=40000,
             deadline_at=datetime.now(UTC) + timedelta(minutes=1),
             model_tier={},
         )
@@ -315,9 +315,9 @@ async def test_each_role_runs_on_its_own_model_within_its_own_limits(store, tmp_
         "vendor/cheap",
         "vendor/judge",
     ]
-    # A stage may not ask for more output than its own model will return, and a
-    # model that declares no ceiling is left alone.
-    assert [body["max_tokens"] for body in sent] == [16000, 4096, 16000]
+    # Neither legacy caller caps nor configured model caps limit generation.
+    assert all("max_tokens" not in body for body in sent)
+    assert all("max_completion_tokens" not in body for body in sent)
     # The attempt diagnostics name the model that served each call, so an
     # operator reading the activity feed can see what produced the review.
     attempts = [
@@ -666,7 +666,79 @@ async def test_bad_usage_keeps_conservative_accounting(store, tmp_path, usage):
         async with store.sessions() as session:
             calls = (await session.scalars(select(LLMCall))).all()
         assert len(calls) == 1 and calls[0].outcome == "success"
-        assert calls[0].tokens_out == 100 and calls[0].tokens_in > 0
+        assert calls[0].tokens_in > 0
+        assert calls[0].tokens_out + calls[0].tokens_in == 32000
         assert budget.reserved == 0
+    finally:
+        await llm.close()
+
+
+async def test_uncapped_long_response_is_audited_and_native_truncation_retried(
+    store, tmp_path
+):
+    import json
+
+    from pydantic import BaseModel
+
+    class LongResponse(BaseModel):
+        body: str
+
+    sent = []
+    content = json.dumps({"body": "detail " * 6000})
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert "max_tokens" not in body and "max_completion_tokens" not in body
+        sent.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": content},
+                        "finish_reason": "length" if len(sent) == 1 else "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 6000},
+            },
+        )
+
+    settings = Settings(
+        gateway_base_url="https://gateway.internal/v1",
+        model_limits={"configured-model": {"max_output_tokens": 256}},
+        model_roles={"verification": "configured-model"},
+    )
+    budget = BudgetTracker(
+        Budget(
+            token_ceiling=100000,
+            deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+            model_tier={},
+        )
+    )
+    llm = GatewayClient(
+        settings,
+        Audit(store, BlobStore(tmp_path / "blobs")),
+        budget,
+        Redactor(),
+        httpx.MockTransport(handler),
+    )
+    try:
+        result = await llm.complete(
+            stage="verification",
+            tier="verification",
+            system="review",
+            user="code",
+            response_model=LongResponse,
+            review_id="uncapped",
+            timeout_s=2,
+        )
+        assert len(result.body) > 4096
+        assert len(sent) == 2
+        assert "concise" in sent[1]["messages"][0]["content"]
+        async with store.sessions() as session:
+            calls = (await session.scalars(select(LLMCall))).all()
+        assert sorted(c.outcome for c in calls) == ["invalid_output", "success"]
+        assert all(c.tokens_out == 6000 for c in calls)
+        assert budget.reserved == 0 and budget.budget.tokens_used == 12200
     finally:
         await llm.close()

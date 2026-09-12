@@ -42,7 +42,7 @@ Required deployment settings:
 | `CONFLUENCE_BASE_URL`, `CONFLUENCE_TOKEN` | Confluence Data Center REST content API, PAT |
 | `GATEWAY_BASE_URL`, `GATEWAY_KEY` | Internal OpenAI-compatible gateway, including `/v1` if applicable |
 | `MODEL_ROLES` | Optional JSON object of role → approved gateway model ID |
-| `MODEL_LIMITS` | Optional JSON object of model ID → `context_tokens` and `max_output_tokens` |
+| `MODEL_LIMITS` | Optional JSON object of model ID → `context_tokens`; legacy output caps are ignored |
 | `MODEL_CATALOG` | Optional JSON array of model IDs an operator may select for a manual run |
 | `MODEL_STRONG`, `MODEL_FAST`, `MODEL_VERIFIER` | Legacy tier model IDs, still honoured |
 | `MODEL_CONTEXT_TOKENS` | Approved context-window limit, used for models `MODEL_LIMITS` does not name |
@@ -87,7 +87,7 @@ returns:
   "default": {"model": "vendor/general"},
   "roles": {
     "defect_review": {"model": "vendor/strong", "reasoning_effort": "high"},
-    "line_review": {"model": "vendor/cheap", "max_output_tokens": 8192}
+    "line_review": {"model": "vendor/cheap", "context_tokens": 32000}
   }
 }}}
 ```
@@ -166,14 +166,31 @@ allows at most three concrete findings per chunk with up to two evidence ranges;
 models must flag omitted findings, making the review partial. Anchor hashes and
 other derived fields are populated in code. Impact remains nullable and advisory.
 
-`stage_output_tokens` defaults to 4096 for proposing stages, additionally bounded
-by each role's configured model output limit. Increase it if measured output
-truncation warrants it. Triage uses `triage_unit_tokens` (12000 bytes by default)
-and selects at most `triage_max_units` (24), further limited by remaining time,
-unit timeout, and concurrency. Selection visits one chunk per file before more
-chunks, prioritizing changed source code. Every omitted unit remains explicitly
-skipped; triage always produces a partial review. Standard triage runs the general
-defect reviewer; deep triage retains the legacy Test-only detailed pass.
+There is no changed-line threshold or fixed triage selection. Every eligible chunk
+enters a breadth-first queue, visiting one chunk per file before additional chunks
+and prioritizing source changes. Workers keep taking chunks while the actual
+analysis deadline and review token budget permit. A fast response frees capacity
+for more work. Legacy `max_changed_lines`, `triage_max_units` and
+`triage_unit_tokens` settings remain readable but do not restrict coverage.
+
+Gateway requests omit output-token caps for every role, including verification
+and recheck. Legacy `stage_output_tokens` and model `max_output_tokens` settings
+are accepted but ignored. The gateway and model still have their own native
+limits. The review-wide token budget and deadlines remain active: calls reserve
+up to their configured context window, limited by the remaining review allowance,
+and settle against reported usage. An uncapped in-flight response can exceed the
+remaining allowance; no further calls are admitted after it is spent. Missing
+usage is conservatively charged against the full context window. Concurrent calls
+wait for reservations to settle instead of treating temporary contention as
+exhaustion. Prompts are still checked against the receiving model's context window.
+Requirements use that model's available input space instead of a fixed 12 KB
+cutoff, reserving a quarter of the window as output headroom. Truncation that is
+still needed remains explicit and makes coverage partial. Default exclusions
+match lockfiles specifically, so source names such as `clock_test.go` are reviewed.
+
+Failed and timed-out chunks retain explicit coverage gaps and safe diagnostic
+notes; they do not stop other chunks. Secret findings are redacted advisory
+warnings and never stop analysis, validation or reporting.
 
 Completed unit results are redacted and checkpointed in `review_units` before
 that worker takes another unit. Recovery reuses only matching prompt, model,

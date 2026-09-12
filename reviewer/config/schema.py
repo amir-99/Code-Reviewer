@@ -63,8 +63,8 @@ class ModelSpec(Strict):
     """One role's model and the limits that model imposes on a call.
 
     Limits are per model, not per installation: once roles can differ, a single
-    global context window would size a prompt for the wrong model, and a stage
-    asking for more output tokens than the model allows is rejected outright.
+    global context window would size a prompt for the wrong model. Legacy output
+    caps are accepted for compatibility but no longer restrict generation.
     """
 
     model: str = Field(pattern=MODEL_ID)
@@ -102,7 +102,8 @@ class DocumentsConfig(Strict):
 
 
 class ReviewConfig(Strict):
-    max_changed_lines: int = 3000
+    # Deprecated compatibility field: change size never restricts coverage.
+    max_changed_lines: int | None = None
     token_ceiling: int = Field(default=120000, ge=1)
     timeout_s: int = Field(default=1200, ge=1, le=1200)
     unit_tokens: int = Field(default=6000, ge=256, le=20000)
@@ -120,7 +121,11 @@ class ReviewConfig(Strict):
         "**/node_modules/**",
         "**/vendor/**",
         "*.min.js",
-        "*lock*",
+        "*.lock",
+        "package-lock.json",
+        "**/package-lock.json",
+        "pnpm-lock.yaml",
+        "**/pnpm-lock.yaml",
         "**/*.generated.*",
     ]
 
@@ -148,7 +153,9 @@ class ProjectConfig(Strict):
     finalization_reserve_s: float = Field(default=180, ge=0, le=600)
     publication_reserve_s: float = Field(default=30, ge=0, le=120)
     unit_timeout_s: float = Field(default=120, gt=0, le=600)
-    stage_output_tokens: int = Field(default=4096, ge=256, le=16000)
+    # Legacy settings remain readable in operator files and persisted runs.
+    # Scheduling covers every chunk and no output cap is sent to the gateway.
+    stage_output_tokens: int | None = Field(default=None, ge=256)
     triage_max_units: int = Field(default=24, ge=1, le=200)
     triage_unit_tokens: int = Field(default=12000, ge=256, le=20000)
     final_stage_token_reserve: int = Field(default=0, ge=0)

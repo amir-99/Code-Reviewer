@@ -1,3 +1,10 @@
+> Coverage and output amendment: changed-line thresholds and fixed triage selection
+> are removed. All chunks are scheduled until actual review budgets expire. Gateway
+> calls omit output-token caps for every role; native model limits still apply.
+> Review-wide token accounting, deadlines, redaction, validation and fail-open
+> behavior remain. Secret findings are advisory and never terminate a review.
+> This supersedes the size-triggered triage behavior described below.
+
 > September 2026 workflow amendment: the operator default is now `analysis_mode=standard`.
 > Context collection, secret scanning and static analysis are followed by one combined
 > `defect_review` stage over concurrent coherent diff chunks, then mechanical validation,

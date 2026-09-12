@@ -425,11 +425,7 @@ class Pipeline:
                         raw.extend((name, f) for f in result.findings)
                     if level >= 5:
                         await self.advance(review, "ANALYSIS_FAN_OUT")
-                        names = (
-                            ["tests_"]
-                            if "triage_mode" in bundle.degradations
-                            else ["correctness", "complexity", "tests_", "line_review"]
-                        )
+                        names = ["correctness", "complexity", "tests_", "line_review"]
                         fan = await asyncio.gather(
                             *(stage(n) for n in names), return_exceptions=True
                         )
@@ -480,7 +476,6 @@ class Pipeline:
                     or llm is None
                     or "prompt_requirements_truncated" in bundle.degradations
                     or "budget_exhausted" in bundle.degradations
-                    or "triage_mode" in bundle.degradations
                     or "whole_change_summary_truncated" in bundle.degradations
                     or level < 7
                 )
