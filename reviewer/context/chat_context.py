@@ -19,6 +19,11 @@ ISSUE_KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 PATH_LIKE = re.compile(r"[\w./-]+\.[A-Za-z0-9]{1,8}")
 FILE_LIMIT = 12000
 EVENT_LIMIT = 150
+STAGE_NOTE_LIMIT = 20
+
+
+def words(text):
+    return {w for w in re.findall(r"[a-z0-9_]+", text.lower()) if len(w) > 3}
 
 
 class ChatSources:
@@ -76,9 +81,17 @@ class ChatSources:
         self.given_refs["page"].update(d["page_id"] for d in documents if d["page_id"])
         stages = {
             name: {
-                "status": result.status,
-                "partial": getattr(result, "partial", None),
-                "error": getattr(result, "error", None),
+                "status": "failed"
+                if result.failed
+                else "partial"
+                if result.partial
+                else "completed",
+                "units_examined": len(result.examined),
+                "units_skipped": len(result.skipped),
+                # A long run leaves hundreds of notes; the last few say how it ended.
+                "skipped_sample": result.skipped[:STAGE_NOTE_LIMIT],
+                "notes": result.notes[-STAGE_NOTE_LIMIT:],
+                "attempts": result.attempts,
             }
             for name, result in (await self.store.stages(review.id)).items()
         }
@@ -191,10 +204,15 @@ class ChatSources:
         for key in ISSUE_KEY.findall(question):
             if key not in self.given_refs["issue"]:
                 found[f"issue:{key}"] = await self._issue(key)
-        # A finding's own hunk is the most likely thing a question is about.
+        # A finding's own hunk is the most likely thing a question is about,
+        # whether the question names it by id or repeats its claim.
+        asked = words(question)
         for finding in await self.store.findings_for(self.review.id):
             fid = finding.get("id") or ""
-            if fid and fid in question:
+            claim = words(finding.get("claim") or "")
+            if (fid and fid in question) or (
+                claim and len(claim & asked) >= max(3, 0.6 * len(claim))
+            ):
                 path = (finding.get("anchor") or {}).get("file")
                 if path in files:
                     found[f"diff:{path}"] = self._hunks(files[path])
@@ -380,22 +398,21 @@ class ChatSources:
     def render(self, context, question, limit):
         """The user turn: the record, then what was requested, then the question.
 
-        Everything from the record is untrusted. Requested material is trimmed
-        first when the prompt exceeds the model's allowance, intact excerpts
-        before anything else, so the record itself is the last thing to go.
+        Everything from the record is untrusted. When the prompt exceeds what
+        the model or the chat budget allows, requested material goes first —
+        intact excerpts halved before anything is dropped — then the record is
+        thinned in a fixed order: old turns, stage notes, recheck, report,
+        finding detail, and last the findings themselves. What remains is
+        always the review's own conclusions.
         """
         requested = dict(context.get("requested") or {})
+        record = {k: v for k, v in context.items() if k != "requested"}
+        record = json.loads(json.dumps(record, default=str))
+        trims = iter(self._trims(record))
         while True:
             body = "\n".join(
                 [
-                    frame(
-                        json.dumps(
-                            {k: v for k, v in context.items() if k != "requested"},
-                            ensure_ascii=False,
-                            default=str,
-                        ),
-                        "review-record",
-                    ),
+                    frame(json.dumps(record, ensure_ascii=False), "review-record"),
                     frame(
                         json.dumps(requested, ensure_ascii=False, default=str),
                         "requested-material",
@@ -404,20 +421,74 @@ class ChatSources:
                     frame(question, "user-question"),
                 ]
             )
-            if len(body.encode()) <= limit or not requested:
+            if len(body.encode()) <= limit:
                 return self.redactor.text(body)
-            largest = max(
-                requested, key=lambda k: len(json.dumps(requested[k], default=str))
+            if requested:
+                largest = max(
+                    requested, key=lambda k: len(json.dumps(requested[k], default=str))
+                )
+                value = requested[largest]
+                if (
+                    isinstance(value, dict)
+                    and "code" in value
+                    and value["code"].count("\n") > 1
+                ):
+                    requested[largest] = shorten(value)
+                else:
+                    requested.pop(largest)
+                continue
+            trim = next(trims, None)
+            if trim is None:
+                # Nothing left to give up: let the gateway refuse it explicitly.
+                return self.redactor.text(body)
+            trim(record)
+
+    @staticmethod
+    def _trims(record):
+        def turns(r):
+            r["conversation"] = r.get("conversation", [])[1:]
+
+        def notes(r):
+            for stage in r.get("stages", {}).values():
+                stage.pop("notes", None)
+                stage.pop("skipped_sample", None)
+
+        def recheck(r):
+            r["recheck"] = None
+
+        def report(r):
+            r["report"] = "[omitted: prompt limit]"
+
+        def detail(r):
+            for finding in r.get("findings", []):
+                finding.pop("evidence", None)
+                finding.pop("failure_scenario", None)
+                finding.pop("suggested_direction", None)
+                if finding.get("verification"):
+                    finding["verification"].pop("reasoning", None)
+
+        def description(r):
+            r.get("merge_request", {})["description"] = "[omitted: prompt limit]"
+            r.get("requirement", {})["issue"] = (
+                {"key": (r["requirement"]["issue"] or {}).get("key")}
+                if r.get("requirement", {}).get("issue")
+                else None
             )
-            value = requested[largest]
-            if (
-                isinstance(value, dict)
-                and "code" in value
-                and value["code"].count("\n") > 1
-            ):
-                requested[largest] = shorten(value)
-            else:
-                requested.pop(largest)
+            r.get("requirement", {})["epic"] = None
+
+        def files(r):
+            r["changed_files"] = r.get("changed_files", [])[:40]
+
+        def findings(r):
+            r["findings"] = r.get("findings", [])[: max(1, len(r["findings"]) // 2)]
+            r["findings_omitted"] = True
+
+        turn_count = len(record.get("conversation") or [])
+        return (
+            [turns] * turn_count
+            + [notes, recheck, report, detail, description, files]
+            + [findings] * 6
+        )
 
     async def close(self):
         await self.stack.aclose()

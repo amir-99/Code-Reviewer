@@ -142,7 +142,10 @@ class ChatConfig(Strict):
     """
 
     enabled: bool = True
-    token_ceiling: int = Field(default=60000, ge=1000)
+    # Cumulative audited tokens over every question about one review. A single
+    # prompt is reserved by its byte length before it is sent, so this must
+    # comfortably exceed the size of one packed record.
+    token_ceiling: int = Field(default=400000, ge=1000)
     timeout_s: int = Field(default=120, ge=10, le=600)
     context_rounds: int = Field(default=1, ge=0, le=2)
     messages_per_hour: int = Field(default=30, ge=1, le=500)

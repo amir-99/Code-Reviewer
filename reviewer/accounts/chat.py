@@ -34,6 +34,9 @@ logger = structlog.get_logger()
 
 # A pending question older than this and still unanswered has lost its worker.
 STALE_AFTER = timedelta(minutes=15)
+# Of what the chat ceiling has left, the share a single prompt may take.
+PROMPT_BUDGET_SHARE = 0.8
+MIN_PROMPT_BYTES = 4000
 
 
 async def answer_chat(ctx, message_id):
@@ -179,15 +182,21 @@ async def _answer(ctx, review, snapshot, message):
         spec = models.get("chat")
         if spec is None:
             raise StageFailed("Chat model is not configured")
+        used = await store.chat_tokens(review.id)
         budget = BudgetTracker(
             Budget(
                 token_ceiling=config.chat.token_ceiling,
                 deadline_at=datetime.now(UTC)
                 + timedelta(seconds=config.chat.timeout_s),
                 model_tier=assignment(models),
-                tokens_used=await store.chat_tokens(review.id),
+                tokens_used=used,
             )
         )
+        # The reservation minimum is the prompt's byte length, so a prompt must
+        # fit in what is left of the ceiling, with room for the answer.
+        prompt_limit = (config.chat.token_ceiling - used) * PROMPT_BUDGET_SHARE
+        if prompt_limit < MIN_PROMPT_BYTES:
+            raise BudgetExhausted("Chat budget too low for another question")
         factory = getattr(ctx.get("machine"), "llm_factory", None)
         llm = (
             factory(None, redactor)
@@ -208,7 +217,15 @@ async def _answer(ctx, review, snapshot, message):
                 ),
             )
         )
-        return await answer(sources, message.question, llm, config, review.id, spec)
+        return await answer(
+            sources,
+            message.question,
+            llm,
+            config,
+            review.id,
+            spec,
+            prompt_limit=prompt_limit,
+        )
     finally:
         try:
             if sources is not None:

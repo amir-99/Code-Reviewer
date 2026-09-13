@@ -65,13 +65,21 @@ def validate_citations(citations, given):
 
 
 @activity("tool", "Review chat")
-async def answer(sources, question, llm, config, review_id, spec):
-    """Run the bounded loop and return (answer, citations, context_used, model)."""
+async def answer(sources, question, llm, config, review_id, spec, prompt_limit=None):
+    """Run the bounded loop and return (answer, citations, context_used, model).
+
+    The prompt is sized against the receiving model's window and, when given,
+    against what the chat budget can still reserve: the gateway counts prompt
+    bytes conservatively before it sends, so an oversized prompt is refused
+    before it costs anything, and this loop must not build one.
+    """
     version, prompt, _digest = PROMPTS["chat"]
     context = await sources.fixed()
     context["requested"] = await sources.prefetch(question)
     rounds = 1 + config.chat.context_rounds
     limit = int(spec.context_tokens * PROMPT_LIMIT_RATIO)
+    if prompt_limit is not None:
+        limit = max(1, min(limit, int(prompt_limit)))
     for round_no in range(rounds):
         final = round_no == rounds - 1
         user = sources.render(context, question, limit)

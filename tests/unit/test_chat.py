@@ -171,6 +171,14 @@ async def finished_review(store, head, snapshot, user_id):
             )
         )
     await store.save_snapshot(review.id, snapshot)
+    from reviewer.orchestrator.stages import StageResult
+
+    await store.save_stage(
+        review.id,
+        StageResult(
+            stage="defect_review", examined=["u1"], skipped=["u2"], partial=True
+        ),
+    )
     return await store.get(review.id)
 
 
@@ -181,6 +189,14 @@ async def test_fixed_record_and_prefetch_name_what_the_model_may_cite(store, rep
     sources = ChatSources(store, review, snapshot_for(head), ProjectConfig())
     record = await sources.fixed()
     assert record["review"]["decision"] == "COMMENT_ONLY"
+    assert record["stages"]["defect_review"] == {
+        "status": "partial",
+        "units_examined": 1,
+        "units_skipped": 1,
+        "skipped_sample": ["u2"],
+        "notes": [],
+        "attempts": 0,
+    }
     assert record["findings"][0]["verification"]["verdict"] == "confirmed"
     assert record["requirement"]["issue"]["key"] == "PAY-7"
     assert record["requirement"]["documents"][0]["truncated"] is True
@@ -193,6 +209,8 @@ async def test_fixed_record_and_prefetch_name_what_the_model_may_cite(store, rep
             "excluded": False,
         }
     ]
+    by_claim = await sources.prefetch("explain: charge doubles the amount")
+    assert list(by_claim) == ["diff:svc.py"]
     extra = await sources.prefetch("Why is svc.py flagged? See f-1 and PAY-99")
     assert "+ " in extra["diff:svc.py"]["diff"] and "- " in extra["diff:svc.py"]["diff"]
     assert extra["issue:PAY-99"] == {"unavailable": "no Jira credential"}
@@ -492,3 +510,25 @@ async def test_worker_chat_spend_never_reaches_the_review_totals(store, repo, tm
     assert (await store.spend(review.id))["tokens"] == 0
     assert (await store.spend(review.id))["chat"]["tokens"] == 70000
     assert (await store.chat_messages(review.id))[0]["answered_at"] is not None
+
+
+async def test_render_thins_the_record_in_order_and_keeps_findings_last(store, repo):
+    path, head = repo
+    user_id = await owner(store)
+    snapshot = snapshot_for(head)
+    snapshot["report"] = "R" * 5000
+    review = await finished_review(store, head, snapshot, user_id)
+    sources = ChatSources(store, review, snapshot, ProjectConfig())
+    record = await sources.fixed()
+    record["conversation"] = [{"question": "q" * 500, "answer": "a" * 500}] * 3
+    from reviewer.context.excerpts import excerpt
+
+    record["requested"] = {"file:x": excerpt(["x"] * 400)}
+    full = sources.render(record, "why?", 10**7)
+    assert "RRRR" in full and "file:x" in full
+    tight = sources.render(record, "why?", 6000)
+    assert "file:x" not in tight, "requested material goes first"
+    assert "RRRR" not in tight, "then the report"
+    assert "charge doubles the amount" in tight, "the findings survive"
+    assert 'source="user-question"' in tight
+    assert len(tight.encode()) <= 6000
