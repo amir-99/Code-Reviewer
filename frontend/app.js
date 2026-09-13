@@ -29,7 +29,7 @@ const GROUPS = {llm_attempt: 'tool', run: 'state', models: 'state'};
 const KINDS = {llm_attempt: 'llm'};
 const KEEP = 300;
 
-let token = '', selected = '', current = null, controller, refreshTimer, lastRecheck = null;
+let token = '', account = null, sessionGeneration = 0, sessionAbort = new AbortController(), selected = '', current = null, controller, refreshTimer, lastRecheck = null;
 let reviews = [], listFilter = 'all', listQuery = '', activityKind = 'all', severity = 'all', tabTouched = false;
 let snapshotSeq = 0;            // the newest event the last snapshot already reflects
 const activities = new Map();   // activity_id -> {row, kind, name, status, depth, at}
@@ -75,12 +75,17 @@ function notice(message, kind = '') {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(apiURL(path), {...options, headers: {Authorization: `Bearer ${token}`, ...options.headers}});
+  const generation = sessionGeneration;
+  const response = await fetch(apiURL(path), {...options, credentials: 'same-origin', signal: options.signal ? AbortSignal.any([options.signal, sessionAbort.signal]) : sessionAbort.signal, headers: {'X-CSRF-Token': token, ...options.headers}});
+  if (generation !== sessionGeneration) throw new DOMException('Session changed', 'AbortError');
+  if (response.status === 401 && account) clearSession();
   if (!response.ok) {
     let detail; try { detail = (await response.json()).detail; } catch {}
     const error = new Error(typeof detail === 'string' ? detail : `Request failed (${response.status})`);
     error.status = response.status; throw error;
   }
+  const readJSON = response.json.bind(response);
+  response.json = async () => { const data = await readJSON(); if (generation !== sessionGeneration) throw new DOMException('Session changed', 'AbortError'); return data; };
   return response;
 }
 
@@ -108,7 +113,8 @@ function connection(state, text) {
 }
 
 async function refresh() {
-  const body = await (await request('/admin/reviews')).json();
+  const filter = account?.role === 'admin' && $('owner-filter')?.value ? `?owner=${encodeURIComponent($('owner-filter').value)}` : '';
+  const body = await (await request('/admin/reviews' + filter)).json();
   reviews = body.reviews || [];
   connection('live', 'Connected');
   renderReviews();
@@ -162,6 +168,8 @@ function reviewRow(review) {
   when.dateTime = review.started_at ?? '';
   when.dataset.ago = review.started_at ?? '';
   bottom.append(when);
+  if (account?.role === 'admin') bottom.append(el('span', review.owner_user_id || 'system / legacy'));
+  if (review.spend) bottom.append(el('span', `${money(review.spend.cost)} · ${count(review.spend.tokens)} tokens`));
   button.append(top, bottom);
   button.onclick = () => select(review.id);
   return button;
@@ -190,6 +198,7 @@ function renderHead(review) {
   $('state').textContent = labels(review.state);
   $('metadata').textContent = [
     `head ${short(review.head_sha, 12)}`,
+    account?.role === 'admin' ? `owner ${review.owner_user_id || 'system / legacy'}` : null,
     overrides.requested_by ? `triggered by ${overrides.requested_by}` : 'triggered by webhook',
     overrides.issue_key ? `story ${overrides.issue_key}` : null,
     overrides.epic_key ? `epic ${overrides.epic_key}` : null,
@@ -879,6 +888,8 @@ const delay = (ms, signal) => new Promise(resolve => {
 });
 
 function render(review) {
+  for (const id of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(id).hidden = !review.capabilities?.execute;
+
   current = review;
   snapshotSeq = Number(review.sequence ?? 0);
   if (review.models) { reviewModels = {...reviewModels, ...review.models}; paintModels(); }
@@ -903,6 +914,7 @@ async function follow(id, signal) {
       live('live', 'Live');
       for await (const event of events(response.body)) {
         if (signal.aborted) return;
+        if (event.event === 'session_expired') { clearSession(); return; }
         if (event.event === 'snapshot') render(event.data);
         if (event.event === 'activity' && Number(event.id) > Number(cursor)) { addActivity(event.data); cursor = event.id; }
         if (event.event === 'complete') {
@@ -980,8 +992,10 @@ setInterval(() => {
 
 $('login').onsubmit = async event => {
   event.preventDefault();
-  token = $('token').value;
   try {
+    const result = await (await request('/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({login:$('login-name').value, password:$('token').value})})).json();
+    token = result.csrf_token; account = result.account;
+    applyAccount();
     await refresh();
     $('token').value = '';
     $('connect').hidden = true;
@@ -1008,8 +1022,9 @@ $('models-reset').onclick = () => {
   markModelChoices();
 };
 
-$('disconnect').onclick = () => { controller?.abort(); clearInterval(refreshTimer); token = ''; location.reload(); };
+$('disconnect').onclick = async () => { try { await request('/auth/logout', {method:'POST'}); } finally { clearSession(); } };
 $('refresh').onclick = refreshNow;
+$('owner-filter').onchange = refreshNow;
 $('copy-report').onclick = () => copy($('report').textContent, 'The report');
 $('search').oninput = event => { listQuery = event.target.value.trim().toLowerCase(); renderReviews(); };
 
@@ -1105,4 +1120,86 @@ $('trigger').onsubmit = async event => {
     }
   } catch (error) { if (error.name !== 'AbortError') notice(error.message, 'error'); }
   finally { $('start').disabled = false; }
+};
+
+
+function clearSession() {
+  sessionGeneration++; sessionAbort.abort(); sessionAbort = new AbortController();
+  controller?.abort(); clearInterval(refreshTimer); token = ''; account = null;
+  selected = ''; current = null; reviews = []; activities.clear(); stages.clear(); stateAt.clear();
+  modelChoice.clear(); reviewModels = {}; modelDefaults = {}; modelCatalog = []; audited = null; streamed = emptySpend();
+  $('workspace').hidden = true; $('connect').hidden = false; $('disconnect').hidden = true;
+  $('account-identity').hidden = true; $('account-content').replaceChildren(); $('review').hidden = true;
+  $('activity').replaceChildren(); $('report').textContent = ''; $('token').value = '';
+}
+
+function applyAccount() {
+  const admin = account.role === 'admin';
+  $('account-identity').textContent = `${account.display_name} · ${account.role}`;
+  $('account-identity').hidden = false; $('nav-reviews').textContent = admin ? 'All reviews' : 'My reviews';
+  $('nav-profile').textContent = admin ? 'Account' : 'Profile';
+  $('owner-filter-label').hidden = !admin;
+  $('nav-users').hidden = !admin; $('nav-new').hidden = admin; $('new-review-card').hidden = admin;
+  if (!admin) readiness();
+}
+
+async function readiness() {
+  try {
+    const statuses = await (await request('/profile/integrations')).json();
+    const missing = Object.entries(statuses).filter(([,v]) => v.status !== 'configured').map(([k]) => k);
+    $('credential-readiness').textContent = missing.length ? `Missing or invalid: ${missing.join(', ')}. Gateway and GitLab are required; missing Jira or Confluence degrades requirements.` : 'Integration credentials are configured.';
+  } catch (error) { notice(error.message, 'error'); }
+}
+
+function field(form, label, type='text') {
+  const input = el('input'); input.type = type; input.required = true;
+  const wrapper = el('label', label); wrapper.append(input); form.append(wrapper); return input;
+}
+function action(label, fn) {
+  const button = el('button', label); button.type = 'button';
+  button.onclick = async () => { button.disabled = true; try { await fn(); } catch (error) { notice(error.message, 'error'); } finally { button.disabled = false; } };
+  return button;
+}
+function jsonRequest(path, method, body) { return request(path, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}); }
+function panel(title) { $('account-panel').hidden = false; $('review-layout').hidden = true; $('account-title').textContent = title; $('account-content').replaceChildren(); return $('account-content'); }
+$('nav-reviews').onclick = () => { $('account-panel').hidden = true; $('review-layout').hidden = false; };
+$('nav-new').onclick = () => { $('nav-reviews').click(); $('mr').focus(); };
+$('nav-profile').onclick = async () => {
+  const root = panel(account.role === 'admin' ? 'Account' : 'Profile');
+  root.append(el('p', `${account.display_name} (${account.login})`));
+  const password = el('form'); const old = field(password, 'Current password', 'password'); const next = field(password, 'New password', 'password'); next.minLength = 12;
+  const submit = el('button', 'Change password'); submit.type = 'submit'; password.append(submit);
+  password.onsubmit = async event => { event.preventDefault(); try { await jsonRequest('/auth/password', 'POST', {current_password:old.value, password:next.value}); clearSession(); notice('Password changed. Sign in again.'); } catch (error) { notice(error.message, 'error'); } finally { old.value = ''; next.value = ''; } }; root.append(password);
+  if (account.role === 'admin') return;
+  try {
+    const statuses = await (await request('/profile/integrations')).json();
+    for (const [name, state] of Object.entries(statuses)) {
+      const card = el('section', null, 'card'); card.append(el('h3', name), el('p', state.status));
+      const form = el('form'); const input = field(form, 'Replacement token', 'password'); input.autocomplete = 'off';
+      const save = el('button', 'Save token'); save.type = 'submit'; form.append(save);
+      form.onsubmit = async event => { event.preventDefault(); const value = input.value; input.value = ''; try { await jsonRequest(`/profile/integrations/${name}`, 'PUT', {token:value}); notice('Token saved'); $('nav-profile').click(); readiness(); } catch (error) { notice(error.message, 'error'); } };
+      card.append(form, action('Remove', async () => { await request(`/profile/integrations/${name}`, {method:'DELETE'}); $('nav-profile').click(); readiness(); }), action('Check connection', async () => { const result = await (await request(`/profile/integrations/${name}/check`, {method:'POST'})).json(); notice(result.reason || result.status); })); root.append(card);
+    }
+  } catch (error) { notice(error.message, 'error'); }
+};
+$('activate').onsubmit = async event => { event.preventDefault(); try { await jsonRequest('/auth/activate', 'POST', {token:$('activation-token').value, password:$('activation-password').value}); notice('Password set. You can sign in.'); } catch (error) { notice(error.message, 'error'); } finally { $('activation-token').value = ''; $('activation-password').value = ''; } };
+$('nav-users').onclick = async () => {
+  const root = panel('Users');
+  const form = el('form'); const login = field(form, 'Login'); const name = field(form, 'Display name');
+  const role = el('select'); for (const value of ['user','admin']) { const option = el('option', value); option.value = value; role.append(option); } const label = el('label', 'Role'); label.append(role); form.append(label);
+  const submit = el('button', 'Create account'); submit.type = 'submit'; form.append(submit); root.append(form);
+  const delivery = el('p'); root.append(delivery);
+  form.onsubmit = async event => { event.preventDefault(); try { const result = await (await jsonRequest('/auth/users','POST',{login:login.value,display_name:name.value,role:role.value})).json(); delivery.textContent = `Deliver this activation token privately (expires in one hour): ${result.activation_token}`; form.reset(); await listUsers(); } catch (error) { notice(error.message,'error'); } };
+  const search = el('input'); search.type = 'search'; search.setAttribute('aria-label','Search accounts'); root.append(search);
+  const list = el('div'); root.append(list);
+  async function listUsers() {
+    try { const result = await (await request(`/auth/users?search=${encodeURIComponent(search.value)}`)).json(); list.replaceChildren();
+      for (const user of result.users) {
+        const row = el('section', null, 'card'); row.append(el('h3', `${user.display_name} · ${user.login}`), el('p', `${user.role} · ${user.active ? 'active' : 'disabled'}`));
+        for (const [label, body] of [['Toggle role',{action:'role',value:user.role === 'admin' ? 'user':'admin'}], [user.active ? 'Disable':'Reactivate',{action:'active',value:!user.active}], ['Revoke sessions',{action:'revoke_sessions'}], ['Start recovery (revokes integrations)',{action:'recovery'}]]) row.append(action(label, async () => { const result = await (await jsonRequest(`/auth/users/${user.id}`,'POST',body)).json(); if (result.activation_token) delivery.textContent = `Deliver privately: ${result.activation_token}`; await listUsers(); }));
+        list.append(row);
+      }
+    } catch (error) { notice(error.message,'error'); }
+  }
+  search.oninput = listUsers; await listUsers();
 };

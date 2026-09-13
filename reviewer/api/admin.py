@@ -36,6 +36,7 @@ async def lookup(
     event_id: str | None = None,
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    owner: str | None = None,
 ):
     """Resolve a trigger response's event id to its review.
 
@@ -45,14 +46,19 @@ async def lookup(
     """
     if event_id is None:
         account = request.state.principal
-        return {
-            "reviews": await request.app.state.store.recent(
-                limit,
-                offset,
-                owner_user_id=account.id,
-                all_owners=account.role == "admin",
-            )
-        }
+        if owner is not None and account.role != "admin":
+            raise HTTPException(403, "Admin role required")
+        rows = await request.app.state.store.recent(
+            limit,
+            offset,
+            owner_user_id=(None if owner == "system" else owner)
+            if account.role == "admin"
+            else account.id,
+            all_owners=account.role == "admin" and owner is None,
+        )
+        for row in rows:
+            row["spend"] = await request.app.state.store.spend(row["id"])
+        return {"reviews": rows}
     from reviewer.store.models import ReviewTrigger
 
     async with request.app.state.store.sessions() as session:

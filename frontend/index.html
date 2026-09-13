@@ -15,26 +15,33 @@
 <header class="topbar">
   <a class="brand" href="./"><span class="mark" aria-hidden="true">◈</span><span class="wordmark">Review Room<small>AI code reviewer</small></span></a>
   <div class="topbar-actions">
+    <span id="account-identity" hidden></span>
     <span id="conn" class="pill" hidden><i class="dot" aria-hidden="true"></i><span id="conn-text">Offline</span></span>
     <button id="theme" class="icon-button" type="button" title="Switch between the dark and light palette" aria-label="Switch colour theme">◐</button>
-    <button id="disconnect" type="button" hidden>Disconnect</button>
+    <button id="disconnect" type="button" hidden>Log out</button>
   </div>
 </header>
 
 <main>
 <section id="connect" class="connect">
   <div class="card connect-card">
-    <p class="eyebrow">Operator workspace</p>
+    <p class="eyebrow">Account workspace</p>
     <h1>A clearer view of <em>every</em> review.</h1>
     <p class="lede">Watch the pipeline as it runs, inspect what it concluded, and start a review from a merge request link.</p>
     <form id="login" autocomplete="off">
       <div class="field">
-        <label for="token">Admin token</label>
-        <input id="token" type="password" required autocomplete="off" placeholder="Enter your reviewer admin token">
+        <label for="login-name">Login</label>
+        <input id="login-name" required autocomplete="username">
+        <label for="token">Password</label>
+        <input id="token" type="password" required autocomplete="current-password" placeholder="Enter your password">
       </div>
-      <p class="hint">Held in memory for this tab only, and sent only to the configured review API. Reloading clears it.</p>
-      <button class="primary" type="submit">Connect to reviewer</button>
+      <p class="hint">Use the account created by your administrator.</p>
+      <button class="primary" type="submit">Sign in</button>
     </form>
+    <details><summary>Activate account or reset password</summary>
+      <form id="activate"><label for="activation-token">One-time activation token</label><input id="activation-token" type="password" required autocomplete="off">
+      <label for="activation-password">New password (at least 12 characters)</label><input id="activation-password" type="password" required minlength="12" autocomplete="new-password"><button type="submit">Set password</button></form>
+    </details>
     <ul class="features">
       <li><span aria-hidden="true">◈</span> Live stage, work unit and tool activity</li>
       <li><span aria-hidden="true">◈</span> Findings with severity, evidence and verification</li>
@@ -45,10 +52,14 @@
 </section>
 
 <section id="workspace" hidden>
-<div class="layout">
+<label id="owner-filter-label" hidden>Review owner <input id="owner-filter" placeholder="Account ID, system, or blank for all"></label>
+<nav id="account-nav" aria-label="Account navigation"><button id="nav-reviews">My reviews</button><button id="nav-new">New review</button><button id="nav-profile">Profile</button><button id="nav-users" hidden>Users</button></nav>
+<section id="account-panel" class="card" hidden><h2 id="account-title">Profile</h2><div id="account-content"></div></section>
+<div class="layout" id="review-layout">
 
   <aside class="rail">
-    <section class="card">
+    <section class="card" id="new-review-card">
+      <p id="credential-readiness" class="hint"></p>
       <div class="card-head"><h2>Start a review</h2></div>
       <form id="trigger">
         <div class="field">

@@ -808,3 +808,9 @@ footer { text-align: center; font-size: 11px; color: var(--muted); padding: 22px
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
+
+#account-nav { display:flex; gap:.6rem; flex-wrap:wrap; margin:1rem 0; }
+#account-content { display:grid; gap:1rem; }
+#account-content form { display:grid; gap:.7rem; }
+#account-content label { display:grid; gap:.3rem; }
+#account-content .card { padding:1rem; overflow-wrap:anywhere; }

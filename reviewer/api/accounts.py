@@ -42,12 +42,12 @@ def transport(request):
 
 
 async def authenticate(request: Request):
-    transport(request)
     result = await Accounts(request.app.state.store).resolve(
         request.cookies.get(COOKIE)
     )
     if result is None:
         raise HTTPException(401, "Authentication required")
+    transport(request)
     account, session = result
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         if not hmac.compare_digest(
@@ -191,3 +191,39 @@ async def manage(user_id: str, body: Manage, request: Request, account=Depends(a
     except ValueError as exc:
         failure(exc)
     return {"updated": True, "activation_token": token}
+
+
+class PasswordChange(Input):
+    current_password: SecretStr = Field(max_length=1024)
+    password: SecretStr = Field(min_length=12, max_length=1024)
+
+
+@router.post("/password")
+async def change_password(
+    body: PasswordChange, request: Request, account=Depends(authenticate)
+):
+    import asyncio
+
+    from reviewer.accounts.service import PASSWORDS, revoke, verify
+    from reviewer.store.models import AccountEvent, utcnow
+
+    if not await verify(
+        body.current_password.get_secret_value(), account.password_hash
+    ):
+        raise HTTPException(400, "Current password is incorrect")
+    hashed = await asyncio.to_thread(PASSWORDS.hash, body.password.get_secret_value())
+    async with request.app.state.store.transaction() as session:
+        current = await session.scalar(
+            select(Account).where(Account.id == account.id).with_for_update()
+        )
+        if not current.active or current.password_hash != account.password_hash:
+            raise HTTPException(401, "Authentication required")
+        current.password_hash = hashed
+        current.updated_at = utcnow()
+        await revoke(session, current.id)
+        session.add(
+            AccountEvent(
+                actor_id=current.id, user_id=current.id, action="password_changed"
+            )
+        )
+    return {"changed": True}

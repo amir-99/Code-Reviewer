@@ -2,6 +2,7 @@
 
 import http.client
 import os
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -18,21 +19,36 @@ ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascri
           "/favicon.svg": ("favicon.svg", "image/svg+xml")}
 
 
+ROUTES = {
+    "GET": r"/(?:admin/(?:models|quality|reviews(?:/[A-Za-z0-9-]+(?:/(?:events|audit))?)?)|auth/(?:me|users)|profile/integrations)",
+    "POST": r"/(?:auth/(?:login|logout|activate|password|users(?:/[A-Za-z0-9-]+)?)|admin/reviews(?:/[A-Za-z0-9-]+/(?:replay|recheck))?|profile/integrations/(?:gateway|gitlab|jira|confluence)/check)",
+    "PUT": r"/profile/integrations/(?:gateway|gitlab|jira|confluence)",
+    "DELETE": r"/profile/integrations/(?:gateway|gitlab|jira|confluence)",
+}
+
+
+def allowed(method, path):
+    parsed = urlsplit(path)
+    return not parsed.netloc and not parsed.fragment and path.startswith("/api/") and re.fullmatch(ROUTES.get(method, r"(?!)"), parsed.path[4:]) is not None
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass  # Never log credentials, request URLs, or upstream bodies.
 
-    def headers_for(self, status, content_type):
+    def headers_for(self, status, content_type, cookies=()):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        for cookie in cookies:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
 
     def do_GET(self):
-        if self.path.startswith("/api/admin/"):
+        if allowed(self.command, self.path):
             return self.proxy()
         asset = ASSETS.get(self.path)
         if not asset:
@@ -43,9 +59,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write((ROOT / name).read_bytes())
 
     def do_POST(self):
-        if self.path.startswith("/api/admin/"):
+        if allowed(self.command, self.path):
             return self.proxy()
         self.send_error(404)
+
+    do_PUT = do_POST
+    do_DELETE = do_POST
 
     def proxy(self):
         try:
@@ -61,10 +80,10 @@ class Handler(BaseHTTPRequestHandler):
         connection = connection_type(UPSTREAM.hostname, UPSTREAM.port, timeout=45)
         sent = False
         try:
-            headers = {k: self.headers[k] for k in ("Authorization", "Content-Type", "Last-Event-ID", "Accept") if k in self.headers}
+            headers = {k: self.headers[k] for k in ("Cookie", "Origin", "X-CSRF-Token", "Content-Type", "Last-Event-ID", "Accept") if k in self.headers}
             connection.request(self.command, UPSTREAM.path.rstrip("/") + self.path[4:], self.rfile.read(size) if size else None, headers)
             response = connection.getresponse()
-            self.headers_for(response.status, response.getheader("Content-Type", "application/json"))
+            self.headers_for(response.status, response.getheader("Content-Type", "application/json"), [value for name, value in response.getheaders() if name.lower() == "set-cookie"])
             sent = True
             while chunk := response.read1(16384):
                 self.wfile.write(chunk)

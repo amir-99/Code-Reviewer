@@ -13,7 +13,7 @@ class ProxyTests(unittest.TestCase):
         handler = object.__new__(server.Handler)
         handler.path = path
         handler.command = "GET"
-        handler.headers = {"Authorization": "Bearer private", "Last-Event-ID": "12"}
+        handler.headers = {"Cookie": "reviewer_session=private", "X-CSRF-Token": "csrf", "Origin": "https://review.invalid", "Last-Event-ID": "12"}
         handler.rfile = io.BytesIO()
         handler.wfile = io.BytesIO()
         handler.connection = SimpleNamespace(settimeout=lambda _: None)
@@ -25,17 +25,19 @@ class ProxyTests(unittest.TestCase):
     def test_stream_forwards_header_and_flushes_without_buffering(self):
         handler = self.handler()
         chunks = iter([b": heartbeat\n\n", b"event: complete\ndata: {}\n\n", b""])
-        response = SimpleNamespace(status=200, getheader=lambda *args: "text/event-stream", read1=lambda _: next(chunks))
+        response = SimpleNamespace(status=200, getheader=lambda *args: "text/event-stream", read1=lambda _: next(chunks), getheaders=lambda: [("Set-Cookie", "reviewer_session=rotated; HttpOnly"), ("Set-Cookie", "second=value")])
         with patch.object(server.http.client, "HTTPConnection") as connection:
             connection.return_value.getresponse.return_value = response
             handler.do_GET()
             args = connection.return_value.request.call_args.args
             self.assertEqual(args[1], "/admin/reviews/id/events")
-            self.assertEqual(args[3]["Authorization"], "Bearer private")
+            self.assertEqual(args[3]["Cookie"], "reviewer_session=private")
+            self.assertEqual(args[3]["X-CSRF-Token"], "csrf")
+            self.assertNotIn("Authorization", args[3])
             self.assertEqual(args[3]["Last-Event-ID"], "12")
             connection.return_value.close.assert_called_once()
         self.assertIn(b"event: complete", handler.wfile.getvalue())
-        self.assertEqual(handler.sent, [(200, "text/event-stream")])
+        self.assertEqual(handler.sent, [(200, "text/event-stream", ["reviewer_session=rotated; HttpOnly", "second=value"])])
 
     def test_all_browser_modules_are_served_and_packaged(self):
         import re
