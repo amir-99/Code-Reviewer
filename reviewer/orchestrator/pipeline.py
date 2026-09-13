@@ -309,7 +309,12 @@ class Pipeline:
                                 func.coalesce(
                                     func.sum(LLMCall.tokens_in + LLMCall.tokens_out), 0
                                 )
-                            ).where(LLMCall.review_id == review.id)
+                            ).where(
+                                LLMCall.review_id == review.id,
+                                # Questions asked about the review are paid for
+                                # from the chat budget, never the review's own.
+                                LLMCall.stage != "chat",
+                            )
                         )
                     )
                 tracker = BudgetTracker(

@@ -31,6 +31,7 @@ ROLES = (
     "system_context",
     "verification",
     "recheck",
+    "chat",
 )
 
 # Roles the code asked for before selection was per-role. Retained so a gateway
@@ -54,6 +55,7 @@ DEFAULT_ROLE_MODELS = {
     "system_context": "google/gemini-3.8-flash",
     "verification": "anthropic/claude-sonnet-5",
     "recheck": "google/gemini-3.8-flash",
+    "chat": "google/gemini-3.8-flash",
 }
 
 MODEL_ID = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$"
@@ -130,6 +132,23 @@ class ReviewConfig(Strict):
     ]
 
 
+class ChatConfig(Strict):
+    """Questions asked about a finished review, paid for outside its budget.
+
+    The token ceiling is cumulative over every question asked about one review;
+    the timeout bounds a single answer. Both are separate from `review` so a
+    long conversation can never eat a rerun's allowance, and a rerun's spend
+    never silences the chat.
+    """
+
+    enabled: bool = True
+    token_ceiling: int = Field(default=60000, ge=1000)
+    timeout_s: int = Field(default=120, ge=10, le=600)
+    context_rounds: int = Field(default=1, ge=0, le=2)
+    messages_per_hour: int = Field(default=30, ge=1, le=500)
+    history_turns: int = Field(default=6, ge=0, le=20)
+
+
 class StaticTool(Strict):
     name: str
     image: str
@@ -167,6 +186,7 @@ class ProjectConfig(Strict):
     documents: DocumentsConfig = Field(default_factory=DocumentsConfig)
     models: ModelProfile = Field(default_factory=ModelProfile)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
+    chat: ChatConfig = Field(default_factory=ChatConfig)
     static_tools: list[StaticTool] = []
     languages: list[Literal["python", "typescript", "go"]] = [
         "python",

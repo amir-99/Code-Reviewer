@@ -283,3 +283,39 @@ class ReviewComment(Base):
     review_id: Mapped[str] = mapped_column(ForeignKey("reviews.id"), primary_key=True)
     key: Mapped[str] = mapped_column(String(40), primary_key=True)
     data: Mapped[dict] = mapped_column(json_type)
+
+
+class ReviewChatMessage(Base):
+    """One question asked about a finished review, and the answer it got.
+
+    Chat never touches the review itself: the row records what was asked, what
+    was read to answer it (paths, keys and ids, never content), and the answer.
+    """
+
+    __tablename__ = "review_chat_messages"
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    review_id: Mapped[str] = mapped_column(ForeignKey("reviews.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
+    sequence: Mapped[int] = mapped_column(Integer)
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str | None] = mapped_column(Text)
+    citations: Mapped[list] = mapped_column(json_type, default=list)
+    context_used: Mapped[list] = mapped_column(json_type, default=list)
+    credential_refs: Mapped[dict | None] = mapped_column(json_type)
+    model: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(10), default="pending")
+    error: Mapped[str | None] = mapped_column(Text)
+    tokens_in: Mapped[int] = mapped_column(default=0)
+    tokens_out: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        Index("uq_chat_sequence", "review_id", "sequence", unique=True),
+        CheckConstraint(
+            "status IN ('pending', 'answered', 'failed')", name="chat_status"
+        ),
+    )

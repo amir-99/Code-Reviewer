@@ -579,7 +579,151 @@ class Store:
         its budget on retries spent that budget. Cost is only as complete as the
         configured prices — a call whose model has no price is counted in tokens
         and reported as unpriced, never as free.
+
+        Questions asked about the review afterwards are reported under `chat`,
+        from their own budget, and never in the review's totals.
         """
+        from reviewer.store.models import LLMCall
+
+        rows = await self._spend_rows(LLMCall.review_id == review_id)
+        review = [row for row in rows if row["role"] != "chat"]
+        chat = [row for row in rows if row["role"] == "chat"]
+        return self._spend_totals(review) | {"chat": self._spend_totals(chat)}
+
+    async def chat_messages(self, review_id):
+        """Every question asked about one review, oldest first."""
+        from reviewer.store.models import ReviewChatMessage
+
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(ReviewChatMessage)
+                    .where(ReviewChatMessage.review_id == str(review_id))
+                    .order_by(ReviewChatMessage.sequence)
+                )
+            ).all()
+            return [chat_view(row) for row in rows]
+
+    async def chat_message(self, message_id):
+        from reviewer.store.models import ReviewChatMessage
+
+        async with self.sessions() as session:
+            return await session.get(ReviewChatMessage, message_id)
+
+    async def add_chat_message(self, review_id, user_id, question, credential_refs):
+        """Record a question under the review's row lock, so sequences never collide."""
+        from reviewer.context.redaction import Redactor
+        from reviewer.store.models import ReviewChatMessage
+
+        async with self.transaction() as session:
+            if self.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            await session.scalar(
+                select(Review).where(Review.id == str(review_id)).with_for_update()
+            )
+            sequence = await session.scalar(
+                select(func.coalesce(func.max(ReviewChatMessage.sequence), 0)).where(
+                    ReviewChatMessage.review_id == str(review_id)
+                )
+            )
+            row = ReviewChatMessage(
+                review_id=str(review_id),
+                user_id=user_id,
+                sequence=sequence + 1,
+                question=Redactor().text(question),
+                credential_refs=credential_refs,
+            )
+            session.add(row)
+            await session.flush()
+            return chat_view(row)
+
+    async def chat_pending(self, review_id):
+        from reviewer.store.models import ReviewChatMessage
+
+        async with self.sessions() as session:
+            return (
+                await session.scalar(
+                    select(func.count()).where(
+                        ReviewChatMessage.review_id == str(review_id),
+                        ReviewChatMessage.status == "pending",
+                    )
+                )
+            ) > 0
+
+    async def chat_recent(self, user_id, since):
+        """How many questions one account asked after `since`, for throttling."""
+        from reviewer.store.models import ReviewChatMessage
+
+        async with self.sessions() as session:
+            return await session.scalar(
+                select(func.count()).where(
+                    ReviewChatMessage.user_id == user_id,
+                    ReviewChatMessage.created_at >= since,
+                )
+            )
+
+    async def finish_chat_message(
+        self,
+        message_id,
+        *,
+        status,
+        answer=None,
+        citations=(),
+        context_used=(),
+        model=None,
+        error=None,
+        tokens_in=0,
+        tokens_out=0,
+    ):
+        """Settle a question once, whatever arq's redelivery does afterwards."""
+        from reviewer.context.redaction import Redactor
+        from reviewer.store.models import ReviewChatMessage
+
+        redactor = Redactor()
+        async with self.transaction() as session:
+            row = await session.get(ReviewChatMessage, message_id)
+            if row is None or row.status != "pending":
+                return False
+            row.status = status
+            row.answer = redactor.text(answer) if answer is not None else None
+            row.citations = redactor.object(list(citations))
+            row.context_used = redactor.object(list(context_used))
+            row.model = model
+            row.error = error
+            row.tokens_in, row.tokens_out = tokens_in, tokens_out
+            row.answered_at = utcnow()
+            return True
+
+    async def stale_chat_messages(self, older_than):
+        """Pending questions the worker never settled, for the recovery sweep."""
+        from reviewer.store.models import ReviewChatMessage
+
+        async with self.sessions() as session:
+            return list(
+                await session.scalars(
+                    select(ReviewChatMessage.id).where(
+                        ReviewChatMessage.status == "pending",
+                        ReviewChatMessage.created_at < older_than,
+                    )
+                )
+            )
+
+    async def chat_tokens(self, review_id):
+        """Tokens every question about this review has spent so far."""
+        from reviewer.store.models import LLMCall
+
+        async with self.sessions() as session:
+            return int(
+                await session.scalar(
+                    select(
+                        func.coalesce(
+                            func.sum(LLMCall.tokens_in + LLMCall.tokens_out), 0
+                        )
+                    ).where(LLMCall.review_id == review_id, LLMCall.stage == "chat")
+                )
+            )
+
+    async def _spend_rows(self, *conditions):
         from reviewer.store.models import LLMCall
 
         async with self.sessions() as session:
@@ -601,12 +745,12 @@ class Store:
                             0,
                         ),
                     )
-                    .where(LLMCall.review_id == review_id)
+                    .where(*conditions)
                     .group_by(LLMCall.stage, LLMCall.model)
                     .order_by(func.sum(LLMCall.cost).desc(), LLMCall.stage)
                 )
             ).all()
-        roles = [
+        return [
             {
                 "role": stage,
                 "model": model,
@@ -631,6 +775,9 @@ class Store:
                 retries,
             ) in rows
         ]
+
+    @staticmethod
+    def _spend_totals(roles):
         return {
             "roles": roles,
             "calls": sum(r["calls"] for r in roles),
@@ -719,3 +866,22 @@ class Store:
                 )
                 for r, p in rows
             ]
+
+
+def chat_view(row):
+    """The dashboard's shape of one chat message; credentials never leave the row."""
+    return {
+        "id": row.id,
+        "sequence": row.sequence,
+        "user_id": row.user_id,
+        "question": row.question,
+        "answer": row.answer,
+        "citations": row.citations or [],
+        "context_used": row.context_used or [],
+        "model": row.model,
+        "status": row.status,
+        "error": row.error,
+        "tokens": (row.tokens_in or 0) + (row.tokens_out or 0),
+        "created_at": row.created_at,
+        "answered_at": row.answered_at,
+    }
