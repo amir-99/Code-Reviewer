@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from reviewer.accounts.policy import review_access
 from reviewer.api.admin import authenticate, inspect
 from reviewer.orchestrator.states import TERMINAL
 
@@ -56,6 +57,12 @@ async def stream(request, review_id, after):
     yield await picture(request, review_id)
     ticks = 0
     while not await request.is_disconnected():
+        try:
+            await authenticate(request)
+            await review_access(request, review_id)
+        except HTTPException:
+            yield frame("session_expired", {})
+            return
         # Read terminal state first, then drain events committed with that state.
         review = await store.get(review_id)
         rows = await store.events(review_id, after)
@@ -85,8 +92,7 @@ async def events(
             raise ValueError
     except ValueError:
         raise HTTPException(400, "Invalid Last-Event-ID") from None
-    if await request.app.state.store.get(review_id) is None:
-        raise HTTPException(404, "Review not found")
+    await review_access(request, review_id)
     return StreamingResponse(
         stream(request, review_id, after),
         media_type="text/event-stream",

@@ -1,21 +1,12 @@
-import hmac
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from reviewer.accounts.policy import review_access
+from reviewer.api.accounts import authenticate
 from reviewer.config.loader import load_project
 from reviewer.config.models import assignment, catalog, resolve
 from reviewer.config.schema import ROLES
-
-
-async def authenticate(request: Request):
-    secret = request.app.state.settings.admin_token.get_secret_value()
-    supplied = request.headers.get("authorization", "")
-    if not secret or not hmac.compare_digest(
-        supplied.encode(), f"Bearer {secret}".encode()
-    ):
-        raise HTTPException(401, "Invalid admin token")
-
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
 
@@ -53,10 +44,29 @@ async def lookup(
     rather than an error.
     """
     if event_id is None:
-        return {"reviews": await request.app.state.store.recent(limit, offset)}
+        account = request.state.principal
+        return {
+            "reviews": await request.app.state.store.recent(
+                limit,
+                offset,
+                owner_user_id=account.id,
+                all_owners=account.role == "admin",
+            )
+        }
+    from reviewer.store.models import ReviewTrigger
+
+    async with request.app.state.store.sessions() as session:
+        trigger = await session.get(ReviewTrigger, event_id)
+    account = request.state.principal
+    if account.role != "admin" and (
+        trigger is None or trigger.owner_user_id != account.id
+    ):
+        raise HTTPException(404, "Review not found")
     review = await request.app.state.store.by_event(event_id)
     if review is None:
-        return {"state": "QUEUED", "event_id": event_id, "findings": []}
+        if trigger is None:
+            raise HTTPException(404, "Review not found")
+        return {"state": trigger.state, "event_id": event_id, "findings": []}
     return await inspect(review.id, request)
 
 
@@ -71,9 +81,7 @@ async def inspect(review_id: str, request: Request):
     so both are the record of what was queued rather than posted.
     """
     store = request.app.state.store
-    review = await store.get(review_id)
-    if review is None:
-        raise HTTPException(404, "Review not found")
+    review = await review_access(request, review_id)
     body = {
         key: getattr(review, key)
         for key in (
@@ -89,6 +97,11 @@ async def inspect(review_id: str, request: Request):
             "status_delivered",
             "error",
         )
+    }
+    body["owner_user_id"] = review.owner_user_id
+    body["capabilities"] = {
+        "execute": request.state.principal.role == "user"
+        and review.owner_user_id == request.state.principal.id
     }
     body["project_id"] = await store.project_number(review)
     body["overrides"] = review.overrides
@@ -152,9 +165,8 @@ def summarise(finding):
 
 @router.post("/reviews/{review_id}/replay")
 async def replay(review_id: str, request: Request):
-    review = await request.app.state.store.get(review_id)
-    if review is None:
-        raise HTTPException(404, "Review not found")
+    review = await review_access(request, review_id, execute=True)
+    raise HTTPException(503, "Personal credential execution is not configured")
     project_id = await request.app.state.store.project_number(review)
     await request.app.state.queue.enqueue_job(
         "replay_review", project_id, review.mr_iid, str(uuid4()), review.overrides
@@ -169,9 +181,8 @@ async def recheck(review_id: str, request: Request):
     Unlike a replay this runs no stages and publishes no report: it only answers
     the threads that are already open.
     """
-    review = await request.app.state.store.get(review_id)
-    if review is None:
-        raise HTTPException(404, "Review not found")
+    review = await review_access(request, review_id, execute=True)
+    raise HTTPException(503, "Personal credential execution is not configured")
     project_id = await request.app.state.store.project_number(review)
     await request.app.state.queue.enqueue_job(
         "recheck_review", project_id, review.mr_iid, str(review.id)
@@ -183,11 +194,17 @@ async def recheck(review_id: str, request: Request):
 async def quality(request: Request, project_id: int | None = None):
     from reviewer.telemetry.quality import quality as query
 
-    return await query(request.app.state.store, project_id)
+    return await query(
+        request.app.state.store,
+        project_id,
+        owner_user_id=request.state.principal.id,
+        all_owners=request.state.principal.role == "admin",
+    )
 
 
 @router.get("/reviews/{review_id}/audit")
 async def audit(review_id: str, request: Request):
+    await review_access(request, review_id)
     from sqlalchemy import select
 
     from reviewer.store.models import LLMCall
@@ -200,6 +217,7 @@ async def audit(review_id: str, request: Request):
             {
                 column.name: getattr(row, column.name)
                 for column in LLMCall.__table__.columns
+                if column.name not in {"prompt_blob_ref", "response_blob_ref"}
             }
             for row in rows
         ]

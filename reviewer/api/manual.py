@@ -19,7 +19,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from reviewer.api.admin import authenticate
+from reviewer.api.accounts import user
 from reviewer.api.webhooks import ReviewJob
 from reviewer.config.loader import load_project
 from reviewer.config.models import catalog
@@ -31,7 +31,7 @@ from reviewer.context.models import (
 )
 
 logger = structlog.get_logger()
-router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
+router = APIRouter(prefix="/admin", dependencies=[Depends(user)])
 
 MERGE_REQUEST_PATH = re.compile(
     r"^(?P<path>.+?)/(?:-/)?merge_requests/(?P<iid>\d+)(?:/.*)?$"
@@ -123,6 +123,7 @@ def check_document_urls(urls, confluence_base_url):
 
 @router.post("/reviews", status_code=202)
 async def trigger(body: ManualReviewRequest, request: Request):
+    raise HTTPException(503, "Personal credential execution is not configured")
     settings = request.app.state.settings
     try:
         project_path, iid = parse_merge_request_url(

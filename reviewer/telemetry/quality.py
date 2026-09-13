@@ -13,7 +13,7 @@ from reviewer.store.models import (
 )
 
 
-async def quality(store, project_id=None):
+async def quality(store, project_id=None, *, owner_user_id=None, all_owners=True):
     async with store.sessions() as session:
         projects = {
             p.id: p.gitlab_project_id
@@ -24,6 +24,17 @@ async def quality(store, project_id=None):
         outcomes = (await session.scalars(select(FindingOutcome))).all()
         calls = (await session.scalars(select(LLMCall))).all()
         stages = (await session.scalars(select(ReviewStage))).all()
+    if not all_owners:
+        reviews = {
+            key: value
+            for key, value in reviews.items()
+            if value.owner_user_id == owner_user_id
+        }
+        findings = [row for row in findings if row.review_id in reviews]
+        calls = [row for row in calls if row.review_id in reviews]
+        stages = [row for row in stages if row.review_id in reviews]
+        # Forge feedback has no personal ownership and cannot label personal claims.
+        outcomes = []
     groups = defaultdict(
         lambda: {
             "findings": 0,

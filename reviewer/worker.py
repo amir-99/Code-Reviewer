@@ -139,6 +139,8 @@ async def receive_event(ctx, payload):
         job.event_id,
         job.overrides.model_dump() if job.overrides else None,
     )
+    if review is None:
+        return {"accepted": False, "reason": "conflict"}
     logger.info(
         "review_admitted",
         review_id=review.id,
@@ -154,6 +156,9 @@ async def run_review(ctx, review_id):
 
     from reviewer.telemetry.activity import close_run, open_run
 
+    review = await ctx["store"].get(review_id)
+    if review and review.owner_user_id:
+        return {"started": False, "reason": "personal_execution_unavailable"}
     logger.info("review_started", review_id=review_id)
     with trace.get_tracer(__name__).start_as_current_span(
         "review", attributes={"review.id": review_id}

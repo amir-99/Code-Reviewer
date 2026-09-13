@@ -6,7 +6,14 @@ from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from reviewer.orchestrator.states import TERMINAL, check_transition
-from reviewer.store.models import Project, Review, ReviewEvent, ReviewStage, utcnow
+from reviewer.store.models import (
+    Project,
+    Review,
+    ReviewEvent,
+    ReviewStage,
+    ReviewTrigger,
+    utcnow,
+)
 from reviewer.telemetry.activity import storage_timing
 
 
@@ -34,7 +41,17 @@ class Store:
             return await session.get(Review, review_id)
 
     async def accept(
-        self, project_id: int, iid: int, sha: str, event_id: str, overrides=None
+        self,
+        project_id: int,
+        iid: int,
+        sha: str,
+        event_id: str,
+        overrides=None,
+        *,
+        owner_user_id=None,
+        credential_refs=None,
+        principal_id=None,
+        trigger_source="system",
     ):
         async with self.transaction() as session:
             # PostgreSQL row locking serializes admission per project. Projects
@@ -61,6 +78,14 @@ class Store:
                 )
                 .with_for_update()
             )
+            if active and active.owner_user_id != owner_user_id:
+                # A real forge head change retains lifecycle authority; a command or
+                # personal rerun cannot displace a different owner's active review.
+                if trigger_source != "system" or active.head_sha == sha:
+                    trigger = await session.get(ReviewTrigger, event_id)
+                    if trigger:
+                        trigger.state = "CONFLICT"
+                    return None
             review_id = str(uuid4())
             if active:
                 active.state = "SUPERSEDED"
@@ -76,8 +101,15 @@ class Store:
                 mr_iid=iid,
                 head_sha=sha,
                 overrides=overrides,
+                owner_user_id=owner_user_id,
+                credential_refs=credential_refs,
+                principal_id=principal_id,
+                trigger_source=trigger_source,
             )
             session.add(review)
+            trigger = await session.get(ReviewTrigger, event_id)
+            if trigger:
+                trigger.state = "ADMITTED"
             await session.flush()
             await self._event(session, review.id, "state", {"state": "INIT"})
             return review
@@ -191,6 +223,7 @@ class Store:
         from reviewer.store.models import ReviewSnapshot
 
         async with self.sessions() as session:
+            current = await session.get(Review, exclude)
             return await session.scalar(
                 select(ReviewSnapshot.data)
                 .join(Review)
@@ -198,13 +231,18 @@ class Store:
                     Review.project_id == project_id,
                     Review.mr_iid == iid,
                     Review.id != exclude,
+                    Review.owner_user_id
+                    == (current.owner_user_id if current else None),
+                    Review.principal_id == (current.principal_id if current else None),
                     Review.state == "PUBLISHED",
                 )
                 .order_by(Review.finished_at.desc())
                 .limit(1)
             )
 
-    async def latest_published(self, project_id, iid):
+    async def latest_published(
+        self, project_id, iid, owner_user_id=None, principal_id=None
+    ):
         """The newest published review for a merge request, with its snapshot.
 
         A recheck runs outside any review of its own, so it needs both: the
@@ -222,6 +260,8 @@ class Store:
                         Review.project_id == project_id,
                         Review.mr_iid == iid,
                         Review.state == "PUBLISHED",
+                        Review.owner_user_id == owner_user_id,
+                        Review.principal_id == principal_id,
                     )
                     .order_by(Review.finished_at.desc())
                     .limit(1)
@@ -399,7 +439,9 @@ class Store:
             ).all()
             return [row.data for row in rows]
 
-    async def finding_by_fingerprint(self, project_id, iid, fingerprint):
+    async def finding_by_fingerprint(
+        self, project_id, iid, fingerprint, owner_user_id=None, principal_id=None
+    ):
         from reviewer.findings.models import Finding
         from reviewer.store.models import FindingRow
 
@@ -412,6 +454,8 @@ class Store:
                     Project.gitlab_project_id == project_id,
                     FindingRow.mr_iid == iid,
                     FindingRow.fingerprint == fingerprint,
+                    Review.owner_user_id == owner_user_id,
+                    Review.principal_id == principal_id,
                 )
                 .order_by(Review.started_at.desc())
                 .limit(1)
@@ -580,12 +624,15 @@ class Store:
                 for r in rows
             ]
 
-    async def recent(self, limit=50, offset=0):
+    async def recent(self, limit=50, offset=0, *, owner_user_id=None, all_owners=True):
         async with self.sessions() as session:
             rows = (
                 await session.execute(
                     select(Review, Project.gitlab_project_id)
                     .join(Project)
+                    .where(
+                        True if all_owners else Review.owner_user_id == owner_user_id
+                    )
                     .order_by(Review.started_at.desc(), Review.id)
                     .limit(limit)
                     .offset(offset)
@@ -594,6 +641,8 @@ class Store:
             return [
                 dict(
                     id=r.id,
+                    owner_user_id=r.owner_user_id,
+                    trigger_source=r.trigger_source,
                     project_id=p,
                     mr_iid=r.mr_iid,
                     head_sha=r.head_sha,
