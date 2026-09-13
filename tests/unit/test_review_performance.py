@@ -137,7 +137,9 @@ async def test_unit_timeout_bounds_all_retries_and_preserves_other_units(
 async def test_analysis_cutoff_preserves_final_stages(tmp_path):
     b = bundle(tmp_path, 1)
     config = ProjectConfig()
-    b.budget.deadline_at = datetime.now(UTC) + timedelta(seconds=120)
+    b.budget.deadline_at = datetime.now(UTC) + timedelta(
+        seconds=config.finalization_reserve_s * 2 / 3
+    )
     analysis = await execute("purpose", b, Echo(), config)
     final = await execute("system_context", b, Echo(), config)
     # System Context has a later cutoff than analysis and verification later still.
@@ -156,11 +158,13 @@ async def test_legacy_triage_limits_do_not_skip_units_when_time_remains(
     b = bundle(tmp_path, 4)
     # Ten seconds of analysis remain: the old worst-case estimate selected zero
     # chunks despite these responses finishing well inside the real deadline.
-    b.budget.deadline_at = datetime.now(UTC) + timedelta(seconds=190)
     b.degradations.append("triage_mode")
     b.code.files[0].lines[0].text = "x" * 10000
     config = ProjectConfig(
         review={"unit_tokens": 256}, triage_unit_tokens=256, triage_max_units=3
+    )
+    b.budget.deadline_at = datetime.now(UTC) + timedelta(
+        seconds=config.finalization_reserve_s + 10
     )
     result = await execute("tests_", b, Echo(), config)
     assert result.examined[:4] == [f"f{i}.py:unit-0" for i in range(4)]
