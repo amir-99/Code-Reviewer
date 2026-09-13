@@ -91,6 +91,46 @@ async def test_recovery_revokes_integrations_and_sessions(store):
         await accounts.login("alice", "a sufficiently long password", "local")
 
 
+async def test_removal_is_permanent_and_revokes_credentials_and_sessions(store):
+    accounts = Accounts(store)
+    admin = await active(accounts, "root", "admin")
+    user = await active(accounts, "alice", "user")
+    _, session_token, _ = await accounts.login(
+        "alice", "a sufficiently long password", "local"
+    )
+    async with store.transaction() as session:
+        session.add(
+            IntegrationCredential(
+                user_id=user["id"],
+                integration="gitlab",
+                version=1,
+                key_id="key",
+                ciphertext="encrypted",
+            )
+        )
+    await accounts.manage(admin["id"], user["id"], "remove")
+    assert await accounts.resolve(session_token) is None
+    async with store.sessions() as session:
+        assert (await session.scalar(select(IntegrationCredential))).state == "revoked"
+        removed = await session.get(Account, user["id"])
+        assert removed.removed_at is not None
+        assert removed.active is False
+        assert removed.password_hash is None
+    with pytest.raises(ValueError):
+        await accounts.login("alice", "a sufficiently long password", "local")
+    with pytest.raises(ValueError):
+        await accounts.manage(admin["id"], user["id"], "active", True)
+    with pytest.raises(ValueError):
+        await accounts.manage(admin["id"], user["id"], "remove")
+
+
+async def test_removal_cannot_strand_the_last_admin(store):
+    accounts = Accounts(store)
+    admin = await active(accounts, "root", "admin")
+    with pytest.raises(ValueError):
+        await accounts.manage(admin["id"], admin["id"], "remove")
+
+
 async def test_role_and_disablement_revoke_sessions(store):
     accounts = Accounts(store)
     user = await active(accounts)

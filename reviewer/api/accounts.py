@@ -91,7 +91,7 @@ class Create(Input):
 
 
 class Manage(Input):
-    action: Literal["role", "active", "recovery", "revoke_sessions"]
+    action: Literal["role", "active", "recovery", "revoke_sessions", "remove"]
     value: Literal["admin", "user"] | bool | None = None
 
 

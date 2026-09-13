@@ -909,4 +909,49 @@ input:focus, textarea:focus, select:focus {
 .comment-content > summary { cursor: pointer; font-weight: 600; }
 .review-links { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: 1rem; }
 .review-links[hidden] { display: none; }
+
+/* ---------- account & user management ---------- */
+
+.account-lede { color: var(--text-dim); font-size: 13px; margin: -6px 0 4px; }
+
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 14px; align-items: end; }
+.form-grid .field { margin-bottom: 0; }
+.form-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.form-actions .primary { width: auto; padding: 10px 18px; }
+
+.token-callout { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; margin-top: 4px; border-radius: 10px; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); font-size: 12px; }
+.token-callout code { font-family: var(--mono); font-size: 12px; padding: 2px 6px; border-radius: 6px; background: var(--surface); word-break: break-all; }
+
+.user-search { position: relative; margin: 4px 0 2px; }
+.user-search input { padding-left: 32px; }
+.user-search::before { content: "⌕"; position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 15px; pointer-events: none; }
+
+.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; text-transform: none; letter-spacing: normal; color: var(--muted); margin: 10px 0 4px; cursor: pointer; }
+.checkbox-row input[type=checkbox] { appearance: auto; width: 14px; height: 14px; padding: 0; border: none; background: none; accent-color: var(--accent); cursor: pointer; }
+
+.user-list { display: grid; gap: 10px; }
+.user-row { display: flex; align-items: flex-start; gap: 12px; padding: 14px; }
+.avatar { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700; background: var(--surface-3); color: var(--text-dim); }
+.avatar.role-admin { background: var(--accent-soft); color: var(--accent); }
+.user-row.is-removed { opacity: .6; }
+.user-row.is-removed .avatar { background: var(--red-soft); color: var(--red); }
+.user-main { flex: 1; min-width: 0; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.user-main h3 { overflow-wrap: anywhere; }
+.user-meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.user-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 11px; }
+.user-actions button { font-size: 12px; padding: 7px 11px; }
+
+.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); background: transparent; }
+.danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); }
+
+dialog.confirm-dialog { border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; width: min(420px, 90vw); background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+dialog.confirm-dialog::backdrop { background: color-mix(in srgb, #000 55%, transparent); backdrop-filter: blur(2px); }
+dialog.confirm-dialog h3 { margin: 0; }
+dialog.confirm-dialog p { color: var(--text-dim); font-size: 13px; margin: 8px 0 18px; }
+dialog.confirm-dialog .form-actions { justify-content: flex-end; }
+
+@media (max-width: 640px) {
+  .user-row { flex-wrap: wrap; }
+}
 .review-links a { overflow-wrap: anywhere; }

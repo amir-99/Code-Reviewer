@@ -194,6 +194,7 @@ class Account(Base):
     role: Mapped[str] = mapped_column(String(10))
     active: Mapped[bool] = mapped_column(default=True)
     password_hash: Mapped[str | None] = mapped_column(Text)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )

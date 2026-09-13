@@ -46,7 +46,15 @@ def future(value):
 def public(account):
     return {
         key: getattr(account, key)
-        for key in ("id", "login", "display_name", "role", "active", "created_at")
+        for key in (
+            "id",
+            "login",
+            "display_name",
+            "role",
+            "active",
+            "removed_at",
+            "created_at",
+        )
     }
 
 
@@ -217,6 +225,8 @@ class Accounts:
             )
             if account is None:
                 raise ValueError("Account not found")
+            if account.removed_at is not None:
+                raise ValueError("Account has been removed")
             if action in {"role", "active"}:
                 if action == "role" and value not in {"admin", "user"}:
                     raise ValueError("Invalid role")
@@ -246,6 +256,29 @@ class Accounts:
                     .values(state="revoked")
                 )
                 account.password_hash = None
+            elif action == "remove":
+                if account.role == "admin" and account.active:
+                    others = await session.scalar(
+                        select(Account.id)
+                        .where(
+                            Account.role == "admin",
+                            Account.active.is_(True),
+                            Account.id != user_id,
+                        )
+                        .limit(1)
+                    )
+                    if not others:
+                        raise ValueError("Cannot remove the last active admin")
+                # Removal is permanent and unlike recovery revokes every pinned
+                # credential version, not just the ones a fresh login could see.
+                await session.execute(
+                    update(IntegrationCredential)
+                    .where(IntegrationCredential.user_id == user_id)
+                    .values(state="revoked")
+                )
+                account.active = False
+                account.password_hash = None
+                account.removed_at = utcnow()
             elif action != "revoke_sessions":
                 raise ValueError("Invalid action")
             await revoke(session, user_id)
