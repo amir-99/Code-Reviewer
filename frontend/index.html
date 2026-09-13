@@ -157,6 +157,7 @@
         <button class="tab" type="button" role="tab" id="tab-recheck" data-tab="recheck" aria-selected="false" aria-controls="panel-recheck">Recheck<span class="n" id="tabn-recheck">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-spend" data-tab="spend" aria-selected="false" aria-controls="panel-spend">Spend<span class="n" id="tabn-spend">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-report" data-tab="report" aria-selected="false" aria-controls="panel-report">Report<span class="n" id="tabn-report">0</span></button>
+        <button class="tab" type="button" role="tab" id="tab-chat" data-tab="chat" aria-selected="false" aria-controls="panel-chat">Ask<span class="n" id="tabn-chat">0</span></button>
       </div>
 
       <section class="card" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity">
@@ -216,6 +217,7 @@
           <tbody id="spend-rows"></tbody>
         </table>
         <p id="spend-empty" class="empty-line">No model calls have been billed to this review yet.</p>
+        <p id="spend-chat" class="hint" hidden></p>
       </section>
 
       <section class="card" id="panel-report" role="tabpanel" aria-labelledby="tab-report" hidden>
@@ -232,6 +234,24 @@
         <table class="spend-table"><thead><tr><th>Step</th><th>Calls</th><th>Input tokens</th><th>Output tokens</th><th>Total tokens</th><th>Cost</th></tr></thead><tbody id="report-step-rows"></tbody></table>
         <pre id="report"></pre>
         <p id="report-empty" class="empty-line">This review has not rendered a report.</p>
+      </section>
+      <section class="card" id="panel-chat" role="tabpanel" aria-labelledby="tab-chat" hidden>
+        <div class="card-head">
+          <h2>Ask about this review <span id="chat-count" class="badge">0</span></h2>
+          <span id="chat-meta" class="hint"></span>
+        </div>
+        <p class="hint">Answers come from the review's stored record — findings, verdicts, report, requirement and the diff — and,
+          when the model asks, code at the reviewed commit, the linked issue or a linked page, read with your own credentials.
+          Nothing here changes the review or the merge request. Chat spends its own budget, apart from the review's.</p>
+        <ol id="chat-messages" class="chat" aria-live="polite"></ol>
+        <p id="chat-empty" class="empty-line">No questions yet.</p>
+        <form id="chat-form" class="chat-form">
+          <textarea id="chat-question" rows="2" maxlength="4000" placeholder="Why was this finding a REQUIRED? Which files were not covered? What did the verifier say about…" aria-label="Question"></textarea>
+          <div class="actions">
+            <button id="chat-send" type="submit">Ask</button>
+            <span id="chat-status" class="hint" role="status" aria-live="polite"></span>
+          </div>
+        </form>
       </section>
     </div>
   </section>

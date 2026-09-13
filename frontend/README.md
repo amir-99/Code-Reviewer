@@ -97,6 +97,21 @@ disables recheck. Project enforcement rules
 still control publication and commit statuses. Activity is bounded to the latest
 300 displayed entries; all retained events remain available through the API.
 
+**Ask** lets a review's owner question a finished review. A question goes to
+`POST /admin/reviews/{id}/chat`, which stores it and queues a worker job; the
+tab polls `GET /admin/reviews/{id}/chat` every two seconds until the answer
+lands, as the recheck tab does. The worker answers from the review's stored
+record — findings, verdicts, report, requirement, stages, the diff — and, only
+when the model asks from a fixed menu, reads a file or symbol at the reviewed
+commit, an issue, a linked page, the run's events or comment state, each with
+the owner's own pinned credentials. Citations name only material the model was
+actually given; a finding citation jumps to the Findings tab. Admins read the
+conversation but cannot ask; nothing in it changes the review or the merge
+request. Chat calls are audited under the `chat` role and billed to a separate
+per-review chat budget (`chat.token_ceiling` in the project policy), shown on
+the Spend tab under the review's own rows and never counted against the
+review's ceiling.
+
 ## SSE API
 
 Apply Alembic migration `0005` before starting the updated API and worker.

@@ -955,3 +955,20 @@ dialog.confirm-dialog .form-actions { justify-content: flex-end; }
   .user-row { flex-wrap: wrap; }
 }
 .review-links a { overflow-wrap: anywhere; }
+
+/* ---------- chat ---------- */
+
+.chat { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.chat li { display: grid; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border-left: 3px solid var(--line); }
+.chat li.asked { border-left-color: var(--blue); }
+.chat li.answered { border-left-color: var(--accent); }
+.chat li.failed { border-left-color: var(--red); }
+.chat li.pending { border-left-color: var(--amber); }
+.chat .who { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.chat .who time { margin-left: auto; }
+.chat .text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; font-size: 13px; }
+.chat .cites { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat .cites .chip { cursor: pointer; }
+.chat .reads { font-size: 11px; color: var(--muted); }
+.chat-form { margin-top: 12px; display: grid; gap: 8px; }
+.chat-form textarea { width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13px; }

@@ -265,3 +265,19 @@ The operator's confirmed remote Nginx upstreams use `192.168.30.161:8092` for th
 API and `192.168.30.161:8093` for the frontend. This deployment explicitly binds to
 that interface through API_BIND_ADDRESS / FRONTEND_BIND_ADDRESS; shipped Compose
 defaults remain localhost. Do not expand these bindings to all interfaces.
+
+
+### Review chat
+
+`POST/GET /admin/reviews/{id}/chat` answers questions about a finished review.
+Only the owner asks (fresh personal credentials are pinned per question; no
+installation fallback); admins read. The worker job `answer_chat` packs the
+stored record and runs at most `1 + chat.context_rounds` gateway calls through
+the `chat` role. The model may request from a fixed menu — `file`/`symbol` at
+the reviewed head through a scanned, redacted worktree, `issue`, a linked
+`page`, `events`, `comments` — and code validates citations against what was
+supplied. Chat is never a stage: it makes no transition, publishes nothing and
+never proposes findings. Its calls are audited with `stage="chat"`, excluded
+from the review's spend totals and from the budget a resumed run recomputes,
+and capped by `chat.token_ceiling` per review. Keep questions and answers
+redacted and the prompt versioned under `agents/prompts/chat/`.

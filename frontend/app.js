@@ -19,6 +19,7 @@ const IMPACTS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'unknown'];
 let impactLevel = 'all';
 let commentState = {comments: [], can_manage: false}, commentBusy = false, commentsLoadedFor = '', commentsLoadingFor = '';
 let commentResults = [];
+let chatState = {messages: [], can_ask: false, reason: ''}, chatLoadedFor = '', chatPolling = '';
 const DECISIONS = {APPROVE: 'Approve', REQUEST_CHANGES: 'Request changes', COMMENT_ONLY: 'Comment only'};
 const VERDICTS = {fixed: 'Fixed', partially_fixed: 'Partially fixed', not_fixed: 'Still open',
   obsolete: 'No longer applies', unverifiable: 'Could not verify'};
@@ -697,6 +698,137 @@ function renderRecheck(recheck) {
   }
 }
 
+/* ---------- chat ---------- */
+
+async function loadChat() {
+  const id = selected;
+  if (!id) return;
+  chatLoadedFor = id; // Snapshots arrive more than once; one load per review.
+  try {
+    const state = await (await request(`/admin/reviews/${encodeURIComponent(id)}/chat`)).json();
+    if (selected !== id) return;
+    chatState = state;
+    renderChat();
+    if (state.messages.some(m => m.status === 'pending')) pollChat(id);
+  } catch (error) {
+    if (error.name !== 'AbortError' && selected === id) { chatLoadedFor = ''; chatState = {messages: [], can_ask: false, reason: error.message}; renderChat(); }
+  }
+}
+
+// A question is answered by the worker, and the review's event stream is
+// already finished: read the answer back until it lands, like a recheck.
+async function pollChat(id) {
+  if (chatPolling === id) return;
+  chatPolling = id;
+  try {
+    for (let attempt = 0; attempt < 120 && selected === id; attempt++) {
+      await delay(2000, controller.signal);
+      if (selected !== id) return;
+      const state = await (await request(`/admin/reviews/${encodeURIComponent(id)}/chat`)).json();
+      if (selected !== id) return;
+      chatState = state;
+      renderChat();
+      audited = {...(audited || emptySpend()), chat: state.spend};
+      renderSpend();
+      if (!state.messages.some(m => m.status === 'pending')) return;
+    }
+    if (selected === id) $('chat-status').textContent = 'Still waiting for an answer. It will appear here when the worker settles it.';
+  } catch (error) { if (error.name !== 'AbortError' && selected === id) notice(error.message, 'error'); }
+  finally { if (chatPolling === id) chatPolling = ''; }
+}
+
+function citationChip(citation) {
+  const chip = el('button', '', 'chip');
+  chip.type = 'button';
+  if (citation.kind === 'file') {
+    const where = citation.line_start ? `:${citation.line_start}${citation.line_end && citation.line_end !== citation.line_start ? `-${citation.line_end}` : ''}` : '';
+    chip.textContent = `${citation.ref}${where}`;
+    chip.title = 'Copy the location';
+    chip.onclick = () => copy(`${citation.ref}${where}`, 'the location');
+  } else if (citation.kind === 'finding') {
+    const finding = (current?.findings || []).find(f => f.id === citation.ref);
+    chip.textContent = finding ? `finding: ${finding.claim || finding.id}`.slice(0, 80) : `finding ${citation.ref}`;
+    chip.title = 'Show in Findings';
+    chip.onclick = () => { tabTouched = true; severity = 'all'; impactLevel = 'all'; renderFindings(); showTab('findings'); };
+  } else {
+    chip.textContent = `${citation.kind}: ${citation.ref}`;
+    chip.onclick = () => copy(citation.ref, `the ${citation.kind}`);
+  }
+  return chip;
+}
+
+function renderChat() {
+  const messages = chatState.messages || [];
+  const answered = messages.filter(m => m.status !== 'pending').length;
+  $('tabn-chat').hidden = !messages.length;
+  $('tabn-chat').textContent = String(messages.length);
+  $('chat-count').textContent = String(messages.length);
+  $('chat-empty').hidden = messages.length > 0;
+  const pending = messages.some(m => m.status === 'pending');
+  const spend = chatState.spend;
+  $('chat-meta').textContent = [
+    spend?.calls ? `${count(spend.tokens)} tokens · ${money(spend.cost, {unpriced: spend.unpriced_calls})} on the chat budget` : '',
+    answered !== messages.length ? 'answering…' : '',
+  ].filter(Boolean).join(' · ');
+  const list = $('chat-messages');
+  list.replaceChildren(...messages.flatMap(message => {
+    const asked = el('li', '', 'asked');
+    const who = el('div', '', 'who');
+    who.append(el('span', message.user_id === account?.id ? 'You' : 'Owner', 'badge tone-info'), el('time', ago(message.created_at)));
+    asked.append(who, el('div', message.question, 'text'));
+    const reply = el('li', '', message.status);
+    const replyWho = el('div', '', 'who');
+    replyWho.append(el('span', message.status === 'pending' ? 'Answering…' : message.status === 'failed' ? 'Could not answer' : 'Answer', `badge ${message.status === 'failed' ? 'tone-bad' : message.status === 'pending' ? 'tone-warn' : 'tone-good'}`));
+    if (message.model) replyWho.append(el('span', message.model, 'mono'));
+    if (message.answered_at) replyWho.append(el('time', ago(message.answered_at)));
+    reply.append(replyWho);
+    if (message.status === 'answered') {
+      reply.append(el('div', message.answer || '', 'text'));
+      if (message.citations?.length) {
+        const cites = el('div', '', 'cites');
+        cites.append(...message.citations.map(citationChip));
+        reply.append(cites);
+      }
+      if (message.context_used?.length) reply.append(el('div', `Read: ${message.context_used.join(', ')}`, 'reads'));
+    } else if (message.status === 'failed') {
+      reply.append(el('div', message.error || 'The question could not be answered.', 'text'));
+    } else {
+      reply.append(el('div', 'Reading the review record and asking the model…', 'text hint'));
+    }
+    return [asked, reply];
+  }));
+  $('chat-form').hidden = !chatState.can_ask && !(current?.capabilities?.chat);
+  $('chat-send').disabled = !chatState.can_ask || pending;
+  $('chat-question').disabled = !chatState.can_ask;
+  $('chat-status').textContent = chatState.can_ask
+    ? (pending ? 'Waiting for the current answer before the next question.' : '')
+    : (chatState.reason || (current && !TERMINAL.has(current.state) ? 'Questions open once the review has finished.' : ''));
+}
+
+$('chat-form').onsubmit = async event => {
+  event.preventDefault();
+  const id = selected, question = $('chat-question').value.trim();
+  if (!id || !question || !chatState.can_ask) return;
+  $('chat-send').disabled = true;
+  $('chat-status').textContent = 'Sending…';
+  try {
+    const result = await (await request(`/admin/reviews/${encodeURIComponent(id)}/chat`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question}),
+    })).json();
+    if (selected !== id) return;
+    $('chat-question').value = '';
+    chatState = {...chatState, messages: [...(chatState.messages || []), result.message]};
+    renderChat();
+    pollChat(id);
+  } catch (error) {
+    if (error.name !== 'AbortError') { notice(error.message, 'error'); $('chat-status').textContent = error.message; $('chat-send').disabled = false; }
+  }
+};
+
+$('chat-question').onkeydown = event => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); $('chat-form').requestSubmit(); }
+};
+
 /* ---------- activity feed ---------- */
 
 function statusTone(status) {
@@ -960,6 +1092,11 @@ function renderSpend() {
     return line;
   }));
   $('spend-empty').hidden = spend.roles.length > 0;
+  const chat = audited?.chat;
+  $('spend-chat').hidden = !chat?.calls;
+  if (chat?.calls) {
+    $('spend-chat').textContent = `Chat — ${chat.calls} ${chat.calls === 1 ? 'call' : 'calls'} · ${count(chat.tokens_in)} in · ${count(chat.tokens_out)} out · ${money(chat.cost, {unpriced: chat.unpriced_calls})}. Billed to the chat budget, not the review's.`;
+  }
   $('report-spend-meta').textContent = `${total} · ${spend.tokens.toLocaleString()} tokens · ${spend.calls} calls (including retries and rechecks)`
     + (spend.unpriced_calls ? ` · ${spend.unpriced_calls} calls with unknown cost` : '');
   for (const [dimension, target] of [['model', 'report-model-rows'], ['role', 'report-step-rows']]) {
@@ -1041,6 +1178,8 @@ function render(review) {
 
   current = review;
   if (review.state === 'PUBLISHED' && commentsLoadedFor !== selected && commentsLoadingFor !== selected) refreshComments();
+  if (TERMINAL.has(review.state) && chatLoadedFor !== selected) loadChat();
+  else if (!TERMINAL.has(review.state)) renderChat();
   snapshotSeq = Number(review.sequence ?? 0);
   if (review.models) { reviewModels = {...reviewModels, ...review.models}; paintModels(); }
   // The snapshot is the audited record up to its own cursor, so it replaces
@@ -1089,6 +1228,7 @@ function select(id) {
   controller = new AbortController();
   selected = id;
   commentState = {comments: [], can_manage: false}; commentResults = []; commentsLoadedFor = ''; commentsLoadingFor = '';
+  chatState = {messages: [], can_ask: false, reason: ''}; chatLoadedFor = ''; chatPolling = '';
   current = null;
   snapshotSeq = 0;
   reviewModels = {};

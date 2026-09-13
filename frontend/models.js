@@ -11,7 +11,7 @@
 export const ROLE_LABELS = {
   purpose: 'Purpose', design: 'Design', correctness: 'Correctness', complexity: 'Complexity',
   defect_review: 'Defect review', tests_: 'Tests', line_review: 'Line review', system_context: 'System context',
-  verification: 'Verification', recheck: 'Recheck',
+  verification: 'Verification', recheck: 'Recheck', chat: 'Chat',
 };
 
 // Tools that call a model of their own rather than inheriting a stage's.
