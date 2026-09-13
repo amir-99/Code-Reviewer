@@ -118,6 +118,9 @@ async def inspect(review_id: str, request: Request):
     body["overrides"] = review.overrides
     body["findings"] = [summarise(f) for f in await store.findings_for(review_id)]
     snapshot = await store.snapshot(review_id) or {}
+    from reviewer.api.review_links import review_links
+
+    body["links"] = review_links(snapshot, review.overrides, request.app.state.settings)
     # The run's own record of which model served each role, so a finished review
     # still reports what produced it once its events have scrolled away.
     body["models"] = (snapshot.get("bundle") or {}).get("budget", {}).get(

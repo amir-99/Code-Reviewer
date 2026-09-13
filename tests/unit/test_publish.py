@@ -225,3 +225,60 @@ async def test_advisory_impact_in_inline_and_summary(tmp_path):
     report = await Publisher(forge).publish(b, [f], "COMMENT_ONLY", ProjectConfig(), [])
     assert "Impact (advisory)" in report["summary"]
     assert "| HIGH | correctness |" in report["summary"]
+
+
+async def test_publisher_receipts_survive_manual_removal_and_redelivery(
+    tmp_path, store
+):
+    from uuid import UUID
+
+    from reviewer.publish.comments import Comments
+
+    b = bundle(tmp_path, 1)
+    review = await store.accept(7, 2, b.code.head_sha, "manual-removal")
+    b.review_id = UUID(review.id)
+    f = finding()
+    f.severity_final = "REQUIRED"
+    f.anchor.in_diff = True
+    f.anchor.introduced_by_this_change = True
+    forge = FakeForge(b.mr)
+    config = ProjectConfig()
+    publisher = Publisher(forge, store)
+    await publisher.publish(b, [f], "COMMENT_ONLY", config, [], "draft")
+    rows = await store.comments_for(review.id)
+    assert rows[f.fingerprint]["draft_id"]
+    assert rows["summary"]["draft_id"]
+    comments = Comments(store, forge, review, 7, config)
+    await comments.act(f.fingerprint, "remove")
+    await comments.act("summary", "remove")
+    await publisher.publish(b, [f], "COMMENT_ONLY", config, [], "draft")
+    assert not forge.draft_notes
+    assert not forge.comments
+    assert all(
+        row["status"] == "removed"
+        for row in (await store.comments_for(review.id)).values()
+    )
+
+
+async def test_unpositionable_receipt_remains_summary_only(tmp_path, store):
+    from uuid import UUID
+
+    from reviewer.publish.comments import Comments
+
+    b = bundle(tmp_path, 1)
+    review = await store.accept(7, 2, b.code.head_sha, "unpositionable")
+    b.review_id = UUID(review.id)
+    f = finding()
+    f.severity_final = "REQUIRED"
+    f.anchor.in_diff = True
+    f.anchor.introduced_by_this_change = True
+    forge = FakeForge(b.mr)
+    forge.bad_position = True
+    await Publisher(forge, store).publish(
+        b, [f], "COMMENT_ONLY", ProjectConfig(), [], "draft"
+    )
+    comments = Comments(store, forge, review, 7, ProjectConfig())
+    await comments.sync()
+    assert comments.rows[f.fingerprint]["eligible"] is False
+    assert await comments.act(f.fingerprint, "publish") == "skipped"
+    assert f.claim in comments.rows["summary"]["body"]

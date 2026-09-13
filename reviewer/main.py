@@ -6,7 +6,16 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from reviewer.api import accounts, admin, events, health, manual, profile, webhooks
+from reviewer.api import (
+    accounts,
+    admin,
+    comments,
+    events,
+    health,
+    manual,
+    profile,
+    webhooks,
+)
 from reviewer.config.schema import Settings
 from reviewer.services.forge.gitlab import GitLab
 from reviewer.store.repositories import Store
@@ -77,6 +86,7 @@ def create_app(settings=None, store=None, queue=None, forge=None):
         profile.router,
         webhooks.router,
         admin.router,
+        comments.router,
         manual.router,
         health.router,
         events.router,

@@ -142,6 +142,7 @@
           <div id="track" class="track"><div id="track-fill" class="track-fill"></div></div>
           <div id="flow" class="flow" aria-label="Review pipeline"></div>
         </div>
+        <nav id="review-links" class="review-links" aria-label="Review references" hidden></nav>
         <div id="trail" class="trail" aria-label="State history"></div>
         <div class="actions">
           <button id="replay" type="button" hidden>Replay review</button>
@@ -182,7 +183,15 @@
           <div class="chips" id="severity-filters" role="group" aria-label="Disposition filter"></div>
         </div>
         <div id="sevbar" class="sevbar" aria-hidden="true"></div>
+        <div class="actions" id="comment-actions">
+          <button id="resolve-all-comments" type="button" disabled>Resolve all open threads</button>
+          <button id="publish-all-comments" type="button" disabled>Publish all non-removed comments</button>
+          <button id="refresh-comments" type="button">Refresh comment status</button>
+        </div>
+        <p id="comment-status" class="hint" role="status" aria-live="polite"></p>
+        <div id="comment-results" role="status" aria-live="polite"></div>
         <div id="findings"></div>
+        <div id="overall-message"></div>
       </section>
 
       <section class="card" id="panel-recheck" role="tabpanel" aria-labelledby="tab-recheck" hidden>

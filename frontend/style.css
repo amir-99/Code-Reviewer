@@ -899,3 +899,14 @@ input:focus, textarea:focus, select:focus {
 .unit-idle b { color: var(--violet); }
 .unit-stopped { font-size: 10px; color: var(--amber); }
 .lanes { grid-template-columns: 1fr; }
+
+.comment-panel { border-top: 1px solid var(--border, #8884); margin-top: 1rem; padding-top: 1rem; }
+.comment-message { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow: auto; }
+.comment-editor textarea { width: 100%; box-sizing: border-box; font: inherit; margin: .75rem 0; }
+.comment-editor button { margin-right: .5rem; }
+
+.comment-content { margin: .75rem 0; }
+.comment-content > summary { cursor: pointer; font-weight: 600; }
+.review-links { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: 1rem; }
+.review-links[hidden] { display: none; }
+.review-links a { overflow-wrap: anywhere; }

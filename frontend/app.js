@@ -1,4 +1,4 @@
-import {matchesFinding} from './findings.js';
+import {matchesFinding, commentActions, bulkCommentKeys} from './findings.js';
 import {apiURL} from './paths.js';
 import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk, UnitProgress} from './flow.js';
@@ -17,6 +17,8 @@ const all = selector => Array.from(document.querySelectorAll(selector));
 const SEVERITIES = ['BLOCKER', 'REQUIRED', 'SUGGESTION', 'QUESTION', 'NIT', 'FYI', 'PRAISE'];
 const IMPACTS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'unknown'];
 let impactLevel = 'all';
+let commentState = {comments: [], can_manage: false}, commentBusy = false, commentsLoadedFor = '', commentsLoadingFor = '';
+let commentResults = [];
 const DECISIONS = {APPROVE: 'Approve', REQUEST_CHANGES: 'Request changes', COMMENT_ONLY: 'Comment only'};
 const VERDICTS = {fixed: 'Fixed', partially_fixed: 'Partially fixed', not_fixed: 'Still open',
   obsolete: 'No longer applies', unverifiable: 'Could not verify'};
@@ -194,6 +196,7 @@ function metric(term, value, {shade = '', mono = false, at = '', elapsed = false
 }
 
 function renderHead(review) {
+  renderReviewLinks();
   const overrides = review.overrides || {};
   $('identity').textContent = `Project ${review.project_id} · Merge request !${review.mr_iid}`;
   $('state').textContent = labels(review.state);
@@ -408,6 +411,7 @@ async function copy(text, what) {
 }
 
 function renderFindings() {
+  renderCommentControls();
   const findings = current?.findings || [];
   const counts = new Map();
   for (const finding of findings) counts.set(finding.severity, (counts.get(finding.severity) || 0) + 1);
@@ -512,8 +516,132 @@ function findingCard(finding) {
   if (finding.requirement_ref) footer.append(el('span', `requirement ${finding.requirement_ref}`));
   if (finding.resolution) footer.append(el('span', labels(finding.resolution), 'badge'));
   article.append(footer);
+  article.append(commentPanel(commentState.comments.find(c => c.key === finding.fingerprint)));
   return article;
 }
+
+/* ---------- GitLab comment management ---------- */
+
+function renderCommentControls() {
+  renderReviewLinks();
+  const manageable = current?.capabilities?.execute && commentState.can_manage && !commentBusy;
+  $('resolve-all-comments').hidden = !current?.capabilities?.execute;
+  $('publish-all-comments').hidden = !current?.capabilities?.execute;
+  $('resolve-all-comments').disabled = !manageable || !bulkCommentKeys(commentState.comments, 'resolve_all').length;
+  $('publish-all-comments').disabled = !manageable || !bulkCommentKeys(commentState.comments, 'publish_all').length;
+  $('refresh-comments').disabled = commentBusy || !current || current.state !== 'PUBLISHED';
+  $('comment-status').textContent = commentBusy ? 'Updating GitLab comments…' : commentState.error ||
+    (commentState.synced ? 'Comment status synchronized with GitLab.' : 'Comment status has not been synchronized.');
+  $('comment-results').replaceChildren();
+  for (const result of commentResults) {
+    const finding = current?.findings?.find(f => f.fingerprint === result.key);
+    $('comment-results').append(el('p', `${result.key === 'summary' ? 'Overall review message' : finding?.claim || 'Comment'}: ${result.error || result.status}`, result.status === 'failed' ? 'tone-bad' : 'hint'));
+  }
+  $('overall-message').replaceChildren();
+  const summary = commentState.comments.find(c => c.key === 'summary');
+  const report = typeof current?.report === 'string' ? current.report : current?.report?.summary;
+  if (summary || report) {
+    const card = el('article', '', 'finding');
+    card.append(el('h3', 'Overall review message'));
+    card.append(commentPanel(summary || {key: 'summary', status: 'not_published', thread_status: 'not_applicable', message: report}));
+    $('overall-message').append(card);
+  }
+}
+
+function renderReviewLinks() {
+  const container = $('review-links');
+  container.replaceChildren();
+  const seen = new Set();
+  for (const link of [...(current?.links || []), ...(commentState.links || [])]) {
+    let url;
+    try { url = new URL(link.url); } catch { continue; }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || seen.has(url.href)) continue;
+    seen.add(url.href);
+    const anchor = el('a', link.label);
+    anchor.href = url.href; anchor.target = '_blank'; anchor.rel = 'noopener noreferrer';
+    container.append(anchor);
+  }
+  container.hidden = !container.children.length;
+}
+
+function commentPanel(comment) {
+  const panel = el('section', '', 'comment-panel');
+  const status = el('div', '', 'chips');
+  status.append(el('span', `Finding status: ${labels(comment?.status || 'not_published')}`, 'badge'));
+  status.append(el('span', `Thread status: ${labels(comment?.thread_status || 'not_applicable')}`, 'badge'));
+  panel.append(status);
+  if (!comment) return panel;
+  if (comment.conflict) panel.append(el('p', comment.conflict, 'tone-warn'));
+  if (comment.intent === 'remove') panel.append(el('p', 'Removal pending. Retry Remove to finish.', 'tone-warn'));
+  const message = el('pre', comment.message ?? comment.body ?? '', 'comment-message');
+  const content = el('details', '', 'comment-content');
+  content.append(el('summary', 'Message content'), message);
+  panel.append(content);
+  const actions = el('div', '', 'actions');
+  for (const action of commentActions(comment, current?.capabilities?.execute && commentState.can_manage)) {
+    const button = el('button', action === 'edit' ? 'Edit message' : action === 'resolve' ? 'Resolve thread' : comment.status === 'drafted' ? 'Remove draft' : 'Remove comment');
+    button.type = 'button'; button.disabled = commentBusy;
+    button.onclick = () => {
+      if (action === 'edit') {
+        content.open = true;
+        const editor = el('textarea'); editor.value = comment.message ?? comment.body ?? '';
+        editor.setAttribute('aria-label', 'Comment message'); editor.rows = 12;
+        const save = el('button', 'Save'), cancel = el('button', 'Cancel');
+        save.type = cancel.type = 'button';
+        save.onclick = () => {
+          if (!editor.value.trim()) { editor.focus(); return; }
+          runCommentAction('edit', comment.key, editor.value, comment.revision);
+        };
+        cancel.onclick = () => { message.hidden = false; actions.hidden = false; form.remove(); };
+        const form = el('div', '', 'comment-editor'); form.append(editor, save, cancel);
+        message.hidden = true; actions.hidden = true; content.append(form); editor.focus();
+      } else runCommentAction(action, comment.key);
+    };
+    actions.append(button);
+  }
+  panel.append(actions);
+  if (comment.status === 'committed' && actions.children.length) panel.append(el('p', 'Removing this comment preserves replies from other people.', 'hint'));
+  return panel;
+}
+
+async function refreshComments() {
+  const id = selected;
+  if (!id || commentBusy) return;
+  commentsLoadingFor = id;
+  try {
+    const response = await request(`/admin/reviews/${encodeURIComponent(id)}/comments`);
+    const state = await response.json();
+    if (id !== selected) return;
+    commentState = state; commentsLoadedFor = id; renderFindings();
+  } catch (error) {
+    if (id === selected) {
+      commentState = {...commentState, can_manage: false, synced: false, error: error.message};
+      commentsLoadedFor = id; renderFindings();
+    }
+  } finally { if (commentsLoadingFor === id) commentsLoadingFor = ''; }
+}
+
+async function runCommentAction(action, key, message, revision) {
+  const id = selected;
+  if (!id || commentBusy) return;
+  commentBusy = true; commentResults = []; renderFindings();
+  try {
+    const state = await (await request(`/admin/reviews/${encodeURIComponent(id)}/comments`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action, key, message, revision})
+    })).json();
+    if (id !== selected) return;
+    commentState = state; commentResults = state.results || [];
+    const failed = commentResults.filter(r => r.status === 'failed').length;
+    notice(failed ? `${failed} comment action(s) failed. Details are above the findings.` : 'Comment changes saved.', failed ? 'error' : 'ok');
+  } catch (error) {
+    if (id === selected) { notice(error.message, 'error'); commentState = {...commentState, synced: false, can_manage: false, error: 'Action outcome could not be confirmed. Refresh comment status before retrying.'}; }
+  } finally { commentBusy = false; renderFindings(); }
+}
+
+$('refresh-comments').onclick = refreshComments;
+$('resolve-all-comments').onclick = () => runCommentAction('resolve_all');
+$('publish-all-comments').onclick = () => runCommentAction('publish_all');
 
 /* ---------- report and recheck ---------- */
 
@@ -912,6 +1040,7 @@ function render(review) {
   for (const id of ['replay', 'recheck', 'recheck-tab-action', 'recheck-report-action']) $(id).hidden = !review.capabilities?.execute;
 
   current = review;
+  if (review.state === 'PUBLISHED' && commentsLoadedFor !== selected && commentsLoadingFor !== selected) refreshComments();
   snapshotSeq = Number(review.sequence ?? 0);
   if (review.models) { reviewModels = {...reviewModels, ...review.models}; paintModels(); }
   // The snapshot is the audited record up to its own cursor, so it replaces
@@ -959,6 +1088,7 @@ function select(id) {
   controller?.abort();
   controller = new AbortController();
   selected = id;
+  commentState = {comments: [], can_manage: false}; commentResults = []; commentsLoadedFor = ''; commentsLoadingFor = '';
   current = null;
   snapshotSeq = 0;
   reviewModels = {};
@@ -1153,6 +1283,7 @@ $('trigger').onsubmit = async event => {
 function clearSession() {
   sessionGeneration++; sessionAbort.abort(); sessionAbort = new AbortController();
   controller?.abort(); clearInterval(refreshTimer); token = ''; account = null;
+  commentState = {comments: [], can_manage: false}; commentResults = []; commentsLoadedFor = ''; commentsLoadingFor = '';
   selected = ''; current = null; reviews = []; activities.clear(); unitProgress.clear(); stages.clear(); stateAt.clear();
   modelChoice.clear(); reviewModels = {}; modelDefaults = {}; modelCatalog = []; audited = null; streamed = emptySpend();
   $('workspace').hidden = true; $('connect').hidden = false; $('disconnect').hidden = true;

@@ -582,3 +582,27 @@ For the supplied remote Nginx ingress, this deployment sets `API_BIND_ADDRESS` a
 `FRONTEND_BIND_ADDRESS` to `192.168.30.161`, matching the operator's upstreams on
 8092 and 8093. Both Compose defaults remain `127.0.0.1`. The Nginx sample uses the
 existing `review_agentic_backend` and `review_agentic_frontend` upstream groups.
+
+### Managing finding comments
+
+After a review completes, its Findings page shows publication status (Drafted,
+Committed, Removed, or Not published) separately from thread status. The owning
+user can edit or remove their draft/posted messages and resolve open threads.
+Removing a posted comment preserves other people's replies. The overall review
+message appears below the findings with the same applicable controls; a regular
+summary note has no resolvable thread.
+
+**Resolve all open threads** applies to the review's open reviewer threads.
+**Publish all non-removed comments** publishes its pending drafts and eligible
+unpublished messages, including the overall message, preserving edits and skipping
+removed/already-published comments. It does not publish unrelated personal drafts.
+Inline ceilings and summary-only findings still apply. Each action reports its
+result; retrying skips completed items. Refresh comment status after an external
+GitLab edit or an interrupted request. Conflicting edits require a refresh before
+saving. An ambiguous new publication is held for reconciliation to prevent duplicates.
+
+These actions use the review owner's pinned personal GitLab credentials, the
+reviewed head, and the same MR lock as worker publication. Admins have read-only
+visibility. Silent enforcement disables comment writes. Migration `0008` adds
+private durable comment receipts and action metadata; existing reports reconcile
+with GitLab when their owner opens or refreshes the comment controls.

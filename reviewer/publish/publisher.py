@@ -62,6 +62,19 @@ class Publisher:
         under silent enforcement a drafted run renders the report and writes
         nothing at all, not even a draft note.
         """
+        tracked = (
+            await self.store.comments_for(str(bundle.review_id)) if self.store else {}
+        )
+
+        async def remember(key, body, **fields):
+            if self.store:
+                from reviewer.publish.comments import entry
+
+                value = tracked.get(key) or entry(key, body)
+                value = value | fields
+                tracked[key] = value
+                await self.store.save_comment(str(bundle.review_id), key, value)
+
         writes_allowed = config.enforcement != "silent"
         mode = report_mode or ("applied" if writes_allowed else "none")
         if mode == "applied" and not writes_allowed:
@@ -117,6 +130,9 @@ class Publisher:
         per_file.update(n.file for n in drafted.values() if n.file)
         posted = []
         for f in inline:
+            saved = tracked.get(f.fingerprint) or {}
+            if saved.get("status") == "removed" or saved.get("intent") == "remove":
+                continue
             if f.fingerprint in open_findings or f.fingerprint in drafted:
                 continue
             if not slots or per_file[f.anchor.file] >= config.review.max_per_file:
@@ -137,12 +153,27 @@ class Publisher:
                 summarized.append(f)
                 continue
             position = position_for_line(file, line, refs)
-            body = render(f)
+            body = saved.get("body") or render(f)
+            await remember(
+                f.fingerprint,
+                body,
+                file=f.anchor.file,
+                position=position.model_dump(exclude_none=True),
+            )
             if draft:
                 if drafting:
                     try:
-                        await self.forge.post_draft_note(p, i, body, position)
+                        draft_note = await self.forge.post_draft_note(
+                            p, i, body, position
+                        )
+                        await remember(
+                            f.fingerprint,
+                            body,
+                            status="drafted",
+                            draft_id=draft_note.id,
+                        )
                     except PositionError:
+                        await remember(f.fingerprint, body, eligible=False)
                         summarized.append(f)
                         continue
                 posted.append(comment(f, position, body))
@@ -153,6 +184,14 @@ class Publisher:
                 discussion = await self.forge.post_inline_discussion(
                     p, i, body, position
                 )
+                await remember(
+                    f.fingerprint,
+                    body,
+                    status="committed",
+                    discussion_id=discussion.id,
+                    note_id=discussion.notes[0].id,
+                    thread_status="open",
+                )
                 f.status = "published"
                 slots -= 1
                 per_file[f.anchor.file] += 1
@@ -160,13 +199,25 @@ class Publisher:
                 if self.store:
                     await self.store.record_comment(f.id, discussion)
             except PositionError:
+                await remember(f.fingerprint, body, eligible=False)
                 summarized.append(f)
         body = summary(bundle, decision, findings, summarized, overflow, stages)
+        saved_summary = tracked.get("summary") or {}
+        body = saved_summary.get("body") or body
+        await remember("summary", body)
         marker = f"<!-- ai-review:summary={bundle.code.head_sha} -->"
         bot = await self.forge.identity()
+        if (
+            saved_summary.get("status") == "removed"
+            or saved_summary.get("intent") == "remove"
+        ):
+            return {"mode": mode, "summary": body, "inline": posted}
         if draft:
             if drafting and not any(marker in n.body for n in draft_notes):
-                await self.forge.post_draft_note(p, i, body)
+                draft_note = await self.forge.post_draft_note(p, i, body)
+                await remember(
+                    "summary", body, status="drafted", draft_id=draft_note.id
+                )
                 logger.info(
                     "summary_note_drafted",
                     project_id=p,
@@ -182,7 +233,8 @@ class Publisher:
                 await self.forge.get_merge_request(p, i)
             ).head_sha != bundle.code.head_sha:
                 raise StaleReview()
-            await self.forge.post_note(p, i, body)
+            note = await self.forge.post_note(p, i, body)
+            await remember("summary", body, status="committed", note_id=note.id)
             logger.info(
                 "summary_note_posted",
                 project_id=p,
@@ -207,6 +259,7 @@ def comment(finding, position, body):
         "file": position.new_path,
         "line": position.new_line or position.old_line,
         "body": body,
+        "position": position.model_dump(exclude_none=True),
     }
 
 

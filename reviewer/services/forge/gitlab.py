@@ -43,6 +43,19 @@ class ForgeService(Protocol):
     async def resolve_discussion(
         self, project_id: int, iid: int, discussion_id: str
     ) -> None: ...
+    async def edit_note(
+        self, project_id: int, iid: int, note_id: int, body: str
+    ) -> None: ...
+    async def delete_note(self, project_id: int, iid: int, note_id: int) -> None: ...
+    async def edit_draft_note(
+        self, project_id: int, iid: int, note_id: int, body: str
+    ) -> None: ...
+    async def delete_draft_note(
+        self, project_id: int, iid: int, note_id: int
+    ) -> None: ...
+    async def publish_draft_note(
+        self, project_id: int, iid: int, note_id: int
+    ) -> None: ...
     async def get_merge_request(
         self, project_id: int, iid: int
     ) -> MergeRequestContext: ...
@@ -76,6 +89,7 @@ class GitLab:
             project_id=project_id,
             iid=iid,
             head_sha=value["sha"],
+            web_url=value.get("web_url") or "",
             **{
                 key: value.get(key, default)
                 for key, default in {
@@ -169,7 +183,12 @@ class GitLab:
                         ),
                         None,
                     ),
-                    resolved=all(n.get("resolved", False) for n in d["notes"]),
+                    resolved=all(
+                        n.get("resolved", False)
+                        for n in d["notes"]
+                        if n.get("resolvable")
+                    ),
+                    resolvable=any(n.get("resolvable", False) for n in d["notes"]),
                     notes=[
                         Note(id=n["id"], body=n["body"], author_id=n["author"]["id"])
                         for n in d["notes"]
@@ -270,6 +289,40 @@ class GitLab:
         )
         r.raise_for_status()
 
+    async def edit_note(self, project_id, iid, note_id, body):
+        r = await self.client.put(
+            f"projects/{project_id}/merge_requests/{iid}/notes/{note_id}",
+            json={"body": body},
+        )
+        r.raise_for_status()
+
+    async def delete_note(self, project_id, iid, note_id):
+        r = await self.client.delete(
+            f"projects/{project_id}/merge_requests/{iid}/notes/{note_id}"
+        )
+        if r.status_code != 404:
+            r.raise_for_status()
+
+    async def edit_draft_note(self, project_id, iid, note_id, body):
+        r = await self.client.put(
+            f"projects/{project_id}/merge_requests/{iid}/draft_notes/{note_id}",
+            json={"note": body},
+        )
+        r.raise_for_status()
+
+    async def delete_draft_note(self, project_id, iid, note_id):
+        r = await self.client.delete(
+            f"projects/{project_id}/merge_requests/{iid}/draft_notes/{note_id}"
+        )
+        if r.status_code != 404:
+            r.raise_for_status()
+
+    async def publish_draft_note(self, project_id, iid, note_id):
+        r = await self.client.put(
+            f"projects/{project_id}/merge_requests/{iid}/draft_notes/{note_id}/publish"
+        )
+        r.raise_for_status()
+
     async def role(self, project_id, user_id):
         r = await self.client.get(f"projects/{project_id}/members/all/{user_id}")
         if r.status_code == 404:
@@ -292,6 +345,7 @@ class FakeForge:
         self.replies = []
         self.projects = {}
         self.draft_notes = []
+        self.next_draft_id = 1
 
     async def get_merge_request(self, project_id, iid):
         if self.error:
@@ -340,7 +394,9 @@ class FakeForge:
     async def post_note(self, project_id, iid, body):
         note = Note(id=len(self.comments) + 1, body=body, author_id=self.bot_id)
         self.comments.append(note)
-        self.discussions.append(Discussion(id=str(note.id), notes=[note]))
+        self.discussions.append(
+            Discussion(id=str(note.id), notes=[note], resolvable=False)
+        )
         return note
 
     async def list_draft_notes(self, project_id, iid):
@@ -358,13 +414,14 @@ class FakeForge:
         if self.bad_position and position is not None:
             raise PositionError()
         note = DraftNote(
-            id=len(self.draft_notes) + 1,
+            id=self.next_draft_id,
             body=body,
             author_id=self.bot_id,
             file=position.new_path if position else None,
             discussion_id=in_reply_to_discussion_id,
             resolve_discussion=resolve_discussion,
         )
+        self.next_draft_id += 1
         self.draft_notes.append(note)
         return note
 
@@ -379,6 +436,30 @@ class FakeForge:
 
     async def resolve_discussion(self, project_id, iid, discussion_id):
         next(d for d in self.discussions if d.id == discussion_id).resolved = True
+
+    async def edit_note(self, project_id, iid, note_id, body):
+        next(
+            n for d in self.discussions for n in d.notes if n.id == note_id
+        ).body = body
+
+    async def delete_note(self, project_id, iid, note_id):
+        for discussion in self.discussions:
+            discussion.notes = [n for n in discussion.notes if n.id != note_id]
+        self.discussions = [d for d in self.discussions if d.notes]
+
+    async def edit_draft_note(self, project_id, iid, note_id, body):
+        next(n for n in self.draft_notes if n.id == note_id).body = body
+
+    async def delete_draft_note(self, project_id, iid, note_id):
+        self.draft_notes = [n for n in self.draft_notes if n.id != note_id]
+
+    async def publish_draft_note(self, project_id, iid, note_id):
+        draft = next(n for n in self.draft_notes if n.id == note_id)
+        note = await self.post_note(project_id, iid, draft.body)
+        discussion = next(d for d in self.discussions if d.notes[0].id == note.id)
+        discussion.file = draft.file
+        discussion.resolvable = bool(draft.file)
+        await self.delete_draft_note(project_id, iid, note_id)
 
     async def role(self, project_id, user_id):
         return self.roles.get(user_id, 0)
@@ -428,6 +509,7 @@ def draft_note(payload):
 
 
 class Discussion(BaseModel):
+    resolvable: bool = True
     id: str
     notes: list[Note] = []
     resolved: bool = False

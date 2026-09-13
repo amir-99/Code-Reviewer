@@ -27,6 +27,11 @@ class PersonalForge:
         "reply",
         "resolve_discussion",
         "set_commit_status",
+        "edit_note",
+        "delete_note",
+        "edit_draft_note",
+        "delete_draft_note",
+        "publish_draft_note",
     }
 
     def __init__(self, forge, guard, principal_id, project, iid, head):
@@ -64,6 +69,34 @@ class PersonalForge:
                         for d in discussions
                     ):
                         raise CredentialUnavailable("Discussion ownership changed")
+                if name in {"edit_note", "delete_note"}:
+                    notes = [
+                        n
+                        for d in await self.forge.list_discussions(
+                            self.project, self.iid
+                        )
+                        for n in d.notes
+                    ]
+                    if not any(
+                        n.id == args[2]
+                        and str(n.author_id) == self.principal_id
+                        and f"<!-- ai-review:owner={self.owner_user_id} -->" in n.body
+                        for n in notes
+                    ):
+                        raise CredentialUnavailable("Comment ownership changed")
+                if name in {
+                    "edit_draft_note",
+                    "delete_draft_note",
+                    "publish_draft_note",
+                }:
+                    notes = await self.forge.list_draft_notes(self.project, self.iid)
+                    if not any(
+                        n.id == args[2]
+                        and str(n.author_id) in {"0", self.principal_id}
+                        and f"<!-- ai-review:owner={self.owner_user_id} -->" in n.body
+                        for n in notes
+                    ):
+                        raise CredentialUnavailable("Draft ownership changed")
                 await self.guard()
             if name in {
                 "post_note",

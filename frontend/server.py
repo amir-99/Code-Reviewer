@@ -20,8 +20,8 @@ ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascri
 
 
 ROUTES = {
-    "GET": r"/(?:admin/(?:models|quality|reviews(?:/[A-Za-z0-9-]+(?:/(?:events|audit))?)?)|auth/(?:me|users)|profile/integrations)",
-    "POST": r"/(?:auth/(?:login|logout|activate|password|users(?:/[A-Za-z0-9-]+)?)|admin/reviews(?:/[A-Za-z0-9-]+/(?:replay|recheck))?|profile/integrations/(?:gateway|gitlab|jira|confluence)/check)",
+    "GET": r"/(?:admin/(?:models|quality|reviews(?:/[A-Za-z0-9-]+(?:/(?:events|audit|comments))?)?)|auth/(?:me|users)|profile/integrations)",
+    "POST": r"/(?:auth/(?:login|logout|activate|password|users(?:/[A-Za-z0-9-]+)?)|admin/reviews(?:/[A-Za-z0-9-]+/(?:replay|recheck|comments))?|profile/integrations/(?:gateway|gitlab|jira|confluence)/check)",
     "PUT": r"/profile/integrations/(?:gateway|gitlab|jira|confluence)",
     "DELETE": r"/profile/integrations/(?:gateway|gitlab|jira|confluence)",
 }

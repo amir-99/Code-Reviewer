@@ -82,6 +82,13 @@ if __name__ == "__main__":
 
 
 class RouteTests(unittest.TestCase):
+    def test_comment_route_allowlist(self):
+        for method in ("GET", "POST"):
+            self.assertTrue(server.allowed(method, "/api/admin/reviews/abc-123/comments"))
+        for path in ("/api/admin/reviews/abc/comments/other", "/api/admin/reviews/abc/../comments"):
+            self.assertFalse(server.allowed("POST", path))
+        self.assertFalse(server.allowed("DELETE", "/api/admin/reviews/abc/comments"))
+
     def test_account_route_allowlist(self):
         for method, path in [("POST", "/api/auth/login"), ("PUT", "/api/profile/integrations/gitlab"), ("DELETE", "/api/profile/integrations/gateway"), ("POST", "/api/auth/users/abc-123"), ("GET", "/api/auth/users?search=alice")]:
             self.assertTrue(server.allowed(method, path))

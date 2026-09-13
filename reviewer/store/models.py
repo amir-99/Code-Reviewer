@@ -273,3 +273,12 @@ class LoginThrottle(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     attempts: Mapped[int] = mapped_column(default=0)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ReviewComment(Base):
+    """Durable publication state, independent of the analysis snapshot."""
+
+    __tablename__ = "review_comments"
+    review_id: Mapped[str] = mapped_column(ForeignKey("reviews.id"), primary_key=True)
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    data: Mapped[dict] = mapped_column(json_type)

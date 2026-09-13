@@ -240,6 +240,44 @@ class Store:
             else:
                 session.add(ReviewSnapshot(review_id=review_id, data=data))
 
+    async def comments_for(self, review_id):
+        from reviewer.store.models import ReviewComment
+
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(ReviewComment).where(
+                        ReviewComment.review_id == str(review_id)
+                    )
+                )
+            ).all()
+            return {row.key: row.data for row in rows}
+
+    async def save_comment(self, review_id, key, data):
+        await self.save_comments(review_id, {key: data})
+
+    async def save_comments(self, review_id, values):
+        from reviewer.context.redaction import Redactor
+        from reviewer.store.models import ReviewComment
+
+        async with self.transaction() as session:
+            rows = {
+                row.key: row
+                for row in await session.scalars(
+                    select(ReviewComment).where(
+                        ReviewComment.review_id == str(review_id)
+                    )
+                )
+            }
+            for key, data in values.items():
+                data = Redactor().object(data)
+                if row := rows.get(key):
+                    row.data = data
+                else:
+                    session.add(
+                        ReviewComment(review_id=str(review_id), key=key, data=data)
+                    )
+
     async def snapshot(self, review_id):
         from reviewer.store.models import ReviewSnapshot
 
