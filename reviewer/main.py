@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from reviewer.api import (
     accounts,
     admin,
+    chat,
     comments,
     events,
     health,
@@ -87,6 +88,7 @@ def create_app(settings=None, store=None, queue=None, forge=None):
         webhooks.router,
         admin.router,
         comments.router,
+        chat.router,
         manual.router,
         health.router,
         events.router,

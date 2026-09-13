@@ -89,6 +89,13 @@ class RouteTests(unittest.TestCase):
             self.assertFalse(server.allowed("POST", path))
         self.assertFalse(server.allowed("DELETE", "/api/admin/reviews/abc/comments"))
 
+    def test_chat_route_allowlist(self):
+        for method in ("GET", "POST"):
+            self.assertTrue(server.allowed(method, "/api/admin/reviews/abc-123/chat"))
+        for path in ("/api/admin/reviews/abc/chat/1", "/api/admin/reviews/chat"):
+            self.assertFalse(server.allowed("POST", path))
+        self.assertFalse(server.allowed("DELETE", "/api/admin/reviews/abc/chat"))
+
     def test_account_route_allowlist(self):
         for method, path in [("POST", "/api/auth/login"), ("PUT", "/api/profile/integrations/gitlab"), ("DELETE", "/api/profile/integrations/gateway"), ("POST", "/api/auth/users/abc-123"), ("GET", "/api/auth/users?search=alice")]:
             self.assertTrue(server.allowed(method, path))

@@ -110,10 +110,11 @@ async def inspect(review_id: str, request: Request):
         if review.owner_user_id
         else []
     )
-    body["capabilities"] = {
-        "execute": request.state.principal.role == "user"
+    owner = (
+        request.state.principal.role == "user"
         and review.owner_user_id == request.state.principal.id
-    }
+    )
+    body["capabilities"] = {"execute": owner, "chat": owner}
     body["project_id"] = await store.project_number(review)
     body["overrides"] = review.overrides
     body["findings"] = [summarise(f) for f in await store.findings_for(review_id)]
