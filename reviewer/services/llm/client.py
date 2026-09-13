@@ -66,6 +66,8 @@ class GatewayClient:
         url = urlsplit(settings.gateway_base_url)
         if url.scheme not in {"http", "https"} or not url.hostname or url.username:
             raise ValueError("Internal gateway URL must be configured")
+        from reviewer.accounts.execution import check_request
+
         self.client = httpx.AsyncClient(
             base_url=settings.gateway_base_url.rstrip("/") + "/",
             headers={
@@ -75,6 +77,7 @@ class GatewayClient:
             timeout=60,
             follow_redirects=False,
             transport=transport,
+            event_hooks={"request": [check_request]},
         )
         # One resolved model per role, fixed for the life of this client so a
         # configuration edit cannot move a review onto a different model

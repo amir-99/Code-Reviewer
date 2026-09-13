@@ -4,7 +4,7 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import FastAPI
 
-from reviewer.api import accounts, admin, events, health, manual, webhooks
+from reviewer.api import accounts, admin, events, health, manual, profile, webhooks
 from reviewer.config.schema import Settings
 from reviewer.services.forge.gitlab import GitLab
 from reviewer.store.repositories import Store
@@ -47,6 +47,7 @@ def create_app(settings=None, store=None, queue=None, forge=None):
         app.state.forge = forge
     for router in (
         accounts.router,
+        profile.router,
         webhooks.router,
         admin.router,
         manual.router,

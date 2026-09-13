@@ -95,10 +95,15 @@ class Publisher:
         inline, summarized, overflow = select(
             findings, config.review.max_inline, config.review.max_per_file
         )
-        slots = max(0, config.review.max_inline - len(open_findings) - len(drafted))
+        mr_open = [
+            d
+            for d in discussions
+            if not d.resolved and any(FINGERPRINT.search(n.body) for n in d.notes)
+        ]
+        slots = max(0, config.review.max_inline - len(mr_open) - len(drafted))
         from collections import Counter
 
-        per_file = Counter(d.file for d in open_findings.values() if d.file)
+        per_file = Counter(d.file for d in mr_open if d.file)
         per_file.update(n.file for n in drafted.values() if n.file)
         posted = []
         for f in inline:

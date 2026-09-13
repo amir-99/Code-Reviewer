@@ -14,6 +14,7 @@ logger = structlog.get_logger()
 
 async def startup(ctx):
     settings = Settings()
+    ctx["settings"] = settings
     configure(settings.log_level)
     from reviewer.telemetry import configure_traces
 
@@ -81,6 +82,40 @@ async def shutdown(ctx):
 
 
 async def receive_event(ctx, payload):
+    from reviewer.accounts.credentials import Credentials, CredentialUnavailable
+    from reviewer.store.models import ReviewTrigger
+
+    job = ReviewJob.model_validate(payload)
+    async with ctx["store"].sessions() as session:
+        trigger = await session.get(ReviewTrigger, job.event_id)
+    if trigger is not None:
+        if trigger.state != "QUEUED":
+            return
+        settings = ctx.get("settings") or ctx["machine"].settings
+        try:
+            context = await Credentials(ctx["store"], settings).load(
+                trigger.owner_user_id, trigger.credential_refs
+            )
+            forge = (ctx.get("personal_forge_factory") or GitLab)(
+                settings.gitlab_base_url, context.tokens["gitlab"]
+            )
+            try:
+                if str(await forge.identity()) != trigger.payload["principal_id"]:
+                    raise CredentialUnavailable("Publishing identity changed")
+                return await _receive_event(
+                    ctx | {"forge": forge, "personal_trigger": trigger}, trigger.payload
+                )
+            finally:
+                await forge.close()
+        except CredentialUnavailable:
+            async with ctx["store"].transaction() as session:
+                saved = await session.get(ReviewTrigger, job.event_id)
+                saved.state = "REJECTED"
+            return
+    return await _receive_event(ctx, payload)
+
+
+async def _receive_event(ctx, payload):
     job = ReviewJob.model_validate(payload)
     logger.info(
         "receive_event",
@@ -130,7 +165,8 @@ async def receive_event(ctx, payload):
     # The authenticated admin endpoint already resolved this project using our
     # GitLab token. Manual requests need no prior operator onboarding. Hook
     # payloads cannot set overrides, so they cannot provision projects here.
-    if job.overrides and job.overrides.requested_by == "admin":
+    trigger = ctx.get("personal_trigger")
+    if trigger or (job.overrides and job.overrides.requested_by == "admin"):
         await ctx["store"].provision([job.project_id])
     review = await ctx["store"].accept(
         job.project_id,
@@ -138,6 +174,14 @@ async def receive_event(ctx, payload):
         mr.head_sha,
         job.event_id,
         job.overrides.model_dump() if job.overrides else None,
+        owner_user_id=trigger.owner_user_id if trigger else None,
+        credential_refs=trigger.credential_refs if trigger else None,
+        principal_id=trigger.payload["principal_id"] if trigger else None,
+        trigger_source="manual"
+        if trigger
+        else "command"
+        if job.event_id.startswith("command:")
+        else "system",
     )
     if review is None:
         return {"accepted": False, "reason": "conflict"}
@@ -157,8 +201,8 @@ async def run_review(ctx, review_id):
     from reviewer.telemetry.activity import close_run, open_run
 
     review = await ctx["store"].get(review_id)
-    if review and review.owner_user_id:
-        return {"started": False, "reason": "personal_execution_unavailable"}
+    if review is None:
+        return
     logger.info("review_started", review_id=review_id)
     with trace.get_tracer(__name__).start_as_current_span(
         "review", attributes={"review.id": review_id}
@@ -169,7 +213,24 @@ async def run_review(ctx, review_id):
         # itself has ended; it is best effort and never fails the review.
         await open_run(ctx["store"], review_id)
         try:
-            return await ctx["machine"].run(review_id)
+            project = await ctx["store"].project_number(review)
+            async with ctx["store"].mr_lock(project, review.mr_iid):
+                if review.owner_user_id:
+                    from reviewer.accounts.credentials import CredentialUnavailable
+                    from reviewer.accounts.execution import personal_machine
+
+                    try:
+                        async with personal_machine(ctx, review) as machine:
+                            return await machine.run(review_id)
+                    except CredentialUnavailable:
+                        await ctx["store"].transition(
+                            review_id,
+                            "FAILED_CONTEXT",
+                            partial=True,
+                            error="Account or pinned credentials unavailable",
+                        )
+                        return
+                return await ctx["machine"].run(review_id)
         finally:
             await close_run(ctx["store"], review_id)
 
@@ -185,7 +246,20 @@ async def recheck_review(ctx, project_id, iid, review_id=None):
         logger.info("recheck_unavailable", project_id=project_id, iid=iid)
         return {"rechecked": False, "reason": "milestone"}
     logger.info("recheck_requested", project_id=project_id, iid=iid)
-    return await machine.recheck_now(project_id, iid, review_id=review_id)
+    async with ctx["store"].mr_lock(project_id, iid):
+        review = await ctx["store"].get(review_id) if review_id else None
+        if review and review.owner_user_id:
+            from reviewer.accounts.credentials import CredentialUnavailable
+            from reviewer.accounts.execution import personal_machine
+
+            try:
+                async with personal_machine(ctx, review, recheck=True) as personal:
+                    return await personal.recheck_now(
+                        project_id, iid, review_id=review_id
+                    )
+            except CredentialUnavailable:
+                return {"rechecked": False, "reason": "credentials_unavailable"}
+        return await machine.recheck_now(project_id, iid, review_id=review_id)
 
 
 async def replay_review(ctx, project_id, iid, event_id, overrides=None):
@@ -213,6 +287,20 @@ async def replay_review(ctx, project_id, iid, event_id, overrides=None):
 async def recover(ctx):
     if "blobs" in ctx:
         ctx["blobs"].reap()
+    from sqlalchemy import select
+
+    from reviewer.store.models import ReviewTrigger
+
+    async with ctx["store"].sessions() as session:
+        triggers = (
+            await session.scalars(
+                select(ReviewTrigger).where(ReviewTrigger.state == "QUEUED")
+            )
+        ).all()
+    for trigger in triggers:
+        await ctx["redis"].enqueue_job(
+            "receive_event", trigger.payload, _job_id=trigger.event_id
+        )
     # Durable DB admission + sweep closes the DB-commit/Redis-enqueue crash gap.
     pending = await ctx["store"].pending()
     if pending:

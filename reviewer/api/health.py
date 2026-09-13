@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
-from reviewer.api.admin import authenticate
+from reviewer.api.accounts import authenticate
 
 router = APIRouter()
 
@@ -29,7 +29,9 @@ async def ready(request: Request):
 
 @router.get("/metrics")
 async def metrics(request: Request):
-    await authenticate(request)
+    account = await authenticate(request)
+    if account.role != "admin":
+        raise HTTPException(403, "Admin role required")
     from reviewer.telemetry.quality import prometheus
 
     return Response(

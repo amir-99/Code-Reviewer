@@ -123,7 +123,6 @@ def check_document_urls(urls, confluence_base_url):
 
 @router.post("/reviews", status_code=202)
 async def trigger(body: ManualReviewRequest, request: Request):
-    raise HTTPException(503, "Personal credential execution is not configured")
     settings = request.app.state.settings
     try:
         project_path, iid = parse_merge_request_url(
@@ -132,8 +131,19 @@ async def trigger(body: ManualReviewRequest, request: Request):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     check_document_urls(body.document_urls, settings.confluence_base_url)
-    forge = request.app.state.forge
+    from reviewer.accounts.credentials import Credentials, CredentialUnavailable
+    from reviewer.services.forge.gitlab import GitLab
+
+    service = Credentials(request.app.state.store, settings)
     try:
+        refs = await service.pin(request.state.principal.id)
+        context = await service.load(request.state.principal.id, refs)
+    except CredentialUnavailable as exc:
+        raise HTTPException(400, str(exc)) from None
+    factory = getattr(request.app.state, "personal_forge_factory", GitLab)
+    forge = factory(settings.gitlab_base_url, context.tokens["gitlab"])
+    try:
+        principal_id = str(await forge.identity())
         project_id = await forge.project_id_for_path(project_path)
         if project_id is None:
             raise HTTPException(404, "Project is not visible to the reviewer")
@@ -146,6 +156,8 @@ async def trigger(body: ManualReviewRequest, request: Request):
         raise HTTPException(502, "GitLab rejected the lookup") from None
     except httpx.HTTPError:
         raise HTTPException(502, "GitLab is unreachable") from None
+    finally:
+        await forge.close()
     if mr.state != "opened" or mr.draft:
         raise HTTPException(409, "Merge request is closed, merged or a draft")
     # Checked against the project's own catalogue, which is why it waits until
@@ -164,11 +176,22 @@ async def trigger(body: ManualReviewRequest, request: Request):
             issue_key=body.issue_key,
             epic_key=body.epic_key,
             document_urls=list(dict.fromkeys(body.document_urls)),
-            requested_by="admin",
+            requested_by=request.state.principal.id,
             report_mode=body.report_mode,
             models=models,
         ),
     )
+    from reviewer.store.models import ReviewTrigger
+
+    async with request.app.state.store.transaction() as session:
+        session.add(
+            ReviewTrigger(
+                event_id=job.event_id,
+                owner_user_id=request.state.principal.id,
+                credential_refs=refs,
+                payload=job.model_dump() | {"principal_id": principal_id},
+            )
+        )
     try:
         async with asyncio.timeout(0.35):
             await request.app.state.queue.enqueue_job(

@@ -70,7 +70,13 @@ async def collect(forge, store, project, iid, previous_findings, head_sha, draft
             continue
         finding = known.get(fingerprint)
         if finding is None and store is not None:
-            finding = await store.finding_by_fingerprint(project, iid, fingerprint)
+            finding = await store.finding_by_fingerprint(
+                project,
+                iid,
+                fingerprint,
+                owner_user_id=getattr(forge, "owner_user_id", None),
+                principal_id=getattr(forge, "principal_id", None),
+            )
         if finding is None:
             continue
         notes = [

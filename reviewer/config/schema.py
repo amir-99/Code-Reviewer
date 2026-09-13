@@ -207,6 +207,7 @@ class Settings(BaseSettings):
     confluence_base_url: str = ""
     confluence_token: SecretStr = SecretStr("")
     gateway_base_url: str = ""
+    gateway_auth_check_path: str = ""
     gateway_key: SecretStr = SecretStr("")
     gateway_concurrency: int = Field(default=8, ge=1, le=64)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

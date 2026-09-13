@@ -166,12 +166,49 @@ def summarise(finding):
 @router.post("/reviews/{review_id}/replay")
 async def replay(review_id: str, request: Request):
     review = await review_access(request, review_id, execute=True)
-    raise HTTPException(503, "Personal credential execution is not configured")
     project_id = await request.app.state.store.project_number(review)
-    await request.app.state.queue.enqueue_job(
-        "replay_review", project_id, review.mr_iid, str(uuid4()), review.overrides
+    from reviewer.accounts.credentials import Credentials, CredentialUnavailable
+    from reviewer.api.webhooks import ReviewJob
+    from reviewer.services.forge.gitlab import GitLab
+    from reviewer.store.models import ReviewTrigger
+
+    settings = request.app.state.settings
+    service = Credentials(request.app.state.store, settings)
+    try:
+        refs = await service.pin(request.state.principal.id)
+        context = await service.load(request.state.principal.id, refs)
+    except CredentialUnavailable as exc:
+        raise HTTPException(400, str(exc)) from None
+    forge = getattr(request.app.state, "personal_forge_factory", GitLab)(
+        settings.gitlab_base_url, context.tokens["gitlab"]
     )
-    return {"accepted": True}
+    try:
+        principal_id = str(await forge.identity())
+        mr = await forge.get_merge_request(project_id, review.mr_iid)
+        if mr.state != "opened" or mr.draft:
+            raise HTTPException(409, "Merge request is closed, merged or a draft")
+    finally:
+        await forge.close()
+    job = ReviewJob(
+        project_id=project_id,
+        iid=review.mr_iid,
+        head_sha=mr.head_sha,
+        event_id=str(uuid4()),
+        overrides=review.overrides,
+    )
+    async with request.app.state.store.transaction() as session:
+        session.add(
+            ReviewTrigger(
+                event_id=job.event_id,
+                owner_user_id=request.state.principal.id,
+                credential_refs=refs,
+                payload=job.model_dump() | {"principal_id": principal_id},
+            )
+        )
+    await request.app.state.queue.enqueue_job(
+        "receive_event", job.model_dump(), _job_id=job.event_id
+    )
+    return {"accepted": True, "event_id": job.event_id}
 
 
 @router.post("/reviews/{review_id}/recheck")
@@ -182,7 +219,6 @@ async def recheck(review_id: str, request: Request):
     the threads that are already open.
     """
     review = await review_access(request, review_id, execute=True)
-    raise HTTPException(503, "Personal credential execution is not configured")
     project_id = await request.app.state.store.project_number(review)
     await request.app.state.queue.enqueue_job(
         "recheck_review", project_id, review.mr_iid, str(review.id)

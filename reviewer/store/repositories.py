@@ -21,6 +21,7 @@ class Store:
     def __init__(self, url: str):
         self.engine = create_async_engine(url, pool_pre_ping=True)
         self._sqlite_writer = asyncio.Lock()
+        self._mr_locks = {}
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
 
     @asynccontextmanager
@@ -35,6 +36,33 @@ class Store:
         else:
             async with self.sessions.begin() as session:
                 yield session
+
+    @asynccontextmanager
+    async def mr_lock(self, project_id, iid):
+        """Serialize publication/recheck across system and personal principals."""
+        if self.engine.dialect.name == "sqlite":
+            async with self._mr_locks.setdefault((project_id, iid), asyncio.Lock()):
+                yield
+        else:
+            import hashlib
+
+            key = int.from_bytes(
+                hashlib.sha256(f"mr:{project_id}:{iid}".encode()).digest()[:8],
+                "big",
+                signed=True,
+            )
+            async with self.engine.connect() as connection:
+                await connection.execute(
+                    text("SELECT pg_advisory_lock(:key)"), {"key": key}
+                )
+                try:
+                    yield
+                finally:
+                    await asyncio.shield(
+                        connection.execute(
+                            text("SELECT pg_advisory_unlock(:key)"), {"key": key}
+                        )
+                    )
 
     async def get(self, review_id: str):
         async with self.sessions() as session:

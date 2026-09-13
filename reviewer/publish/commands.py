@@ -8,6 +8,11 @@ logger = structlog.get_logger()
 
 
 async def command(ctx, project, iid, user, note, discussion_id=None, note_id=None):
+    async with ctx["store"].mr_lock(project, iid):
+        return await _command(ctx, project, iid, user, note, discussion_id, note_id)
+
+
+async def _command(ctx, project, iid, user, note, discussion_id=None, note_id=None):
     forge = ctx["forge"]
     store = ctx["store"]
     if await forge.role(project, user) < 30:

@@ -6,6 +6,12 @@ from prometheus_client import Counter
 REVIEWS = Counter("reviewer_runs_total", "Completed review jobs", ["state"])
 
 
+def redact_event(logger, method, event):
+    from reviewer.context.redaction import Redactor
+
+    return Redactor().object(event)
+
+
 def configure(level="INFO"):
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, level)),
@@ -13,6 +19,7 @@ def configure(level="INFO"):
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
+            redact_event,
             structlog.processors.JSONRenderer(),
         ],
     )

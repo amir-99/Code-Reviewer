@@ -209,3 +209,65 @@ async def test_cookie_api_denies_shared_token_and_admin_execution(store, forge):
         assert (await client.get("/admin/reviews?event_id=owned")).status_code == 404
         assert (await client.get("/admin/reviews")).json() == {"reviews": []}
         assert admin["role"] == "admin"
+
+
+async def test_credentials_rotation_removal_and_owner_binding(store):
+    import base64
+
+    from reviewer.accounts.credentials import Credentials, CredentialUnavailable
+    from reviewer.config.schema import Settings
+
+    accounts = Accounts(store)
+    a = await active(accounts, "a")
+    b = await active(accounts, "b")
+    settings = Settings(
+        _env_file=None,
+        credential_active_key="one",
+        credential_keys={"one": base64.b64encode(b"k" * 32).decode()},
+    )
+    credentials = Credentials(store, settings)
+    await credentials.save(a["id"], "gitlab", "owner-a-gitlab-token")
+    with pytest.raises(CredentialUnavailable):
+        await credentials.pin(a["id"])
+    await credentials.save(a["id"], "gateway", "owner-a-gateway-token")
+    pinned = await credentials.pin(a["id"])
+    await credentials.save(a["id"], "gitlab", "replacement-gitlab-token")
+    assert (await credentials.load(a["id"], pinned)).tokens[
+        "gitlab"
+    ] == "owner-a-gitlab-token"
+    assert (await credentials.load(a["id"], await credentials.pin(a["id"]))).tokens[
+        "gitlab"
+    ] == "replacement-gitlab-token"
+    with pytest.raises(CredentialUnavailable):
+        await credentials.load(b["id"], pinned)
+    assert "owner-a" not in str(await credentials.status(a["id"]))
+    async with store.sessions() as session:
+        rows = (await session.scalars(select(IntegrationCredential))).all()
+        assert all("token" not in row.ciphertext for row in rows)
+    await credentials.remove(a["id"], "gitlab")
+    with pytest.raises(CredentialUnavailable):
+        await credentials.load(a["id"], pinned)
+
+
+async def test_personal_forge_rechecks_eligibility_and_author_before_writes(forge):
+    from reviewer.accounts.credentials import CredentialUnavailable
+    from reviewer.accounts.execution import PersonalForge
+
+    allowed = True
+
+    async def guard():
+        if not allowed:
+            raise CredentialUnavailable("revoked")
+
+    client = PersonalForge(forge, guard, str(forge.bot_id), 7, 2, forge.mr.head_sha)
+    await client.post_note(7, 2, "report")
+    count = len(forge.comments)
+    allowed = False
+    with pytest.raises(CredentialUnavailable):
+        await client.post_note(7, 2, "must not publish")
+    assert len(forge.comments) == count
+    allowed = True
+    forge.bot_id += 1
+    with pytest.raises(CredentialUnavailable):
+        await client.post_note(7, 2, "wrong identity")
+    assert len(forge.comments) == count

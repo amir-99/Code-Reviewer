@@ -3,9 +3,15 @@ import re
 
 class Redactor:
     def __init__(self, matches=()):
+        from reviewer.accounts.execution import personal_secrets
+
         self.secrets = {
             m["Secret"]: m.get("RuleID", "secret") for m in matches if m.get("Secret")
         }
+
+        self.secrets.update(
+            {token: "integration" for token in personal_secrets.get() if token}
+        )
 
     def text(self, value):
         for secret, rule in sorted(self.secrets.items(), key=lambda x: -len(x[0])):

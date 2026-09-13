@@ -34,3 +34,11 @@ class FakeQueue:
 
     async def ping(self):
         return True
+
+
+@pytest.fixture(autouse=True)
+def isolated_operator_settings(monkeypatch):
+    # Offline tests must never inherit a developer's credentials or model budgets.
+    from reviewer.config.schema import Settings
+
+    monkeypatch.setitem(Settings.model_config, "env_file", None)

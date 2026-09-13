@@ -771,7 +771,12 @@ class Pipeline:
         internal = await self.store.internal_project(project_id)
         if internal is None:
             return {"rechecked": False, "reason": "project_not_onboarded"}
-        previous_id, previous = await self.store.latest_published(internal, iid)
+        previous_id, previous = await self.store.latest_published(
+            internal,
+            iid,
+            getattr(self, "owner_user_id", None),
+            getattr(self, "principal_id", None),
+        )
         if not previous:
             return {"rechecked": False, "reason": "no_published_review"}
         mr = await self.forge.get_merge_request(project_id, iid)
