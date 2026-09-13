@@ -208,6 +208,7 @@ class GatewayClient:
                 transport_failure = None
                 # Without valid usage, charge the full possible context rather
                 # than inventing a low completion count from an omitted cap.
+                reported_cost = None
                 used = spec.context_tokens
                 tokens_in = prompt_tokens
                 tokens_out = spec.context_tokens - prompt_tokens
@@ -251,6 +252,7 @@ class GatewayClient:
                     data = response.json()
                     if not isinstance(data, dict):
                         raise TypeError("Invalid response envelope")
+                    reported_cost = gateway_cost(data, response.headers)
                     choice = data["choices"][0]
                     if not isinstance(choice, dict):
                         raise TypeError("Invalid response envelope")
@@ -328,15 +330,17 @@ class GatewayClient:
                     await self.budget.settle(reserve, used)
                     # Unknown pricing stays None the whole way through: a model
                     # this installation has no price for did not cost nothing.
-                    cost = (
-                        (
-                            tokens_in * self.prices[model].get("input", 0)
-                            + tokens_out * self.prices[model].get("output", 0)
-                        )
-                        / 1_000_000
-                        if model in self.prices
-                        else None
-                    )
+                    cost = reported_cost
+                    if cost is None:
+                        prices = self.prices.get(model, {})
+                        if all(
+                            valid_cost(prices.get(k)) is not None
+                            for k in ("input", "output")
+                        ):
+                            cost = (
+                                tokens_in * prices["input"]
+                                + tokens_out * prices["output"]
+                            ) / 1_000_000
                     latency_ms = int((time.monotonic() - start) * 1000)
                     await self.audit.write(
                         review_id=str(review_id),
@@ -395,3 +399,27 @@ def strict_schema(schema):
     if isinstance(schema, list):
         return [strict_schema(x) for x in schema]
     return schema
+
+
+def valid_cost(value):
+    """Accept finite, nonnegative monetary values, including gateway headers."""
+    import math
+
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        amount = float(value)
+    except ValueError:
+        return None
+    return amount if math.isfinite(amount) and amount >= 0 else None
+
+
+def gateway_cost(data, headers):
+    """Gateway billing is authoritative; configured rates are only a fallback."""
+    usage = data.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    for value in (usage.get("cost"), headers.get("x-litellm-response-cost")):
+        amount = valid_cost(value)
+        if amount is not None:
+            return amount
+    return None

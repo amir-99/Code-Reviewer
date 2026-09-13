@@ -496,8 +496,9 @@ async def test_recheck_answers_open_comments_after_a_push(store, history, tmp_pa
     assert [v["verdict"] for v in recheck["verdicts"]] == ["fixed"]
 
 
+@pytest.mark.parametrize("from_ui", [False, True])
 async def test_recheck_command_answers_threads_without_running_a_review(
-    store, history, tmp_path
+    store, history, tmp_path, from_ui
 ):
     """`/ai recheck` judges the open threads at the current head, admitting nothing."""
     repo, base, head = history
@@ -522,18 +523,32 @@ async def test_recheck_command_answers_threads_without_running_a_review(
     git(repo, "add", ".")
     git(repo, "commit", "-m", "guard the value")
     forge.mr.head_sha = git(repo, "rev-parse", "HEAD")
-    result = await machine.recheck_now(7, 2)
+    target = (
+        await store.accept(7, 2, forge.mr.head_sha, "ui-target") if from_ui else review
+    )
+    result = await machine.recheck_now(7, 2, review_id=target.id if from_ui else None)
+    assert llm.recheck_calls[0]["review_id"] == target.id
 
     assert [p["verdict"] for p in result["posted"]] == ["fixed"]
     assert len(llm.recheck_calls) == 1 and inline.resolved
     assert "now guarded by a range check" in forge.replies[0][1]
     # One reply, no summary note, no second review.
     assert len(forge.comments) == notes + 1
-    assert len(await store.recent()) == 1
+    assert len(await store.recent()) == (2 if from_ui else 1)
     # The dashboard reads a manual recheck back from the review it answered for.
-    snapshot = await store.snapshot(review.id)
+    snapshot = await store.snapshot(target.id)
     assert [v["verdict"] for v in snapshot["recheck"]["verdicts"]] == ["fixed"]
-    assert snapshot["recheck"]["at"] and snapshot["findings"]
+    assert snapshot["recheck"]["at"]
+    if not from_ui:
+        assert snapshot["findings"]
+    selected = await store.accept(7, 2, forge.mr.head_sha, "selected-recheck")
+    result = await machine.recheck_now(7, 2, review_id=selected.id)
+    assert result["reason"] == "no_open_threads"
+    assert (await store.snapshot(selected.id))["recheck"] == result
+    assert any(
+        row["data"].get("name") == "Recheck comments"
+        for row in await store.events(selected.id, 0)
+    )
     # Nothing is left to answer at this head.
     assert (await machine.recheck_now(7, 2)) is None
 

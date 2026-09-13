@@ -176,7 +176,7 @@
       <section class="card" id="panel-recheck" role="tabpanel" aria-labelledby="tab-recheck" hidden>
         <div class="card-head">
           <h2>Recheck <span id="recheck-count" class="badge">0</span></h2>
-          <span id="recheck-meta" class="hint"></span>
+          <span id="recheck-meta" class="hint"></span><button id="recheck-tab-action" type="button">Recheck comments</button>
         </div>
         <div id="recheck-results"></div>
       </section>
@@ -202,6 +202,13 @@
           <h2>Review report</h2>
           <button id="copy-report" type="button">Copy</button>
         </div>
+        <div class="actions"><button id="recheck-report-action" type="button">Recheck comments</button><span class="hint">Judge open comments at the current head.</span></div>
+        <h3>Cost and token usage, including rechecks</h3>
+        <p id="report-spend-meta" class="hint"></p>
+        <h3>By model</h3>
+        <table class="spend-table"><thead><tr><th>Model</th><th>Calls</th><th>Input tokens</th><th>Output tokens</th><th>Total tokens</th><th>Cost</th></tr></thead><tbody id="report-model-rows"></tbody></table>
+        <h3>By step</h3>
+        <table class="spend-table"><thead><tr><th>Step</th><th>Calls</th><th>Input tokens</th><th>Output tokens</th><th>Total tokens</th><th>Cost</th></tr></thead><tbody id="report-step-rows"></tbody></table>
         <pre id="report"></pre>
         <p id="report-empty" class="empty-line">This review has not rendered a report.</p>
       </section>

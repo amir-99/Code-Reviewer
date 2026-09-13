@@ -92,3 +92,19 @@ export function usage(spend) {
   if (!ceiling) return null;
   return {ceiling, used: spend.tokens, percent: Math.min(100, (spend.tokens / ceiling) * 100)};
 }
+
+
+// Collapse the audited role/model pairs along either comparison dimension.
+export function breakdown(spend, dimension) {
+  const rows = new Map();
+  for (const row of spend.roles || []) {
+    const label = row[dimension] || 'Unknown';
+    const total = rows.get(label) || {label, calls: 0, retries: 0, tokens_in: 0,
+      tokens_out: 0, tokens: 0, cost: 0, unpriced_calls: 0};
+    for (const field of ['calls', 'retries', 'tokens_in', 'tokens_out', 'tokens', 'cost', 'unpriced_calls']) {
+      total[field] += row[field] || 0;
+    }
+    rows.set(label, total);
+  }
+  return [...rows.values()].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+}

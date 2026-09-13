@@ -132,7 +132,7 @@ async def test_recheck_endpoint_enqueues_for_the_reviewed_merge_request(store):
             f"/admin/reviews/{review.id}/recheck", headers=auth
         )
         assert response.status_code == 200 and response.json()["accepted"] is True
-        assert queue.jobs == [("recheck_review", (7, 2))]
+        assert queue.jobs == [("recheck_review", (7, 2, str(review.id)))]
         assert (
             await client.post("/admin/reviews/missing/recheck", headers=auth)
         ).status_code == 404

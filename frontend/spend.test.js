@@ -98,3 +98,17 @@ test('cost keeps the digits that matter at review scale', () => {
   assert.equal(cost(null), '—');
   assert.equal(cost(undefined), '—');
 });
+
+test('model and step breakdowns include rechecks without duplicating calls', async () => {
+  const {breakdown} = await import('./spend.js');
+  const spend = emptySpend();
+  addAttempt(spend, attempt());
+  addAttempt(spend, attempt({role: 'recheck'}));
+  addAttempt(spend, attempt({role: 'recheck', model: 'unknown', cost: null}));
+  const models = breakdown(spend, 'model');
+  assert.equal(models.find(r => r.label === 'vendor/strong').calls, 2);
+  const steps = breakdown(spend, 'role');
+  assert.equal(steps.find(r => r.label === 'recheck').tokens, 2400);
+  assert.equal(steps.find(r => r.label === 'recheck').unpriced_calls, 1);
+  assert.equal(models.reduce((n, r) => n + r.tokens, 0), spend.tokens);
+});

@@ -3,7 +3,7 @@ import {apiURL} from './paths.js';
 import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk} from './flow.js';
 import {chosenModels, modelFor, roleFor, roleLabel} from './models.js';
-import {addAttempt, cost as money, emptySpend, mergeSpend, tokens as count, usage} from './spend.js';
+import {addAttempt, breakdown, cost as money, emptySpend, mergeSpend, tokens as count, usage} from './spend.js';
 
 const $ = id => document.getElementById(id);
 const el = (tag, text, cls) => {
@@ -513,12 +513,12 @@ function renderRecheck(recheck) {
   }
   const resolved = new Set((recheck.posted || []).filter(entry => entry.resolved).map(entry => entry.fingerprint));
   $('recheck-meta').textContent = [
-    recheck.mode === 'draft' ? 'Drafted on GitLab' : 'Posted on the merge request',
-    `head ${short(recheck.head_sha, 12)}`,
+    recheck.reason ? `Completed: ${recheck.reason.replaceAll('_', ' ')}` : recheck.mode === 'draft' ? 'Drafted on GitLab' : 'Posted on the merge request',
+    recheck.head_sha ? `head ${short(recheck.head_sha, 12)}` : '',
     recheck.at ? new Date(recheck.at).toLocaleString() : '',
   ].filter(Boolean).join(' · ');
   if (!answers.length) {
-    $('recheck-results').append(el('p', 'The recheck found no open reviewer threads to judge.', 'empty-line'));
+    $('recheck-results').append(el('p', recheck.reason ? `Recheck: ${recheck.reason.replaceAll('_', ' ')}.` : 'The recheck found no open reviewer threads to judge.', 'empty-line'));
     return;
   }
   for (const answer of answers) {
@@ -802,6 +802,17 @@ function renderSpend() {
     return line;
   }));
   $('spend-empty').hidden = spend.roles.length > 0;
+  $('report-spend-meta').textContent = `${total} · ${spend.tokens.toLocaleString()} tokens · ${spend.calls} calls (including retries and rechecks)`
+    + (spend.unpriced_calls ? ` · ${spend.unpriced_calls} calls with unknown cost` : '');
+  for (const [dimension, target] of [['model', 'report-model-rows'], ['role', 'report-step-rows']]) {
+    $(target).replaceChildren(...breakdown(spend, dimension).map(row => {
+      const line = el('tr');
+      line.append(el('td', dimension === 'role' ? roleLabel(row.label) : row.label),
+        ...[row.calls, row.tokens_in, row.tokens_out, row.tokens].map(n => el('td', n.toLocaleString(), 'num')),
+        el('td', money(row.cost, {unpriced: row.unpriced_calls}), 'num cost'));
+      return line;
+    }));
+  }
   return spend;
 }
 
@@ -1031,7 +1042,9 @@ addEventListener('keydown', event => {
 $('recheck').onclick = async () => {
   if (!selected) return;
   const id = selected, before = lastRecheck;
-  $('recheck').disabled = true;
+  for (const button of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(button).disabled = true;
+  $('recheck-meta').textContent = 'Recheck queued…';
+  showTab('recheck');
   try {
     await request(`/admin/reviews/${encodeURIComponent(id)}/recheck`, {method: 'POST'});
     notice('Recheck queued. Judging the open threads at the current head…');
@@ -1042,16 +1055,20 @@ $('recheck').onclick = async () => {
       if (selected !== id) return;
       const review = await (await request(`/admin/reviews/${encodeURIComponent(id)}`)).json();
       if (JSON.stringify(review.recheck ?? null) !== before) {
-        renderRecheck(review.recheck);
+        select(id); // Reload the durable activity feed, including standalone recheck actions.
+        render(review);
+        tabTouched = true;
         showTab('recheck');
-        notice('Recheck answered the open threads.', 'ok');
+        notice(review.recheck?.reason ? `Recheck: ${review.recheck.reason.replaceAll('_', ' ')}.` : 'Recheck answered the open threads.', review.recheck?.reason === 'failed' ? 'error' : 'ok');
         return;
       }
     }
     notice('No recheck answers recorded yet. The review may have no open reviewer threads, or recheck may be off for this project.');
   } catch (error) { if (error.name !== 'AbortError') notice(error.message, 'error'); }
-  finally { $('recheck').disabled = false; }
+  finally { for (const button of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(button).disabled = false; }
 };
+
+$('recheck-tab-action').onclick = $('recheck-report-action').onclick = () => $('recheck').click();
 
 $('trigger').onsubmit = async event => {
   event.preventDefault();

@@ -742,3 +742,76 @@ async def test_uncapped_long_response_is_audited_and_native_truncation_retried(
         assert budget.reserved == 0 and budget.budget.tokens_used == 12200
     finally:
         await llm.close()
+
+
+@pytest.mark.parametrize(
+    "reported,header,prices,expected",
+    [
+        (0.0003255, "9", {}, 0.0003255),
+        (0, "9", {"input": 2, "output": 10}, 0),
+        (None, "0.0003255", {}, 0.0003255),
+        ("NaN", "-1", {"input": 2, "output": 10}, 0.004),
+        (True, "Infinity", {}, None),
+        (None, None, {"input": 2}, None),
+    ],
+)
+async def test_gateway_billing_is_audited_including_rechecks(
+    store, tmp_path, reported, header, prices, expected
+):
+    from pydantic import BaseModel
+
+    class Answer(BaseModel):
+        ok: bool
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"x-litellm-response-cost": header} if header else {},
+            json={
+                "choices": [
+                    {"message": {"content": '{"ok":true}'}, "finish_reason": "stop"}
+                ],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 200,
+                    "cost": reported,
+                },
+            },
+        )
+
+    settings = Settings(
+        gateway_base_url="https://gateway.internal/v1",
+        model_roles={"recheck": "approved"},
+        model_prices={"approved": prices},
+    )
+    review = await store.accept(7, 2, "c" * 40, "billing")
+    llm = GatewayClient(
+        settings,
+        Audit(store, BlobStore(tmp_path / "blobs")),
+        BudgetTracker(
+            Budget(
+                token_ceiling=1000000,
+                deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+                model_tier={},
+            )
+        ),
+        Redactor(),
+        httpx.MockTransport(handler),
+    )
+    try:
+        await llm.complete(
+            stage="recheck",
+            tier="recheck",
+            system="review",
+            user="code",
+            response_model=Answer,
+            review_id=review.id,
+            timeout_s=2,
+        )
+    finally:
+        await llm.close()
+    spend = await store.spend(review.id)
+    assert spend["tokens"] == 1200
+    assert spend["roles"][0]["role"] == "recheck"
+    assert spend["unpriced_calls"] == (1 if expected is None else 0)
+    assert spend["cost"] == pytest.approx(expected or 0)

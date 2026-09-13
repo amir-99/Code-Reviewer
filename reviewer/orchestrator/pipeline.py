@@ -26,7 +26,7 @@ from reviewer.publish.rereview import full_review, reanchor
 from reviewer.services.forge.gitlab import StaleReview
 from reviewer.services.llm.client import GatewayClient
 from reviewer.store.audit import Audit, blob_store
-from reviewer.telemetry.activity import traced_review
+from reviewer.telemetry.activity import activity, sink, traced_review
 
 logger = structlog.get_logger()
 
@@ -606,6 +606,7 @@ class Pipeline:
                 await llm.close()
         return await self.finish(review, final, "COMMENT_ONLY", config, True)
 
+    @activity("phase", "Recheck comments")
     async def recheck(
         self,
         review,
@@ -712,7 +713,44 @@ class Pipeline:
             "posted": posted,
         }
 
-    async def recheck_now(self, project_id, iid):
+    async def recheck_now(self, project_id, iid, review_id=None):
+        from datetime import UTC, datetime
+
+        token = sink.set((self.store, review_id)) if review_id is not None else None
+        try:
+            result = await self._recheck_now(project_id, iid, review_id)
+        except Exception:
+            if review_id is not None:
+                stored = await self.store.snapshot(review_id) or {}
+                await self.store.save_snapshot(
+                    review_id,
+                    stored
+                    | {
+                        "recheck": {
+                            "at": datetime.now(UTC).isoformat(),
+                            "reason": "failed",
+                            "verdicts": [],
+                            "posted": [],
+                        }
+                    },
+                )
+            raise
+        finally:
+            if token is not None:
+                sink.reset(token)
+        if review_id is not None:
+            report = {
+                "at": datetime.now(UTC).isoformat(),
+                "verdicts": [],
+                "posted": [],
+            } | (result or {"reason": "no_open_threads"})
+            stored = await self.store.snapshot(review_id) or {}
+            await self.store.save_snapshot(review_id, stored | {"recheck": report})
+            return report
+        return result
+
+    @activity("phase", "Standalone recheck")
+    async def _recheck_now(self, project_id, iid, review_id=None):
         """Recheck a merge request's open comments at its current head.
 
         The `/ai recheck` path. No review is admitted, no stage runs and no
@@ -788,7 +826,7 @@ class Pipeline:
                     llm = None
                 report = await self.recheck(
                     SimpleNamespace(
-                        id=previous_id,
+                        id=review_id or previous_id,
                         mr_iid=iid,
                         head_sha=mr.head_sha,
                         project_id=internal,
@@ -805,7 +843,7 @@ class Pipeline:
                     redactor,
                     None,
                 )
-                if report is not None:
+                if report is not None and review_id is None:
                     # The recheck runs outside any review of its own, so its
                     # answers are recorded on the review that published the
                     # threads; that is where an operator reads them back.

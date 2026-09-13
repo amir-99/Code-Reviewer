@@ -32,7 +32,9 @@
           "model": "google/gemini-3.8-flash"
         }
       }
-    }
+    },
+    "unit_concurrency": 5,
+    "verification_concurrency": 5
   },
   "projects": {}
 }

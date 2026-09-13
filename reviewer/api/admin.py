@@ -174,7 +174,7 @@ async def recheck(review_id: str, request: Request):
         raise HTTPException(404, "Review not found")
     project_id = await request.app.state.store.project_number(review)
     await request.app.state.queue.enqueue_job(
-        "recheck_review", project_id, review.mr_iid
+        "recheck_review", project_id, review.mr_iid, str(review.id)
     )
     return {"accepted": True, "project_id": project_id, "iid": review.mr_iid}
 
