@@ -114,3 +114,35 @@ test('standard reviews show the combined stage and preserve partial coverage', (
   assert.equal(flow.steps.some(step => step.lanes.length), false);
   assert.equal(flow.percent, 100);
 });
+
+test('unit counts use planned totals and ignore stale progress snapshots', async () => {
+  const {UnitProgress} = await import('./flow.js');
+  const progress = new UnitProgress();
+  const step = {stage: 'defect_review'};
+  assert.equal(progress.get(step), undefined);
+  progress.accept({kind: 'stage_dispatch', data: {name: step.stage, units: 8}});
+  assert.equal(progress.get(step).total, 8);
+  assert.equal(progress.get(step).running, null);
+  const data = {name: step.stage, execution_id: 'a', revision: 2,
+    total: 8, completed: 2, running: 3, idle: 3, stopped: 0};
+  progress.accept({kind: 'unit_progress', data});
+  progress.accept({kind: 'unit_progress', data: {...data, revision: 1, completed: 0}});
+  progress.accept({kind: 'unit_progress', data});
+  assert.equal(progress.get(step).completed, 2);
+  progress.close();
+  assert.equal(progress.get(step).running, 0);
+  assert.equal(progress.get(step).stopped, 3);
+  assert.equal(progress.get(step).completed, 2);
+  progress.clear();
+  assert.equal(progress.get(step), undefined);
+});
+
+test('legacy coverage and concurrent lane aggregation preserve unknown totals', async () => {
+  const {UnitProgress} = await import('./flow.js');
+  const progress = new UnitProgress();
+  const step = {lanes: [{stage: 'correctness'}, {stage: 'tests_'}]};
+  progress.accept({kind: 'stage_coverage', data: {name: 'correctness', examined: 3, skipped: 1}});
+  assert.equal(progress.get(step).total, null);
+  progress.accept({kind: 'stage_coverage', data: {name: 'tests_', examined: 2, skipped: 0}});
+  assert.deepEqual(progress.get(step), {total: 6, completed: 5, running: 0, idle: 0, stopped: 1});
+});

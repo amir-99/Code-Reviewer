@@ -236,3 +236,52 @@ async def test_concurrent_retry_and_failure_preserve_other_units(tmp_path, monke
     assert result.skipped == ["f1.py:unit-0"]
     assert result.failed and result.partial
     assert attempts == {"f0.py:unit-0": 2, "f1.py:unit-0": 1, "f2.py:unit-0": 1}
+
+
+async def test_unit_progress_tracks_logical_units_and_reuse(tmp_path, monkeypatch):
+    events = []
+
+    async def record(kind, data):
+        if kind == "unit_progress":
+            events.append(data)
+
+    monkeypatch.setattr("reviewer.orchestrator.stages.record", record)
+    b = bundle(tmp_path, 4)
+    config = ProjectConfig(analysis_mode="deep", unit_concurrency=2)
+    result = await execute("line_review", b, Echo(), config)
+    assert events[0]["total"] == events[0]["idle"] == 4
+    assert events[-1]["completed"] == 4
+    assert events[-1]["running"] == events[-1]["idle"] == 0
+    assert max(e["running"] for e in events) == 2
+    assert all(
+        e["total"] == e["completed"] + e["running"] + e["idle"] + e["stopped"]
+        for e in events
+    )
+    events.clear()
+    await execute("line_review", b, Echo(), config, previous=result)
+    assert len(events) == 1
+    assert events[0]["completed"] == 4 and events[0]["running"] == 0
+
+
+async def test_progress_coverage_retry_does_not_inflate_total(tmp_path, monkeypatch):
+    events = []
+
+    async def record(kind, data):
+        if kind == "unit_progress":
+            events.append(data)
+
+    class Missing:
+        async def complete(self, **kwargs):
+            return StageEnvelope(
+                findings=[],
+                coverage=Coverage(
+                    units_examined=[], units_skipped=[], skip_reason=None
+                ),
+            )
+
+    monkeypatch.setattr("reviewer.orchestrator.stages.record", record)
+    result = await execute("purpose", bundle(tmp_path, 1), Missing(), ProjectConfig())
+    assert result.attempts == 2
+    assert events[-1]["total"] == 1
+    assert events[-1]["completed"] == events[-1]["running"] == 0
+    assert events[-1]["stopped"] == 1

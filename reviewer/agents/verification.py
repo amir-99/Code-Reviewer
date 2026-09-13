@@ -37,7 +37,7 @@ async def verify(finding, bundle, llm, redactor):
         user=frame(redactor.text(json.dumps(payload)), "verification-code"),
         response_model=VerificationResult,
         review_id=bundle.review_id,
-        timeout_s=90,
+        timeout_s=180,
         prompt_version=version,
     )
     finding.verification = result

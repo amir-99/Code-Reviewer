@@ -324,7 +324,7 @@ class WorkerSettings:
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(Settings().redis_url.get_secret_value())
     max_jobs = 10
-    job_timeout = 1200
+    job_timeout = 2400
     keep_result = 0
     max_tries = 5
     health_check_interval = 30

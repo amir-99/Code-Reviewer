@@ -107,3 +107,45 @@ export function walk(state, history = [], stages = new Map(), at = new Map()) {
     tone: FAILED.has(state) ? 'bad' : HALTED.has(state) ? 'warn' : '',
   };
 }
+
+// Progress is independent of the bounded activity feed. Worker snapshots count
+// logical units, so transport/coverage retries never add work to the denominator.
+export class UnitProgress {
+  constructor() { this.stages = new Map(); }
+  clear() { this.stages.clear(); }
+  accept({kind, data = {}}) {
+    if (!data.name) return false;
+    const prior = this.stages.get(data.name);
+    if (kind === 'stage_dispatch') {
+      this.stages.set(data.name, {total: data.units, completed: null, running: null, idle: null, stopped: 0});
+    } else if (kind === 'unit_progress') {
+      if (prior?.execution_id === data.execution_id && prior?.revision >= data.revision) return false;
+      this.stages.set(data.name, {...data});
+    } else if (kind === 'stage_coverage' && !prior?.revision) {
+      const completed = data.examined ?? 0, stopped = data.skipped ?? 0;
+      this.stages.set(data.name, {total: prior?.total ?? completed + stopped,
+        completed, running: 0, idle: Math.max(0, (prior?.total ?? completed + stopped) - completed - stopped), stopped});
+    } else return false;
+    return true;
+  }
+  get(step) {
+    if (step.stage) return this.stages.get(step.stage);
+    if (!step.lanes?.length) return undefined;
+    const counts = step.lanes.map(lane => this.stages.get(lane.stage));
+    if (counts.every(value => !value)) return undefined;
+    const result = {};
+    for (const key of ['total', 'completed', 'running', 'idle', 'stopped']) {
+      result[key] = counts.every(value => Number.isFinite(value?.[key]))
+        ? counts.reduce((sum, value) => sum + value[key], 0) : null;
+    }
+    return result;
+  }
+  close() {
+    for (const value of this.stages.values()) {
+      if (Number.isFinite(value.running)) {
+        value.stopped = (value.stopped ?? 0) + value.running;
+        value.running = 0;
+      }
+    }
+  }
+}

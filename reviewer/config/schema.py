@@ -105,7 +105,7 @@ class ReviewConfig(Strict):
     # Deprecated compatibility field: change size never restricts coverage.
     max_changed_lines: int | None = None
     token_ceiling: int = Field(default=120000, ge=1)
-    timeout_s: int = Field(default=1200, ge=1, le=1200)
+    timeout_s: int = Field(default=2400, ge=1, le=2400)
     unit_tokens: int = Field(default=6000, ge=256, le=20000)
     context_lines: int = 20
     max_inline: int = Field(default=15, ge=0, le=15)
@@ -136,7 +136,7 @@ class StaticTool(Strict):
     command: list[str]
     required: bool = False
     categories: list[str] = []
-    timeout_s: int = Field(default=120, ge=1, le=600)
+    timeout_s: int = Field(default=240, ge=1, le=1200)
 
     @model_validator(mode="after")
     def pinned(self):
@@ -150,9 +150,9 @@ class ProjectConfig(Strict):
     analysis_mode: Literal["standard", "deep"] = "standard"
     unit_concurrency: int = Field(default=2, ge=1, le=16)
     verification_concurrency: int = Field(default=2, ge=1, le=16)
-    finalization_reserve_s: float = Field(default=180, ge=0, le=600)
-    publication_reserve_s: float = Field(default=30, ge=0, le=120)
-    unit_timeout_s: float = Field(default=120, gt=0, le=600)
+    finalization_reserve_s: float = Field(default=360, ge=0, le=1200)
+    publication_reserve_s: float = Field(default=60, ge=0, le=240)
+    unit_timeout_s: float = Field(default=240, gt=0, le=1200)
     # Legacy settings remain readable in operator files and persisted runs.
     # Scheduling covers every chunk and no output cap is sent to the gateway.
     stage_output_tokens: int | None = Field(default=None, ge=256)

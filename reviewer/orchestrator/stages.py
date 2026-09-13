@@ -9,7 +9,7 @@ from reviewer.findings.models import ProposedFinding
 from reviewer.orchestrator.budget import BudgetExhausted
 from reviewer.orchestrator.deadlines import cutoff
 from reviewer.orchestrator.unit_plan import identity, plan
-from reviewer.telemetry.activity import activity, record
+from reviewer.telemetry.activity import activity, parent, record
 
 
 class StageResult(BaseModel):
@@ -57,7 +57,25 @@ async def execute(
     units, selected = plan(bundle, config, kind, name, only_paths)
     hashes = {u.id: identity(agent, bundle, u, llm, config) for u in units}
     stage_hash = hashlib.sha256("".join(hashes.values()).encode()).hexdigest()
+    progress = dict(
+        total=len(units), completed=0, running=0, idle=len(units), stopped=0
+    )
+
+    revision = 0
+
+    async def report_progress():
+        nonlocal revision
+        revision += 1
+        await record(
+            "unit_progress",
+            dict(name=name, execution_id=parent.get(), revision=revision, **progress),
+        )
+
     if previous is not None and previous.input_hash == stage_hash:
+        progress["completed"] = min(len(units), len(set(previous.examined)))
+        progress["stopped"] = len(units) - progress["completed"]
+        progress["idle"] = 0
+        await report_progress()
         return previous
     cached = await store.unit_results(bundle.review_id, name) if store else {}
     await record(
@@ -71,6 +89,7 @@ async def execute(
             triage=False,
         ),
     )
+    await report_progress()
     pending = iter(enumerate(units))
     completed = {}
     exhausted = False
@@ -82,6 +101,9 @@ async def execute(
             key = hashes[unit.id]
             if key in cached:
                 completed[index] = StageResult.model_validate(cached[key])
+                progress["idle"] -= 1
+                progress["completed" if completed[index].examined else "stopped"] += 1
+                await report_progress()
                 continue
             result = StageResult(stage=name)
             completed[index] = result
@@ -97,7 +119,13 @@ async def execute(
                     else "Analysis deadline reached"
                 )
                 result.notes.append(f"{unit.id}: {reason}; coverage is unknown")
+                progress["idle"] -= 1
+                progress["stopped"] += 1
+                await report_progress()
                 continue
+            progress["idle"] -= 1
+            progress["running"] += 1
+            await report_progress()
             try:
                 # One wall-clock allowance covers context rounds, transport retries,
                 # and the single coverage retry. External cancellation still propagates.
@@ -130,6 +158,11 @@ async def execute(
                         ):
                             result.examined.append(unit.id)
                             break
+            except asyncio.CancelledError:
+                progress["running"] -= 1
+                progress["stopped"] += 1
+                await report_progress()
+                raise
             except BudgetExhausted:
                 exhausted = True
                 result.notes.append(f"{unit.id}: Review token or time budget exhausted")
@@ -147,6 +180,9 @@ async def execute(
             if not result.examined:
                 result.skipped.append(unit.id)
                 result.partial = True
+            progress["running"] -= 1
+            progress["completed" if result.examined else "stopped"] += 1
+            await report_progress()
             if store:
                 # Required persistence: errors escape, never masquerade as coverage.
                 data = result.model_dump(mode="json")

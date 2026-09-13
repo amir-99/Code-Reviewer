@@ -87,7 +87,7 @@ class StageAgent(ABC):
                 user=user,
                 response_model=response_model,
                 review_id=bundle.review_id,
-                timeout_s=90,
+                timeout_s=180,
                 prompt_version=self.prompt_version,
             )
             if compact and hasattr(result, "expand"):

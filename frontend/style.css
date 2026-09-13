@@ -8,20 +8,20 @@
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
-  --bg: #0b1012;
-  --glow-a: #10493c;
-  --glow-b: #123043;
-  --surface: #121a1d;
-  --surface-2: #172226;
-  --surface-3: #1d2a2e;
-  --line: #223136;
-  --line-soft: #1a262a;
-  --text: #e7f0ed;
-  --text-dim: #b6c7c1;
-  --muted: #7e948d;
-  --accent: #3ddc97;
-  --accent-ink: #06231a;
-  --accent-soft: #14352b;
+  --bg: #090f20;
+  --glow-a: #174ea6;
+  --glow-b: #54328b;
+  --surface: #111b30;
+  --surface-2: #17243c;
+  --surface-3: #1e2e49;
+  --line: #2b3c59;
+  --line-soft: #1e2c45;
+  --text: #edf3ff;
+  --text-dim: #bdcbe3;
+  --muted: #91a4c3;
+  --accent: #72b6ff;
+  --accent-ink: #071b36;
+  --accent-soft: #19365b;
   --amber: #f2b338;
   --amber-soft: #3a2e12;
   --red: #ff7a70;
@@ -31,26 +31,29 @@
   --violet: #b494ff;
   --violet-soft: #251f3d;
   --shadow: 0 18px 40px -24px #000d;
+  --cyan: #67d9ef;
+  --pink: #f5a0d2;
+  --button-end: #b5a0ff;
   --radius: 14px;
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
-    --bg: #f2f5f2;
-    --glow-a: #cfe7db;
-    --glow-b: #d6e4ef;
+    --bg: #f2f6ff;
+    --glow-a: #c8ddff;
+    --glow-b: #e5d9ff;
     --surface: #ffffff;
-    --surface-2: #f5f8f5;
-    --surface-3: #eaf1ec;
-    --line: #dde6df;
-    --line-soft: #e8eee9;
-    --text: #16241f;
-    --text-dim: #3c514a;
-    --muted: #64796f;
-    --accent: #0f7a56;
+    --surface-2: #f5f7ff;
+    --surface-3: #e9effc;
+    --line: #d5dff0;
+    --line-soft: #e5ebf7;
+    --text: #172642;
+    --text-dim: #425573;
+    --muted: #5d7091;
+    --accent: #245bc4;
     --accent-ink: #ffffff;
-    --accent-soft: #e2f3ea;
+    --accent-soft: #e4eeff;
     --amber: #97620a;
     --amber-soft: #fbf0d8;
     --red: #b23b30;
@@ -59,26 +62,29 @@
     --blue-soft: #e2edf9;
     --violet: #6a4bbd;
     --violet-soft: #ece6fa;
-    --shadow: 0 10px 30px -22px #1a3b2e66;
+    --cyan: #08758b;
+    --pink: #a72c79;
+    --button-end: #6843c5;
+    --shadow: 0 10px 30px -22px #18386b66;
   }
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f2f5f2;
-  --glow-a: #cfe7db;
-  --glow-b: #d6e4ef;
+  --bg: #f2f6ff;
+  --glow-a: #c8ddff;
+  --glow-b: #e5d9ff;
   --surface: #ffffff;
-  --surface-2: #f5f8f5;
-  --surface-3: #eaf1ec;
-  --line: #dde6df;
-  --line-soft: #e8eee9;
-  --text: #16241f;
-  --text-dim: #3c514a;
-  --muted: #64796f;
-  --accent: #0f7a56;
+  --surface-2: #f5f7ff;
+  --surface-3: #e9effc;
+  --line: #d5dff0;
+  --line-soft: #e5ebf7;
+  --text: #172642;
+  --text-dim: #425573;
+  --muted: #5d7091;
+  --accent: #245bc4;
   --accent-ink: #ffffff;
-  --accent-soft: #e2f3ea;
+  --accent-soft: #e4eeff;
   --amber: #97620a;
   --amber-soft: #fbf0d8;
   --red: #b23b30;
@@ -87,7 +93,10 @@
   --blue-soft: #e2edf9;
   --violet: #6a4bbd;
   --violet-soft: #ece6fa;
-  --shadow: 0 10px 30px -22px #1a3b2e66;
+  --cyan: #08758b;
+  --pink: #a72c79;
+  --button-end: #6843c5;
+  --shadow: 0 10px 30px -22px #18386b66;
 }
 
 * { box-sizing: border-box; }
@@ -110,7 +119,8 @@ body {
   pointer-events: none;
   background:
     radial-gradient(60vw 44vw at 12% -8%, var(--glow-a), transparent 65%),
-    radial-gradient(52vw 40vw at 96% 4%, var(--glow-b), transparent 62%);
+    radial-gradient(52vw 40vw at 96% 4%, var(--glow-b), transparent 62%),
+    radial-gradient(44vw 38vw at 65% 95%, color-mix(in srgb, var(--cyan) 18%, transparent), transparent 70%);
   opacity: .55;
   animation: drift 34s ease-in-out infinite alternate;
 }
@@ -195,7 +205,7 @@ button {
   border-radius: 9px;
   padding: 8px 13px;
   cursor: pointer;
-  transition: background .15s, border-color .15s, transform .1s;
+  transition: background .2s, border-color .2s, transform .2s, box-shadow .2s;
 }
 button:hover { background: var(--surface-3); border-color: var(--muted); }
 button:active { transform: translateY(1px); }
@@ -205,11 +215,12 @@ button:disabled { opacity: .45; cursor: progress; }
   width: 100%;
   padding: 11px;
   color: var(--accent-ink);
-  background: var(--accent);
-  border-color: var(--accent);
+  background: linear-gradient(115deg, var(--accent), var(--button-end));
+  background-size: 160% 100%;
+  border-color: transparent;
   font-weight: 650;
 }
-.primary:hover { background: color-mix(in srgb, var(--accent) 85%, var(--text)); border-color: transparent; }
+.primary:hover:not(:disabled) { background-position: 100% 0; border-color: transparent; box-shadow: 0 6px 22px -8px var(--accent); }
 
 .icon-button {
   width: 32px;
@@ -785,6 +796,69 @@ pre {
 
 footer { text-align: center; font-size: 11px; color: var(--muted); padding: 22px 0 8px; }
 
+/* Color accents decorate surfaces; warning and failure tones stay explicit. */
+.brand .mark {
+  background: linear-gradient(135deg, var(--accent-soft), var(--violet-soft));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.connect-card, .review-head, #account-panel {
+  background:
+    linear-gradient(125deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 45%, color-mix(in srgb, var(--violet) 7%, transparent)),
+    var(--surface);
+  border-top: 2px solid var(--accent);
+}
+.connect-card h1 em { color: var(--violet); }
+.features li span {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+.features li:nth-child(2) span { color: var(--violet); background: var(--violet-soft); }
+.features li:nth-child(3) span { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 12%, var(--surface)); }
+.features li:nth-child(4) span { color: var(--pink); background: color-mix(in srgb, var(--pink) 12%, var(--surface)); }
+#new-review-card { border-top: 2px solid var(--cyan); }
+.reviews-card { border-top: 2px solid var(--violet); }
+.tab[aria-selected="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px var(--accent);
+}
+.metric {
+  border-top: 2px solid var(--blue);
+  background: linear-gradient(var(--blue-soft), var(--surface));
+}
+.metric:nth-child(2n) { border-top-color: var(--violet); background: linear-gradient(var(--violet-soft), var(--surface)); }
+.metric:nth-child(3n) { border-top-color: var(--cyan); }
+.metric.good { border-top-color: var(--accent); }
+.metric.bad { border-top-color: var(--red); background: linear-gradient(var(--red-soft), var(--surface)); }
+.metric.warn { border-top-color: var(--amber); background: linear-gradient(var(--amber-soft), var(--surface)); }
+
+@keyframes enter {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.connect-card, #account-panel, .rail > .card, .detail {
+  animation: enter .45s ease backwards;
+}
+.rail > .card + .card { animation-delay: .08s; }
+.detail { animation-delay: .12s; }
+.features li { animation: enter .4s ease backwards; }
+.features li:nth-child(2) { animation-delay: .06s; }
+.features li:nth-child(3) { animation-delay: .12s; }
+.features li:nth-child(4) { animation-delay: .18s; }
+details[open] > :not(summary) { animation: enter .2s ease backwards; }
+input:focus, textarea:focus, select:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  button:hover:not(:disabled) { transform: translateY(-2px); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 1080px) {
@@ -814,3 +888,14 @@ footer { text-align: center; font-size: 11px; color: var(--muted); padding: 22px
 #account-content form { display:grid; gap:.7rem; }
 #account-content label { display:grid; gap:.3rem; }
 #account-content .card { padding:1rem; overflow-wrap:anywhere; }
+
+/* Per-step work counters remain readable in the concurrent lanes and on mobile. */
+.unit-counts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; margin-top: 7px; }
+.unit-count { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--text-dim); }
+.unit-count > span { text-transform: capitalize; }
+.unit-count b { font-variant-numeric: tabular-nums; color: var(--text); }
+.unit-completed b { color: var(--accent); }
+.unit-running b { color: var(--amber); }
+.unit-idle b { color: var(--violet); }
+.unit-stopped { font-size: 10px; color: var(--amber); }
+.lanes { grid-template-columns: 1fr; }

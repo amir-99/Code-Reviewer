@@ -1,7 +1,7 @@
 import {matchesFinding} from './findings.js';
 import {apiURL} from './paths.js';
 import {events} from './sse.js';
-import {FAILED, HALTED, TERMINAL, label as labels, walk} from './flow.js';
+import {FAILED, HALTED, TERMINAL, label as labels, walk, UnitProgress} from './flow.js';
 import {chosenModels, modelFor, roleFor, roleLabel} from './models.js';
 import {addAttempt, breakdown, cost as money, emptySpend, mergeSpend, tokens as count, usage} from './spend.js';
 
@@ -34,6 +34,7 @@ let reviews = [], listFilter = 'all', listQuery = '', activityKind = 'all', seve
 let snapshotSeq = 0;            // the newest event the last snapshot already reflects
 const activities = new Map();   // activity_id -> {row, kind, name, status, depth, at}
 const running = new Set();
+const unitProgress = new UnitProgress();
 const stages = new Map();       // agent name -> {status, at, took}
 const stateAt = new Map();      // review state -> when the pipeline entered it
 const nodes = new Map();        // review state -> the flow node's elements
@@ -288,7 +289,14 @@ function buildFlow(steps = walk("INIT").steps) {
     const box = el(kind === 'lane' ? 'span' : 'div', '', kind);
     const top = el('span', '', 'n-top');
     top.append(el('i', '', 'n-dot'), el('span', text, 'n-label'), el('span', '', 'n-time'));
-    box.append(top, el('span', '', 'n-note'));
+    const counts = el('span', '', 'unit-counts');
+    for (const key of ['total', 'completed', 'running', 'idle']) {
+      const counter = el('span', '', `unit-count unit-${key}`);
+      counter.append(el('span', key), el('b', '—'));
+      counter.dataset.count = key;
+      counts.append(counter);
+    }
+    box.append(top, el('span', '', 'n-note'), counts, el('span', '', 'unit-stopped'));
     return box;
   };
   // The flow's own shape, read from an unstarted review: labels and lanes only.
@@ -327,6 +335,16 @@ function paint(target, step) {
     time.textContent = span(Date.now() - step.at);
   } else time.textContent = Number.isFinite(step.took) ? span(step.took) : '';
   target.querySelector('.n-note').textContent = step.note ?? '';
+  const counts = unitProgress.get(step);
+  for (const counter of target.querySelectorAll('[data-count]')) {
+    const value = counts?.[counter.dataset.count];
+    counter.querySelector('b').textContent = Number.isFinite(value) ? String(value) : '—';
+  }
+  target.querySelector('.unit-counts').title = counts
+    ? 'Logical work units; retries do not add units. Idle units have not started.'
+    : 'Unit counts have not been reported for this step.';
+  target.querySelector('.unit-stopped').textContent = counts?.stopped
+    ? `${counts.stopped} stopped / skipped` : '';
   // Colour alone never carries the status: the title always spells it out.
   target.title = `${step.label} · ${step.status}${step.note ? ` · ${step.note}` : ''}`;
 }
@@ -646,6 +664,8 @@ function tally() {
 
 function addActivity(item) {
   const {data = {}, kind} = item;
+  if (unitProgress.accept(item)) renderPipeline();
+  if (kind === 'unit_progress') return;
   // Everything at or below the snapshot's cursor is a replay of what the
   // snapshot already reflects. Those events still belong in the feed, where they
   // are the record of what ran, but they must not move the header a second time.
@@ -740,6 +760,7 @@ function filterActivity() {
 }
 
 function closeOpenActivities() {
+  unitProgress.close();
   for (const id of running) {
     const entry = activities.get(id);
     if (!entry) continue;
@@ -962,6 +983,7 @@ function select(id) {
   $('trail').replaceChildren();
   $('alert').hidden = true;
   $('decision').hidden = true;
+  unitProgress.clear();
   stages.clear();
   stateAt.clear();
   buildFlow();
@@ -1131,7 +1153,7 @@ $('trigger').onsubmit = async event => {
 function clearSession() {
   sessionGeneration++; sessionAbort.abort(); sessionAbort = new AbortController();
   controller?.abort(); clearInterval(refreshTimer); token = ''; account = null;
-  selected = ''; current = null; reviews = []; activities.clear(); stages.clear(); stateAt.clear();
+  selected = ''; current = null; reviews = []; activities.clear(); unitProgress.clear(); stages.clear(); stateAt.clear();
   modelChoice.clear(); reviewModels = {}; modelDefaults = {}; modelCatalog = []; audited = null; streamed = emptySpend();
   $('workspace').hidden = true; $('connect').hidden = false; $('disconnect').hidden = true;
   $('account-identity').hidden = true; $('account-content').replaceChildren(); $('review').hidden = true;

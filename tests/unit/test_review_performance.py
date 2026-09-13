@@ -345,3 +345,37 @@ async def test_cancelled_activity_wait_does_not_strand_sqlite_writer(store):
     rows = await store.events(review.id)
     assert all(row["data"].get("name") != "cancelled writer" for row in rows)
     assert rows[-1]["data"]["name"] == "successful writer"
+
+
+def test_forty_minute_budget_preserves_scaled_phase_reserves(tmp_path):
+    config = ProjectConfig(review={"timeout_s": 2400})
+    b = bundle(tmp_path, 1)
+    started = datetime.now(UTC)
+    b.budget.deadline_at = started + timedelta(seconds=config.review.timeout_s)
+    assert cutoff(b, config, "defect_review") == started + timedelta(minutes=34)
+    assert cutoff(b, config, "system_context") == started + timedelta(
+        minutes=36, seconds=30
+    )
+    assert cutoff(b, config, "verification") == started + timedelta(minutes=39)
+    assert cutoff(b, config, "recheck") == started + timedelta(minutes=39)
+    with pytest.raises(ValueError):
+        ProjectConfig(review={"timeout_s": 2401})
+
+
+def test_persisted_shorter_budget_keeps_its_phase_cutoffs(tmp_path):
+    config = ProjectConfig.model_validate(
+        {
+            "review": {"timeout_s": 1200},
+            "unit_timeout_s": 120,
+            "finalization_reserve_s": 180,
+            "publication_reserve_s": 30,
+        }
+    )
+    restored = ProjectConfig.model_validate(config.model_dump(mode="json"))
+    b = bundle(tmp_path, 1)
+    started = datetime.now(UTC)
+    b.budget.deadline_at = started + timedelta(seconds=restored.review.timeout_s)
+    assert cutoff(b, restored, "purpose") == started + timedelta(minutes=17)
+    assert cutoff(b, restored, "verification") == started + timedelta(
+        minutes=19, seconds=30
+    )

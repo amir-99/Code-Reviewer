@@ -147,13 +147,18 @@ appears as `kind="wait", name="Gateway capacity"` in duration metrics. With
 multiple worker processes, total capacity is the sum of their limits; size this
 setting against the installation's approved gateway capacity.
 
+New reviews default to a 40-minute deadline (`review.timeout_s=2400`), matching
+the worker job timeout. Model calls allow up to 180 seconds per attempt; static
+analyzers default to 240 seconds. All model work still obeys the remaining review
+and unit deadlines. Persisted runs retain their recorded configuration and deadline.
+
 Phase time controls are operator-only project settings. `finalization_reserve_s`
-defaults to 180 seconds: analysis stops that long before the review deadline.
+defaults to 360 seconds: analysis stops that long before the review deadline.
 In standard mode the remaining model-work allowance is available to verification.
-In deep mode System Context receives its first half, followed by verification. `publication_reserve_s` defaults to 30 seconds
+In deep mode System Context receives its first half, followed by verification. `publication_reserve_s` defaults to 60 seconds
 and stops model work before reporting and cleanup. For short reviews, these
 reserves are capped at one quarter and one tenth of the total deadline.
-`unit_timeout_s` defaults to 120 seconds for all context rounds, transport retries,
+`unit_timeout_s` defaults to 240 seconds for all context rounds, transport retries,
 and the single coverage retry together. Coverage IDs are constrained to the
 dispatched unit in the gateway schema, and the retry explicitly supplies that
 expected ID; empty or conflicting coverage remains partial. Reaching a cutoff records skipped units
