@@ -28,7 +28,7 @@ async def eligibility(request, review):
     account = request.state.principal
     if account.role != "user" or review.owner_user_id != account.id:
         return "Only the review's owner can ask about it"
-    project = await store.project_number(review)
+    project = await store.project_number(review) or 0
     if not load_project(settings.config_path, project).chat.enabled:
         return "Chat is disabled for this project"
     if review.state not in TERMINAL or not await store.snapshot(review.id):
@@ -61,7 +61,7 @@ async def ask(review_id: str, body: Question, request: Request):
     store, settings = request.app.state.store, request.app.state.settings
     if not body.question.strip():
         raise HTTPException(422, "A question is required")
-    project = await store.project_number(review)
+    project = await store.project_number(review) or 0
     limit = load_project(settings.config_path, project).chat.messages_per_hour
     account = request.state.principal
     if (

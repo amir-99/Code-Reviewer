@@ -40,14 +40,35 @@ class Store:
     @asynccontextmanager
     async def mr_lock(self, project_id, iid):
         """Serialize publication/recheck across system and personal principals."""
+        async with self._advisory(f"mr:{project_id}:{iid}"):
+            yield
+
+    @asynccontextmanager
+    async def subject_lock(self, subject_key):
+        """The document analogue of `mr_lock`: one writer per reviewed page."""
+        async with self._advisory(f"subject:{subject_key}"):
+            yield
+
+    @asynccontextmanager
+    async def review_lock(self, review):
+        """Whichever lock guards this review's publication target."""
+        if review.kind == "document":
+            async with self.subject_lock(review.subject_key):
+                yield
+        else:
+            async with self.mr_lock(await self.project_number(review), review.mr_iid):
+                yield
+
+    @asynccontextmanager
+    async def _advisory(self, name):
         if self.engine.dialect.name == "sqlite":
-            async with self._mr_locks.setdefault((project_id, iid), asyncio.Lock()):
+            async with self._mr_locks.setdefault(name, asyncio.Lock()):
                 yield
         else:
             import hashlib
 
             key = int.from_bytes(
-                hashlib.sha256(f"mr:{project_id}:{iid}".encode()).digest()[:8],
+                hashlib.sha256(name.encode()).digest()[:8],
                 "big",
                 signed=True,
             )
@@ -142,6 +163,76 @@ class Store:
             await self._event(session, review.id, "state", {"state": "INIT"})
             return review
 
+    async def accept_document(
+        self,
+        subject,
+        event_id,
+        overrides=None,
+        *,
+        owner_user_id,
+        credential_refs,
+        principal_id,
+    ):
+        """Admit a review of a Confluence page.
+
+        Same contract as `accept`, keyed on the page instead of a merge request:
+        redelivery returns the existing row, a same-owner rerun supersedes the
+        active review, and another owner's active review is a conflict. There is
+        no system principal for documents, so an owner is always required.
+        """
+        subject_key = f"confluence:{subject['page_id']}"
+        async with self.transaction() as session:
+            if self.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            existing = await session.scalar(
+                select(Review).where(Review.event_id == event_id)
+            )
+            if existing:
+                return existing
+            active = await session.scalar(
+                select(Review)
+                .where(
+                    Review.kind == "document",
+                    Review.subject_key == subject_key,
+                    Review.state.not_in([str(x) for x in TERMINAL]),
+                )
+                .with_for_update()
+            )
+            if active and active.owner_user_id != owner_user_id:
+                trigger = await session.get(ReviewTrigger, event_id)
+                if trigger:
+                    trigger.state = "CONFLICT"
+                return None
+            review_id = str(uuid4())
+            if active:
+                active.state = "SUPERSEDED"
+                active.history = active.history + ["SUPERSEDED"]
+                active.finished_at = utcnow()
+                active.superseded_by = review_id
+                await self._event(session, active.id, "state", {"state": "SUPERSEDED"})
+                await session.flush()
+            review = Review(
+                id=review_id,
+                event_id=event_id,
+                kind="document",
+                subject=dict(subject),
+                subject_key=subject_key,
+                # The page version stands in for the reviewed head.
+                head_sha=str(subject.get("version", "")),
+                overrides=overrides,
+                owner_user_id=owner_user_id,
+                credential_refs=credential_refs,
+                principal_id=principal_id,
+                trigger_source="manual",
+            )
+            session.add(review)
+            trigger = await session.get(ReviewTrigger, event_id)
+            if trigger:
+                trigger.state = "ADMITTED"
+            await session.flush()
+            await self._event(session, review.id, "state", {"state": "INIT"})
+            return review
+
     async def transition(self, review_id: str, state: str, **fields):
         async with self.transaction() as session:
             review = await session.scalar(
@@ -227,6 +318,9 @@ class Store:
             ) is not None
 
     async def project_number(self, review):
+        if review.project_id is None:
+            # Document reviews have no GitLab project.
+            return None
         async with self.sessions() as session:
             return (await session.get(Project, review.project_id)).gitlab_project_id
 
@@ -424,7 +518,8 @@ class Store:
                     data=f.model_dump(mode="json"),
                     severity_final=f.severity_final,
                     status=f.status,
-                    file=f.anchor.file,
+                    # Document findings anchor on a page rather than a file.
+                    file=getattr(f.anchor, "file", None) or f.anchor.page_id,
                 )
                 if row:
                     for k, v in data.items():
@@ -846,7 +941,7 @@ class Store:
             rows = (
                 await session.execute(
                     select(Review, Project.gitlab_project_id)
-                    .join(Project)
+                    .outerjoin(Project)
                     .where(
                         True if all_owners else Review.owner_user_id == owner_user_id
                     )
@@ -860,6 +955,8 @@ class Store:
                     id=r.id,
                     owner_user_id=r.owner_user_id,
                     trigger_source=r.trigger_source,
+                    kind=r.kind,
+                    subject=subject_view(r.subject),
                     project_id=p,
                     mr_iid=r.mr_iid,
                     head_sha=r.head_sha,
@@ -870,6 +967,15 @@ class Store:
                 )
                 for r, p in rows
             ]
+
+
+def subject_view(subject):
+    """The dashboard's shape of a reviewed page: identity only, never its body."""
+    if not subject:
+        return None
+    return {
+        key: subject.get(key) for key in ("page_id", "space", "title", "url", "version")
+    }
 
 
 def chat_view(row):

@@ -66,6 +66,15 @@ def review_links(snapshot, overrides, settings, mr=None):
                 f"{settings.jira_base_url.rstrip('/')}/browse/{quote(key, safe='')}",
                 settings.jira_base_url,
             )
+    subject = bundle.get("subject") or {}
+    if subject.get("url"):
+        add(
+            "confluence",
+            f"Reviewed page: {subject.get('title') or subject.get('page_id')}",
+            subject.get("url"),
+            settings.confluence_base_url,
+            base_path=False,
+        )
     for page in bundle.get("documents", []):
         add(
             "confluence",
@@ -74,7 +83,9 @@ def review_links(snapshot, overrides, settings, mr=None):
             settings.confluence_base_url,
             base_path=False,
         )
-    for url in overrides.get("document_urls", []):
+    for url in overrides.get("document_urls", []) + overrides.get(
+        "supporting_urls", []
+    ):
         add(
             "confluence",
             "Confluence page",

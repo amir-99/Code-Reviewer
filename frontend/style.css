@@ -972,3 +972,24 @@ dialog.confirm-dialog .form-actions { justify-content: flex-end; }
 .chat .reads { font-size: 11px; color: var(--muted); }
 .chat-form { margin-top: 12px; display: grid; gap: 8px; }
 .chat-form textarea { width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13px; }
+
+/* ---------- document reviews ---------- */
+
+.kind-toggle { margin-bottom: 14px; }
+.kind-toggle .chip { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.kind-toggle .chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+.check { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; font-size: 13px; color: var(--muted); }
+.field label .hint { font-weight: 400; margin-left: 4px; }
+.finding .anchor { margin: 6px 0 10px; }
+.finding .anchor .section { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.finding .anchor blockquote {
+  margin: 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.finding .related { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+.finding .related q { color: var(--text); }
+.badge.tone-kind { background: var(--violet-soft); color: var(--violet); }

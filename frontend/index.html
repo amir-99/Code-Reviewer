@@ -62,25 +62,46 @@
       <p id="credential-readiness" class="hint"></p>
       <div class="card-head"><h2>Start a review</h2></div>
       <form id="trigger">
-        <div class="field">
-          <label for="mr">GitLab merge request</label>
-          <input id="mr" name="merge_request_url" type="url" required placeholder="https://gitlab…/merge_requests/42">
+        <div class="chips kind-toggle" id="kind" role="radiogroup" aria-label="What to review">
+          <label class="chip on"><input type="radio" name="kind" value="code" checked> Merge request</label>
+          <label class="chip"><input type="radio" name="kind" value="document"> Document</label>
         </div>
-        <details>
-          <summary>Requirements &amp; overrides</summary>
+        <div id="code-fields">
           <div class="field">
-            <label for="issue">Jira story</label>
-            <input id="issue" name="issue_key" placeholder="TEAM-123">
+            <label for="mr">GitLab merge request</label>
+            <input id="mr" name="merge_request_url" type="url" required placeholder="https://gitlab…/merge_requests/42">
+          </div>
+          <details>
+            <summary>Requirements &amp; overrides</summary>
+            <div class="field">
+              <label for="issue">Jira story</label>
+              <input id="issue" name="issue_key" placeholder="TEAM-123">
+            </div>
+            <div class="field">
+              <label for="epic">Jira epic</label>
+              <input id="epic" name="epic_key" placeholder="TEAM-100">
+            </div>
+            <div class="field">
+              <label for="documents">Confluence pages</label>
+              <textarea id="documents" name="documents" rows="3" placeholder="One URL per line"></textarea>
+            </div>
+          </details>
+        </div>
+        <div id="document-fields" hidden>
+          <div class="field">
+            <label for="document-url">Confluence page</label>
+            <input id="document-url" name="document_url" type="url" placeholder="https://wiki…/pages/viewpage.action?pageId=…">
           </div>
           <div class="field">
-            <label for="epic">Jira epic</label>
-            <input id="epic" name="epic_key" placeholder="TEAM-100">
+            <label for="supporting">Supporting pages <span class="hint">optional</span></label>
+            <textarea id="supporting" name="supporting_urls" rows="3" placeholder="One Confluence URL per line — pages to check the document against"></textarea>
           </div>
           <div class="field">
-            <label for="documents">Confluence pages</label>
-            <textarea id="documents" name="documents" rows="3" placeholder="One URL per line"></textarea>
+            <label for="instruction">Custom instruction <span class="hint">optional</span></label>
+            <textarea id="instruction" name="instruction" rows="3" maxlength="4000" placeholder="What to focus on, e.g. “check the API examples match the schema section”"></textarea>
           </div>
-        </details>
+          <label class="check"><input type="checkbox" name="check_space"> Also check against other pages in the same space</label>
+        </div>
         <details id="models-panel">
           <summary>Models <span id="models-changed" class="badge" hidden>0</span></summary>
           <p class="hint">Each part of the review picks its own model. Leave a role on its default
@@ -91,9 +112,9 @@
         <div class="field">
           <label for="mode">Report mode</label>
           <select id="mode" name="report_mode">
-            <option value="draft">Draft — view here, draft notes on GitLab</option>
-            <option value="applied">Applied — publish per project policy</option>
-            <option value="none">None — frontend only, no GitLab comments</option>
+            <option value="draft" data-code="Draft — view here, draft notes on GitLab" data-document="Draft — hold comments here, publish them from the Comments tab">Draft — view here, draft notes on GitLab</option>
+            <option value="applied" data-code="Applied — publish per project policy" data-document="Applied — post page comments per policy">Applied — publish per project policy</option>
+            <option value="none" data-code="None — frontend only, no GitLab comments" data-document="None — frontend only, no page comments">None — frontend only, no GitLab comments</option>
           </select>
         </div>
         <button class="primary" id="start" type="submit">Start review</button>
@@ -105,7 +126,7 @@
         <h2>Reviews <span id="review-total" class="badge">0</span></h2>
         <button id="refresh" class="icon-button" type="button" title="Refresh the review list (r)" aria-label="Refresh reviews">⟳</button>
       </div>
-      <input id="search" type="search" placeholder="Filter by project, MR, sha or state  ( / )" aria-label="Filter reviews">
+      <input id="search" type="search" placeholder="Filter by project, MR, page, sha or state  ( / )" aria-label="Filter reviews">
       <div class="chips" id="filters" role="group" aria-label="Review status filter">
         <button class="chip on" type="button" data-filter="all">All<span class="n" data-count="all">0</span></button>
         <button class="chip" type="button" data-filter="running">Running<span class="n" data-count="running">0</span></button>
@@ -120,7 +141,7 @@
     <div id="empty" class="card empty">
       <span class="symbol" aria-hidden="true">◈</span>
       <h2>Every finding has a story.</h2>
-      <p>Select a review to follow its pipeline, or start one from a merge request link.</p>
+      <p>Select a review to follow its pipeline, or start one from a merge request or Confluence page link.</p>
     </div>
 
     <div id="review" hidden>

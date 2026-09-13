@@ -2,7 +2,7 @@ import {matchesFinding, commentActions, bulkCommentKeys} from './findings.js';
 import {apiURL} from './paths.js';
 import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk, UnitProgress} from './flow.js';
-import {chosenModels, modelFor, roleFor, roleLabel} from './models.js';
+import {chosenModels, modelFor, roleFor, roleLabel, rolesFor} from './models.js';
 import {addAttempt, breakdown, cost as money, emptySpend, mergeSpend, tokens as count, usage} from './spend.js';
 
 const $ = id => document.getElementById(id);
@@ -137,7 +137,7 @@ const kept = review => {
   if (listFilter === 'changes' && review.decision !== 'REQUEST_CHANGES') return false;
   if (listFilter === 'failed' && !FAILED.has(review.state) && !HALTED.has(review.state)) return false;
   if (!listQuery) return true;
-  return `${review.project_id} !${review.mr_iid} ${review.head_sha} ${labels(review.state)} ${labels(review.decision)}`
+  return `${identity(review)} ${review.kind || 'code'} ${review.head_sha} ${labels(review.state)} ${labels(review.decision)}`
     .toLowerCase().includes(listQuery);
 };
 
@@ -163,10 +163,12 @@ function reviewRow(review) {
   const button = el('button', '', `s-${tone(review.state)}${review.id === selected ? ' selected' : ''}`);
   button.type = 'button';
   const top = el('div', '', 'top');
-  top.append(el('i', '', 'dot'), el('span', `Project ${review.project_id} · !${review.mr_iid}`, 'grow'));
+  top.append(el('i', '', 'dot'), el('span', identity(review), 'grow'));
+  if (review.kind === 'document') top.append(el('span', 'document', 'badge tone-kind'));
   if (review.decision) top.append(decisionBadge(review.decision));
   const bottom = el('div', '', 'bottom');
-  bottom.append(el('span', labels(review.state)), el('span', short(review.head_sha), 'sha'));
+  bottom.append(el('span', labels(review.state)),
+    el('span', review.kind === 'document' ? `v${review.head_sha}` : short(review.head_sha), 'sha'));
   if (review.partial) bottom.append(el('span', 'partial', 'badge tone-warn'));
   const when = el('time', ago(review.started_at));
   when.dateTime = review.started_at ?? '';
@@ -177,6 +179,15 @@ function reviewRow(review) {
   button.append(top, bottom);
   button.onclick = () => select(review.id);
   return button;
+}
+
+// What a review is about, in one line: a merge request or a page.
+function identity(review) {
+  if (review.kind === 'document') {
+    const subject = review.subject || {};
+    return `${subject.space ? `${subject.space} · ` : ''}${subject.title || `Page ${subject.page_id ?? ''}`}`;
+  }
+  return `Project ${review.project_id} · !${review.mr_iid}`;
 }
 
 function decisionBadge(decision) {
@@ -199,15 +210,21 @@ function metric(term, value, {shade = '', mono = false, at = '', elapsed = false
 function renderHead(review) {
   renderReviewLinks();
   const overrides = review.overrides || {};
-  $('identity').textContent = `Project ${review.project_id} · Merge request !${review.mr_iid}`;
+  const isDocument = review.kind === 'document';
+  $('identity').textContent = isDocument
+    ? `Document review · ${identity(review)}`
+    : `Project ${review.project_id} · Merge request !${review.mr_iid}`;
   $('state').textContent = labels(review.state);
   $('metadata').textContent = [
-    `head ${short(review.head_sha, 12)}`,
+    isDocument ? `page version ${review.head_sha}` : `head ${short(review.head_sha, 12)}`,
     account?.role === 'admin' ? `owner ${review.owner_user_id || 'system / legacy'}` : null,
     overrides.requested_by ? `triggered by ${overrides.requested_by}` : 'triggered by webhook',
     overrides.issue_key ? `story ${overrides.issue_key}` : null,
     overrides.epic_key ? `epic ${overrides.epic_key}` : null,
     (overrides.document_urls || []).length ? `${overrides.document_urls.length} supplied page(s)` : null,
+    (overrides.supporting_urls || []).length ? `${overrides.supporting_urls.length} supporting page(s)` : null,
+    overrides.check_space ? 'checked against the space' : null,
+    overrides.instruction ? 'custom instruction' : null,
   ].filter(Boolean).join('  ·  ');
 
   $('decision').hidden = !review.decision;
@@ -221,7 +238,9 @@ function renderHead(review) {
     $('alert').textContent = `This review recorded an error: ${review.error}`;
   } else if (review.partial) {
     $('alert').hidden = false; $('alert').className = 'alert warn';
-    $('alert').textContent = 'Partial review — coverage is incomplete, so the decision falls back to comment only and the commit status passes.';
+    $('alert').textContent = isDocument
+      ? 'Partial review — not every section was examined, so the outcome falls back to comment only.'
+      : 'Partial review — coverage is incomplete, so the decision falls back to comment only and the commit status passes.';
   } else {
     $('alert').hidden = true;
   }
@@ -233,14 +252,14 @@ function renderHead(review) {
   const finished = Date.parse(review.finished_at ?? '');
   const started = Date.parse(review.started_at ?? '');
   $('metrics').replaceChildren(
-    metric('Head', short(review.head_sha, 12), {mono: true}),
+    isDocument ? metric('Page version', review.head_sha, {mono: true}) : metric('Head', short(review.head_sha, 12), {mono: true}),
     metric('Started', ago(review.started_at), {at: review.started_at ?? ''}),
     Number.isFinite(finished) && Number.isFinite(started)
       ? metric('Took', span(finished - started))
       : metric('Elapsed', Number.isFinite(started) ? span(Date.now() - started) : '—', {elapsed: true}),
     metric('Findings', String(findings.length)),
     metric('Blocker / required', String(high), {shade: high ? 'bad' : 'good'}),
-    metric('Commit status', review.status_delivered ? 'delivered' : 'pending',
+    isDocument ? metric('Space', review.subject?.space || '—') : metric('Commit status', review.status_delivered ? 'delivered' : 'pending',
       {shade: !review.status_delivered && TERMINAL.has(review.state) ? 'warn' : ''}),
     metric('Report mode', overrides.report_mode || 'project default'),
     metric('Tokens', '—', {mono: true, id: 'metric-tokens'}),
@@ -470,8 +489,10 @@ function findingCard(finding) {
   top.append(el('span', labels(finding.severity) || 'finding', `badge ${severityTone(finding.severity)}`));
   top.append(el('span', `Impact: ${finding.impact_level || 'unknown'} (advisory)`, 'badge'));
   if (finding.category) top.append(el('span', labels(finding.category), 'badge'));
-  top.append(el('span', finding.introduced_by_this_change ? 'this change' : 'pre-existing',
-    `badge ${finding.introduced_by_this_change ? 'tone-info' : ''}`.trim()));
+  if (!finding.quote) {
+    top.append(el('span', finding.introduced_by_this_change ? 'this change' : 'pre-existing',
+      `badge ${finding.introduced_by_this_change ? 'tone-info' : ''}`.trim()));
+  }
   if (finding.verdict) {
     top.append(el('span', finding.verdict, `badge ${finding.verdict === 'confirmed' ? 'tone-good' : 'tone-warn'}`));
   } else {
@@ -479,7 +500,15 @@ function findingCard(finding) {
   }
   article.append(top, el('h3', finding.claim || 'Untitled finding'));
 
-  if (finding.file) {
+  if (finding.quote) {
+    // A document finding points at a passage, not a line.
+    const anchor = el('div', '', 'anchor');
+    anchor.append(el('div', finding.heading_path || '(intro)', 'section'));
+    const quote = el('blockquote');
+    quote.append(document.createTextNode(finding.quote));
+    anchor.append(quote);
+    article.append(anchor);
+  } else if (finding.file) {
     const lines = finding.line_end && finding.line_end !== finding.line_start
       ? `${finding.line_start}-${finding.line_end}` : finding.line_start;
     article.append(copyable(lines ? `${finding.file}:${lines}` : finding.file, 'the location'));
@@ -494,6 +523,19 @@ function findingCard(finding) {
   }
   article.append(body);
 
+  const related = (finding.related || []).slice(0, 4);
+  if (related.length) {
+    const list = el('ul', '', 'related');
+    for (const item of related) {
+      const line = el('li');
+      line.append(document.createTextNode(`${item.page_id && item.page_id !== finding.page_id ? `page ${item.page_id} · ` : ''}${item.heading_path ?? ''}: `));
+      const quote = el('q'); quote.append(document.createTextNode(item.quote ?? ''));
+      line.append(quote);
+      if (item.note) line.append(document.createTextNode(` — ${item.note}`));
+      list.append(line);
+    }
+    article.append(list);
+  }
   const evidence = (finding.evidence || []).slice(0, 4);
   if (evidence.length) {
     const list = el('ul', '', 'evidence');
@@ -1117,10 +1159,30 @@ async function loadModels() {
   const body = await (await request('/admin/models')).json();
   modelDefaults = body.defaults || {};
   modelCatalog = body.catalog || [];
-  const roles = (body.roles || Object.keys(modelDefaults)).filter(role => modelDefaults[role]);
+  renderModelFields();
+}
+
+const reviewKind = () => new FormData($('trigger')).get('kind') || 'code';
+
+function renderModelFields() {
+  const roles = rolesFor(reviewKind(), Object.keys(modelDefaults)).filter(role => modelDefaults[role]);
   $('models').replaceChildren(...roles.map(modelField));
   markModelChoices();
 }
+
+// The form switches between a merge request and a page: different fields,
+// different roles, and the report modes are worded for the target.
+function renderKind() {
+  const kind = reviewKind();
+  for (const chip of all('#kind .chip')) chip.classList.toggle('on', chip.querySelector('input').checked);
+  $('code-fields').hidden = kind !== 'code';
+  $('document-fields').hidden = kind !== 'document';
+  $('mr').required = kind === 'code';
+  $('document-url').required = kind === 'document';
+  for (const option of all('#mode option')) option.textContent = option.dataset[kind] || option.textContent;
+  renderModelFields();
+}
+for (const input of all('#kind input')) input.onchange = renderKind;
 
 function modelField(role) {
   const field = el('div', '', 'field model-field');
@@ -1175,6 +1237,11 @@ const delay = (ms, signal) => new Promise(resolve => {
 
 function render(review) {
   for (const id of ['replay', 'recheck', 'recheck-tab-action', 'recheck-report-action']) $(id).hidden = !review.capabilities?.execute;
+  // A page has no threads to recheck.
+  const isDocument = review.kind === 'document';
+  for (const id of ['recheck', 'recheck-tab-action', 'recheck-report-action']) if (isDocument) $(id).hidden = true;
+  $('tab-recheck').hidden = isDocument;
+  if (isDocument && $('tab-recheck').getAttribute('aria-selected') === 'true') $('tab-activity').click();
 
   current = review;
   if (review.state === 'PUBLISHED' && commentsLoadedFor !== selected && commentsLoadingFor !== selected) refreshComments();
@@ -1381,25 +1448,39 @@ $('trigger').onsubmit = async event => {
   event.preventDefault();
   $('start').disabled = true;
   const data = new FormData(event.target);
-  const body = {
-    merge_request_url: data.get('merge_request_url'),
-    report_mode: data.get('report_mode'),
-    document_urls: data.get('documents').split('\n').map(line => line.trim()).filter(Boolean),
-  };
-  for (const key of ['issue_key', 'epic_key']) if (data.get(key).trim()) body[key] = data.get(key).trim();
+  const kind = data.get('kind') || 'code';
+  const lines = name => (data.get(name) || '').split('\n').map(line => line.trim()).filter(Boolean);
+  const body = kind === 'document'
+    ? {
+      document_url: data.get('document_url'),
+      report_mode: data.get('report_mode'),
+      supporting_urls: lines('supporting_urls'),
+      check_space: data.get('check_space') === 'on',
+    }
+    : {
+      merge_request_url: data.get('merge_request_url'),
+      report_mode: data.get('report_mode'),
+      document_urls: lines('documents'),
+    };
+  if (kind === 'document' && (data.get('instruction') || '').trim()) body.instruction = data.get('instruction').trim();
+  if (kind === 'code') for (const key of ['issue_key', 'epic_key']) if (data.get(key).trim()) body[key] = data.get(key).trim();
   // Only the roles actually moved: every other role stays on project policy,
   // and a run that names nothing is exactly a webhook run.
-  const models = chosenModels(modelChoice);
+  const chosen = chosenModels(modelChoice);
+  const models = Object.fromEntries(rolesFor(kind, Object.keys(chosen)).map(role => [role, chosen[role]]));
   if (Object.keys(models).length) body.models = models;
   try {
-    const job = await (await request('/admin/reviews', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
+    const endpoint = kind === 'document' ? '/admin/document-reviews' : '/admin/reviews';
+    const job = await (await request(endpoint, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
     notice('Review queued. Waiting for worker admission…', 'ok');
     $('empty').hidden = false;
     $('review').hidden = true;
     $('empty').replaceChildren(
       el('span', '◈', 'symbol'),
       el('h2', 'Review queued'),
-      el('p', `Project ${job.project_id} · merge request !${job.iid}. Waiting for worker admission…`, 'muted'),
+      el('p', kind === 'document'
+        ? `${job.subject?.title || 'Page'} (version ${job.subject?.version ?? '?'}). Waiting for worker admission…`
+        : `Project ${job.project_id} · merge request !${job.iid}. Waiting for worker admission…`, 'muted'),
     );
     controller?.abort();
     controller = new AbortController();
@@ -1409,7 +1490,9 @@ $('trigger').onsubmit = async event => {
       const review = await (await request(job.poll, {signal})).json();
       if (review.id) { select(review.id); break; }
       if (['CONFLICT', 'REJECTED'].includes(review.state)) {
-        const message = review.state === 'CONFLICT' ? 'Another review is active for this merge request. Try again after it finishes.' : 'The queued review is no longer eligible. Check your account, credentials and merge request.';
+        const message = review.state === 'CONFLICT'
+          ? `Another review is active for this ${kind === 'document' ? 'page' : 'merge request'}. Try again after it finishes.`
+          : `The queued review is no longer eligible. Check your account, credentials and ${kind === 'document' ? 'page' : 'merge request'}.`;
         $('empty').replaceChildren(el('h2', 'Review not admitted'), el('p', message));
         throw new Error(message);
       }
@@ -1509,7 +1592,7 @@ $('nav-profile').onclick = async () => {
   if (admin) return;
 
   root.append(el('h3', 'Integrations'));
-  root.append(el('p', 'Personal credentials used whenever you trigger a review. Gateway and GitLab are required; Jira and Confluence unlock requirement linkage.', 'hint'));
+  root.append(el('p', 'Personal credentials used whenever you trigger a review. Gateway and GitLab are required for merge requests; Jira and Confluence unlock requirement linkage. Document reviews need Gateway and Confluence.', 'hint'));
   try {
     const statuses = await (await request('/profile/integrations')).json();
     for (const [name, state] of Object.entries(statuses)) {

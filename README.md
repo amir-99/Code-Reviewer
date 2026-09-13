@@ -620,3 +620,70 @@ reviewed head, and the same MR lock as worker publication. Admins have read-only
 visibility. Silent enforcement disables comment writes. Migration `0008` adds
 private durable comment receipts and action metadata; existing reports reconcile
 with GitLab when their owner opens or refreshes the comment controls.
+
+## Document reviews
+
+The same service reviews a Confluence page. A signed-in user pastes a page link
+into the dashboard's **Document** form (or `POST /admin/document-reviews`) and may
+add supporting pages, a custom instruction and a **check the space** flag. The
+request body:
+
+| Field | Meaning |
+|---|---|
+| `document_url` | The page to review; any of the four Confluence URL forms, on the configured origin. |
+| `supporting_urls` | Up to 20 pages the document is checked against. Read first, before anything discovered. |
+| `instruction` | Up to 4000 characters steering what the reviewer looks for. Framed as operator text: it narrows the review and cannot change categories, anchors or output. |
+| `check_space` | Also list the page's space and read the most related pages (Confluence CQL search seeded from the title, headings and body vocabulary). |
+| `report_mode` | `applied` posts page comments per policy, `draft` holds them for the owner to publish from the Comments tab, `none` stores the report only. |
+| `models` | Per-role override for `document_review`, `document_verification` and `chat`. |
+
+A document review needs the user's personal **Gateway** and **Confluence**
+credentials; there is no installation fallback and no system-owned document
+review. The API resolves the page with the user's token and records its id,
+space, title and version; the worker admits the run — one active review per
+page, same-owner reruns supersede, another owner's run conflicts — and reviews
+the version current at admission.
+
+The pipeline is `INIT → CONTEXT_COLLECTION → DOCUMENT_REVIEW →
+EVIDENCE_VALIDATION → FINDING_VERIFICATION → FINALIZATION → DECISION →
+PUBLISHED`. Context collection fetches the subject, supporting pages, children
+(when `documents.child_depth` > 0) and space pages into a local, secret-scanned
+and redacted corpus split by heading; the model reviews the subject's sections
+in groups and may ask for `search`, `section`, `page`, `space_search` and
+`comments`, all answered from that corpus (space search returns titles and
+Confluence excerpts only). Findings anchor to a heading path and a verbatim
+quote: code drops any quote that does not occur on the page, and a consistency
+finding must locate the passage it conflicts with. Categories are `accuracy`,
+`consistency`, `security`, `prompt_injection` (REQUIRED/BLOCKER, verified
+independently), `completeness`, `outdated`, `clarity`, `structure`
+(SUGGESTION), `terminology` and `style` (NIT). Blockers stay advisory.
+
+Publication writes Confluence **footer comments** — one per REQUIRED/SUGGESTION
+finding up to `document_review.max_comments`, plus a summary carrying
+`<!-- ai-review:summary=<page>@<version> -->` — through the owner's token, with
+the same fingerprint and owner markers as merge-request comments, so a rerun
+reconciles instead of reposting. `document_review.inline_comments: true` tries
+Confluence Data Center's undocumented inline payload first and falls back to a
+footer comment when it is rejected. There is no commit status: `enforcement`
+decides only whether Confluence may be written (`silent` writes nothing, drafts
+included). Document reviews read the default project profile (`defaults` in
+`config/projects.json`); the operator keys are:
+
+```json
+"document_review": {
+  "token_ceiling": 150000, "timeout_s": 1200, "unit_tokens": 8000,
+  "unit_concurrency": 2, "context_rounds": 1, "max_comments": 15,
+  "inline_comments": false, "space_pages": 30, "space_related": 5
+}
+```
+
+Confluence endpoints used, all on the configured origin: `GET
+/rest/api/user/current`, `GET /rest/api/content/{id}?expand=body.storage,version,space`,
+`GET /rest/api/content/{id}/child/comment`, `POST /rest/api/content`
+(type `comment`), `PUT`/`DELETE /rest/api/content/{id}`, `GET
+/rest/api/content/search?cql=…` and `GET /rest/api/space/{key}/content/page`.
+The PAT needs read access to the pages and comment permission on the reviewed
+page. Resolving inline comment threads is not supported. The Comments tab
+publishes, edits and removes the review's own comments; the Ask tab answers
+questions from the record and, on request, re-reads the pages at their current
+version. Migration `0011` adds the `kind`, `subject` and `subject_key` columns.

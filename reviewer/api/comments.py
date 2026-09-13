@@ -30,6 +30,10 @@ class Action(Input):
 
 @asynccontextmanager
 async def manager(request, review, mutate=False):
+    if review.kind == "document":
+        async with document_manager(request, review, mutate) as comments:
+            yield comments
+        return
     store, settings = request.app.state.store, request.app.state.settings
     project = await store.project_number(review)
     config = load_project(settings.config_path, project)
@@ -101,6 +105,89 @@ async def manager(request, review, mutate=False):
             personal_secrets.reset(secret_token)
 
 
+@asynccontextmanager
+async def document_manager(request, review, mutate=False):
+    """The document counterpart: the owner's Confluence token, one page lock."""
+    from reviewer.accounts.execution import PersonalDocs
+    from reviewer.publish.document_comments import DocumentComments
+    from reviewer.services.docs.confluence import Confluence, DocumentRef
+
+    store, settings = request.app.state.store, request.app.state.settings
+    config = load_project(settings.config_path, 0)
+    frozen = (review.execution_config or {}).get("config")
+    if frozen:
+        frozen = ProjectConfig.model_validate(frozen)
+    if mutate:
+        if config.enforcement == "silent" or (
+            frozen and frozen.enforcement == "silent"
+        ):
+            raise HTTPException(
+                409, "Comment writes are disabled by silent enforcement"
+            )
+        if review.state != "PUBLISHED" or review.superseded_by:
+            raise HTTPException(
+                409, "Only completed, current reviews can manage comments"
+            )
+    config = frozen or config
+    service = Credentials(store, settings)
+    context = await service.load(review.owner_user_id, review.credential_refs or {})
+    if not context.tokens.get("confluence"):
+        raise CredentialUnavailable("No personal Confluence credential")
+    docs = (getattr(request.app.state, "personal_docs_factory", None) or Confluence)(
+        settings.confluence_base_url, context.tokens["confluence"]
+    )
+    secret_token = personal_secrets.set(tuple(context.tokens.values()))
+    subject = review.subject or {}
+    try:
+
+        async def guard():
+            await service.check_access(context)
+
+        if str(await docs.identity()) != review.principal_id:
+            raise CredentialUnavailable("Publishing identity changed")
+        client = PersonalDocs(
+            docs,
+            guard,
+            review.principal_id,
+            subject.get("page_id"),
+            subject.get("version", 0),
+        )
+        client.owner_user_id = review.owner_user_id
+        async with store.review_lock(review):
+            latest = await store.get(review.id)
+            if mutate and (latest.state != "PUBLISHED" or latest.superseded_by):
+                raise HTTPException(409, "Review is no longer current")
+            comments = DocumentComments(store, client, review, config)
+            page = await docs.fetch(
+                DocumentRef(
+                    page_id=str(subject.get("page_id")), url=subject.get("url", "")
+                )
+            )
+            from reviewer.api.review_links import review_links
+
+            comments.links = review_links(
+                await store.snapshot(review.id) or {}, review.overrides, settings
+            )
+            comments.can_manage = (
+                latest.state == "PUBLISHED"
+                and not latest.superseded_by
+                and config.enforcement != "silent"
+                and load_project(settings.config_path, 0).enforcement != "silent"
+                and page is not None
+                and int(page.version) == int(subject.get("version", 0))
+            )
+            if mutate and not comments.can_manage:
+                raise HTTPException(
+                    409, "Review is no longer eligible for comment changes"
+                )
+            yield comments
+    finally:
+        try:
+            await docs.close()
+        finally:
+            personal_secrets.reset(secret_token)
+
+
 @router.get("/{review_id}/comments")
 async def inspect(review_id: str, request: Request):
     review = await review_access(request, review_id)
@@ -123,7 +210,7 @@ async def inspect(review_id: str, request: Request):
             "comments": list(rows.values()),
             "can_manage": False,
             "synced": False,
-            "error": "Could not refresh GitLab comments; showing last known state",
+            "error": "Could not refresh comments; showing last known state",
         }
 
 
@@ -165,6 +252,7 @@ async def act(review_id: str, body: Action, request: Request):
                             or (
                                 key != "summary"
                                 and row.get("status") != "drafted"
+                                and review.kind != "document"
                                 and not row.get("position")
                             )
                         )
@@ -187,7 +275,7 @@ async def act(review_id: str, body: Action, request: Request):
                     error = (
                         str(exc)
                         if isinstance(exc, CommentConflict)
-                        else "GitLab action unavailable or review eligibility changed"
+                        else "Comment action unavailable or review eligibility changed"
                     )
                     results.append({"key": key, "status": "failed", "error": error})
             try:
@@ -207,4 +295,4 @@ async def act(review_id: str, body: Action, request: Request):
             409, "Personal credentials or review eligibility changed"
         ) from None
     except httpx.HTTPError:
-        raise HTTPException(502, "GitLab comments are unavailable") from None
+        raise HTTPException(502, "Comments are unavailable") from None

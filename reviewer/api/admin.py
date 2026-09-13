@@ -7,6 +7,7 @@ from reviewer.api.accounts import authenticate
 from reviewer.config.loader import load_project
 from reviewer.config.models import assignment, catalog, resolve
 from reviewer.config.schema import ROLES
+from reviewer.store.repositories import subject_view
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
 
@@ -105,9 +106,11 @@ async def inspect(review_id: str, request: Request):
         )
     }
     body["owner_user_id"] = review.owner_user_id
+    body["kind"] = review.kind
+    body["subject"] = subject_view(review.subject)
     body["missing_integrations"] = (
         sorted({"jira", "confluence"} - (review.credential_refs or {}).keys())
-        if review.owner_user_id
+        if review.owner_user_id and review.kind != "document"
         else []
     )
     owner = (
@@ -172,6 +175,11 @@ def summarise(finding):
         "line_start": anchor.get("line_start"),
         "line_end": anchor.get("line_end"),
         "introduced_by_this_change": anchor.get("introduced_by_this_change"),
+        # Document findings anchor on a quoted passage of a page section.
+        "page_id": anchor.get("page_id"),
+        "heading_path": anchor.get("heading_path"),
+        "quote": anchor.get("quote"),
+        "related": finding.get("related") or [],
         "evidence": finding.get("evidence") or [],
         "verdict": verification.get("verdict"),
         "resolution": finding.get("resolution"),
@@ -181,6 +189,10 @@ def summarise(finding):
 @router.post("/reviews/{review_id}/replay")
 async def replay(review_id: str, request: Request):
     review = await review_access(request, review_id, execute=True)
+    if review.kind == "document":
+        from reviewer.api.document_reviews import replay_document
+
+        return await replay_document(review, request)
     project_id = await request.app.state.store.project_number(review)
     from reviewer.accounts.credentials import Credentials, CredentialUnavailable
     from reviewer.api.webhooks import ReviewJob
@@ -241,6 +253,8 @@ async def recheck(review_id: str, request: Request):
     the threads that are already open.
     """
     review = await review_access(request, review_id, execute=True)
+    if review.kind == "document":
+        raise HTTPException(409, "Document reviews have no threads to recheck")
     project_id = await request.app.state.store.project_number(review)
     await request.app.state.queue.enqueue_job(
         "recheck_review", project_id, review.mr_iid, str(review.id)

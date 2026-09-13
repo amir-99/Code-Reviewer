@@ -11,6 +11,7 @@ from reviewer.api import (
     admin,
     chat,
     comments,
+    document_reviews,
     events,
     health,
     manual,
@@ -90,6 +91,7 @@ def create_app(settings=None, store=None, queue=None, forge=None):
         comments.router,
         chat.router,
         manual.router,
+        document_reviews.router,
         health.router,
         events.router,
     ):

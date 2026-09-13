@@ -16,6 +16,7 @@ export const FLOW = [
   {state: 'CONTEXT_COLLECTION', label: 'Context', note: 'repository, requirements'},
   {state: 'STATIC_ANALYSIS', label: 'Static analysis', note: 'scanners'},
   {state: 'DEFECT_REVIEW', label: 'Defect review', stage: 'defect_review', note: 'concurrent chunks'},
+  {state: 'DOCUMENT_REVIEW', label: 'Document review', stage: 'document_review', note: 'page sections'},
   {state: 'PURPOSE_REVIEW', label: 'Purpose', stage: 'purpose', note: 'gate'},
   {state: 'DESIGN_REVIEW', label: 'Design', stage: 'design', note: 'gate'},
   {state: 'ANALYSIS_FAN_OUT', label: 'Analysis', note: 'concurrent', lanes: [
@@ -57,8 +58,14 @@ export function walk(state, history = [], stages = new Map(), at = new Map()) {
   const walked = history.length ? history : [state];
   const seen = new Set(walked);
   const standard = seen.has('DEFECT_REVIEW') || state === 'DEFECT_REVIEW' || stages.has('defect_review');
+  // A document review reads pages, not a repository: no static analysis and a
+  // single review stage in place of the code stages.
+  const document = seen.has('DOCUMENT_REVIEW') || state === 'DOCUMENT_REVIEW' || stages.has('document_review');
   const deepStates = new Set(['PURPOSE_REVIEW', 'DESIGN_REVIEW', 'ANALYSIS_FAN_OUT', 'SYSTEM_CONTEXT_REVIEW']);
-  const flow = FLOW.filter(s => standard ? !deepStates.has(s.state) : s.state !== 'DEFECT_REVIEW');
+  const codeStates = new Set(['STATIC_ANALYSIS', 'DEFECT_REVIEW', ...deepStates]);
+  const flow = FLOW.filter(s => document ? !codeStates.has(s.state)
+    : s.state === 'DOCUMENT_REVIEW' ? false
+    : standard ? !deepStates.has(s.state) : s.state !== 'DEFECT_REVIEW');
   const pipeline = flow.map(s => s.state);
   const reached = Math.max(0, ...[...walked, state].map(s => pipeline.indexOf(s)));
   const terminal = TERMINAL.has(state);

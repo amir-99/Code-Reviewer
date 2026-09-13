@@ -85,6 +85,8 @@ async def receive_event(ctx, payload):
     from reviewer.accounts.credentials import Credentials, CredentialUnavailable
     from reviewer.store.models import ReviewTrigger
 
+    if payload.get("kind") == "document":
+        return await receive_document(ctx, payload)
     job = ReviewJob.model_validate(payload)
     async with ctx["store"].sessions() as session:
         trigger = await session.get(ReviewTrigger, job.event_id)
@@ -201,6 +203,76 @@ async def _receive_event(ctx, payload):
     await ctx["redis"].enqueue_job("run_review", review.id, _job_id=f"run:{review.id}")
 
 
+async def receive_document(ctx, payload):
+    """Admit a document review: the page must still be visible to the owner."""
+    from reviewer.accounts.credentials import Credentials, CredentialUnavailable
+    from reviewer.api.document_reviews import DocumentJob
+    from reviewer.services.docs.confluence import Confluence, DocumentRef
+    from reviewer.store.models import ReviewTrigger
+
+    job = DocumentJob.model_validate(payload)
+    store = ctx["store"]
+    async with store.sessions() as session:
+        trigger = await session.get(ReviewTrigger, job.event_id)
+    if trigger is None or trigger.state != "QUEUED":
+        return
+    settings = ctx.get("settings") or ctx["machine"].settings
+    logger.info(
+        "receive_document",
+        page_id=job.subject.page_id,
+        version=job.subject.version,
+        event_id=job.event_id,
+    )
+    try:
+        context = await Credentials(store, settings).load(
+            trigger.owner_user_id, trigger.credential_refs
+        )
+        if not context.tokens.get("confluence"):
+            raise CredentialUnavailable("No personal Confluence credential")
+        docs = (ctx.get("personal_docs_factory") or Confluence)(
+            settings.confluence_base_url, context.tokens["confluence"]
+        )
+        try:
+            if str(await docs.identity()) != job.principal_id:
+                raise CredentialUnavailable("Publishing identity changed")
+            page = await docs.fetch(
+                DocumentRef(page_id=job.subject.page_id, url=job.subject.url)
+            )
+        finally:
+            await docs.close()
+    except CredentialUnavailable:
+        async with store.transaction() as session:
+            saved = await session.get(ReviewTrigger, job.event_id)
+            saved.state = "REJECTED"
+        return
+    if page is None:
+        async with store.transaction() as session:
+            saved = await session.get(ReviewTrigger, job.event_id)
+            saved.state = "REJECTED"
+        logger.info("document_skipped", page_id=job.subject.page_id)
+        return
+    # The page may have moved on since the link was pasted; review what is there
+    # now and record that version, as a merge request run reads the current head.
+    subject = job.subject.model_dump() | {"version": page.version, "title": page.title}
+    review = await store.accept_document(
+        subject,
+        job.event_id,
+        job.overrides.model_dump(),
+        owner_user_id=trigger.owner_user_id,
+        credential_refs=trigger.credential_refs,
+        principal_id=job.principal_id,
+    )
+    if review is None:
+        return {"accepted": False, "reason": "conflict"}
+    logger.info(
+        "document_review_admitted",
+        review_id=review.id,
+        page_id=subject["page_id"],
+        version=subject["version"],
+    )
+    await ctx["redis"].enqueue_job("run_review", review.id, _job_id=f"run:{review.id}")
+
+
 async def run_review(ctx, review_id):
     from opentelemetry import trace
 
@@ -219,8 +291,22 @@ async def run_review(ctx, review_id):
         # itself has ended; it is best effort and never fails the review.
         await open_run(ctx["store"], review_id)
         try:
-            project = await ctx["store"].project_number(review)
-            async with ctx["store"].mr_lock(project, review.mr_iid):
+            async with ctx["store"].review_lock(review):
+                if review.kind == "document":
+                    from reviewer.accounts.credentials import CredentialUnavailable
+                    from reviewer.accounts.execution import personal_document_machine
+
+                    try:
+                        async with personal_document_machine(ctx, review) as machine:
+                            return await machine.run(review_id)
+                    except CredentialUnavailable:
+                        await ctx["store"].transition(
+                            review_id,
+                            "FAILED_CONTEXT",
+                            partial=True,
+                            error="Account or pinned credentials unavailable",
+                        )
+                        return
                 if review.owner_user_id:
                     from reviewer.accounts.credentials import CredentialUnavailable
                     from reviewer.accounts.execution import personal_machine

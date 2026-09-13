@@ -19,7 +19,7 @@ from reviewer.findings.policy import normalize
 from reviewer.findings.validator import validate
 from reviewer.orchestrator.budget import BudgetTracker
 from reviewer.orchestrator.stages import execute
-from reviewer.orchestrator.states import TERMINAL
+from reviewer.orchestrator.states import ORDER, TERMINAL
 from reviewer.orchestrator.verification import verify_findings
 from reviewer.publish.publisher import Publisher
 from reviewer.publish.rereview import full_review, reanchor
@@ -893,21 +893,7 @@ class Pipeline:
         current = await self.store.get(review.id)
         if current.state in TERMINAL:
             raise StaleReview()
-        order = [
-            "INIT",
-            "CONTEXT_COLLECTION",
-            "STATIC_ANALYSIS",
-            "DEFECT_REVIEW",
-            "PURPOSE_REVIEW",
-            "DESIGN_REVIEW",
-            "ANALYSIS_FAN_OUT",
-            "SYSTEM_CONTEXT_REVIEW",
-            "EVIDENCE_VALIDATION",
-            "FINDING_VERIFICATION",
-            "FINALIZATION",
-            "DECISION",
-        ]
-        if order.index(current.state) < order.index(state):
+        if ORDER.index(current.state) < ORDER.index(state):
             logger.info(
                 "state_transition",
                 review_id=review.id,

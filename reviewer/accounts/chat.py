@@ -107,7 +107,8 @@ async def _answer(ctx, review, snapshot, message):
 
     store = ctx["store"]
     settings = ctx.get("settings") or ctx["machine"].settings
-    project = await store.project_number(review)
+    # Document reviews have no GitLab project; they run on the default profile.
+    project = await store.project_number(review) or 0
     frozen = (review.execution_config or {}).get("config") or snapshot.get("config")
     config = (
         ProjectConfig.model_validate(frozen)
@@ -160,24 +161,37 @@ async def _answer(ctx, review, snapshot, message):
                 )
         git = (
             (ctx.get("chat_git_factory") or _git)(settings, review, tokens, GitService)
-            if tokens.get("gitlab")
+            if tokens.get("gitlab") and review.kind != "document"
             else None
         )
         redactor = Redactor()
-        sources = ChatSources(
-            store,
-            review,
-            snapshot,
-            config,
-            git=git,
-            repo_url=((snapshot.get("bundle") or {}).get("mr") or {}).get(
-                "repository_url", ""
-            ),
-            issues=issues if issues else ctx.get("chat_issues"),
-            docs=docs if docs else ctx.get("chat_docs"),
-            scanner=ctx.get("chat_scanner") or SecretScanner(),
-            redactor=redactor,
-        )
+        if review.kind == "document":
+            from reviewer.context.document_chat_context import DocumentChatSources
+
+            sources = DocumentChatSources(
+                store,
+                review,
+                snapshot,
+                config,
+                docs=docs if docs else ctx.get("chat_docs"),
+                scanner=ctx.get("chat_scanner") or SecretScanner(),
+                redactor=redactor,
+            )
+        else:
+            sources = ChatSources(
+                store,
+                review,
+                snapshot,
+                config,
+                git=git,
+                repo_url=((snapshot.get("bundle") or {}).get("mr") or {}).get(
+                    "repository_url", ""
+                ),
+                issues=issues if issues else ctx.get("chat_issues"),
+                docs=docs if docs else ctx.get("chat_docs"),
+                scanner=ctx.get("chat_scanner") or SecretScanner(),
+                redactor=redactor,
+            )
         models = resolve(personal, config)
         spec = models.get("chat")
         if spec is None:

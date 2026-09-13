@@ -22,11 +22,13 @@ Orchestration is an ordinary Python state machine, not an agent framework.
 
 ## Repository map
 
-- `reviewer/api/`: webhook authentication, manual triggering, health,
-  administration, and metrics.
+- `reviewer/api/`: webhook authentication, manual triggering, document review
+  triggering, health, administration, and metrics.
 - `reviewer/worker.py`: arq startup, event handling, job execution, recovery sweep.
-- `reviewer/orchestrator/`: legal transitions, pipeline, stage execution, budgets.
-- `reviewer/context/`: requirement linkage, sanitization, bundles, work units.
+- `reviewer/orchestrator/`: legal transitions, pipeline, document pipeline,
+  stage execution, budgets.
+- `reviewer/context/`: requirement linkage, sanitization, bundles, work units,
+  the document corpus.
 - `reviewer/services/`: GitLab, Jira, Confluence, Git, LLM, secrets, static tools,
   and tree-sitter symbol indexing; external-service fakes live alongside clients.
 - `reviewer/agents/`: stage contracts and versioned prompt templates.
@@ -281,3 +283,42 @@ never proposes findings. Its calls are audited with `stage="chat"`, excluded
 from the review's spend totals and from the budget a resumed run recomputes,
 and capped by `chat.token_ceiling` per review. Keep questions and answers
 redacted and the prompt versioned under `agents/prompts/chat/`.
+
+
+### Document reviews
+
+`reviews.kind` is `code` or `document`. A document review has no project or
+merge request: `subject` records the Confluence page (id, space, title, url,
+version), `subject_key` (`confluence:<page_id>`) drives the one-active-review
+index `uq_active_document_review`, and `head_sha` holds the page version.
+Events, snapshots, stages, findings, comment rows, chat and spend share the
+code review's tables; `Store.review_lock` picks the MR lock or the page lock
+by kind, and `project_number` returns `None` for documents (config comes from
+the default profile, project `0`).
+
+`POST /admin/document-reviews` resolves the page with the caller's own
+Confluence token and enqueues a `DocumentJob` (`kind: "document"`); the worker
+dispatches on that key, re-checks identity and visibility, and admits through
+`Store.accept_document`. Document reviews are always owner-run: Gateway and
+Confluence credentials are required, never installation secrets. Legal
+transitions add `CONTEXT_COLLECTION → DOCUMENT_REVIEW → EVIDENCE_VALIDATION`;
+`ORDER` in `orchestrator/states.py` is the shared forward order.
+
+`DocumentCorpus` fetches every page once, scans and redacts it, and splits it by
+heading; the model's `search`/`section`/`page`/`space_search`/`comments`
+requests are answered from that corpus, never by browsing, and space search
+returns titles and Confluence excerpts only. The operator `instruction` is
+framed as `operator-instruction` and may narrow the review; it cannot change
+the contract. Findings (`findings/document.py`) anchor to a heading path and a
+verbatim quote that code locates on the page; fingerprints are computed in code
+from page, category, quote and claim. Roles are `document_review` and
+`document_verification`; the verifier sees claim and passages only.
+
+Publication (`publish/document_publisher.py`) writes Confluence footer comments
+through `PersonalDocs`, which re-checks identity and page version before every
+write and only edits or deletes comments carrying this owner's marker. Inline
+comments are best effort behind `document_review.inline_comments` and fall back
+to footer. `draft` stores rows as `drafted` and writes nothing; `silent`
+enforcement writes nothing, drafts included; there is no commit status and no
+recheck. CQL strings pass through `cql_string`; never interpolate model text
+into a query. Keep Confluence writes off the installation token.

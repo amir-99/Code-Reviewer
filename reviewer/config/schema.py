@@ -32,6 +32,9 @@ ROLES = (
     "verification",
     "recheck",
     "chat",
+    # Document reviews: the section reviewer and its independent verifier.
+    "document_review",
+    "document_verification",
 )
 
 # Roles the code asked for before selection was per-role. Retained so a gateway
@@ -56,6 +59,8 @@ DEFAULT_ROLE_MODELS = {
     "verification": "anthropic/claude-sonnet-5",
     "recheck": "google/gemini-3.8-flash",
     "chat": "google/gemini-3.8-flash",
+    "document_review": "google/gemini-3.8-flash",
+    "document_verification": "anthropic/claude-sonnet-5",
 }
 
 MODEL_ID = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$"
@@ -152,6 +157,28 @@ class ChatConfig(Strict):
     history_turns: int = Field(default=6, ge=0, le=20)
 
 
+class DocumentReviewConfig(Strict):
+    """Reviews of Confluence pages. Operator-only; no repository YAML applies.
+
+    The corpus is bounded twice: `documents.max_tokens` caps what is fetched, and
+    `token_ceiling` caps what the run may spend reasoning over it. Space
+    comparison never reads a whole space: an inventory of titles plus the top
+    related pages by Confluence's own search.
+    """
+
+    token_ceiling: int = Field(default=150000, ge=1000)
+    timeout_s: int = Field(default=1200, ge=60, le=2400)
+    unit_tokens: int = Field(default=8000, ge=256, le=20000)
+    unit_concurrency: int = Field(default=2, ge=1, le=8)
+    context_rounds: int = Field(default=1, ge=0, le=3)
+    # Per-finding comments posted to the page; the summary is separate.
+    max_comments: int = Field(default=15, ge=0, le=30)
+    # Try Confluence's undocumented inline-comment payload before a footer comment.
+    inline_comments: bool = False
+    space_pages: int = Field(default=30, ge=0, le=200)
+    space_related: int = Field(default=5, ge=0, le=20)
+
+
 class StaticTool(Strict):
     name: str
     image: str
@@ -190,6 +217,7 @@ class ProjectConfig(Strict):
     models: ModelProfile = Field(default_factory=ModelProfile)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
+    document_review: DocumentReviewConfig = Field(default_factory=DocumentReviewConfig)
     static_tools: list[StaticTool] = []
     languages: list[Literal["python", "typescript", "go"]] = [
         "python",

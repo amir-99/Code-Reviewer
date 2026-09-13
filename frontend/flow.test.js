@@ -146,3 +146,17 @@ test('legacy coverage and concurrent lane aggregation preserve unknown totals', 
   progress.accept({kind: 'stage_coverage', data: {name: 'tests_', examined: 2, skipped: 0}});
   assert.deepEqual(progress.get(step), {total: 6, completed: 5, running: 0, idle: 0, stopped: 1});
 });
+
+test('a document review walks the page flow without the code stages', () => {
+  const history = ['INIT', 'CONTEXT_COLLECTION', 'DOCUMENT_REVIEW', 'EVIDENCE_VALIDATION'];
+  const {steps} = walk('EVIDENCE_VALIDATION', history);
+  assert.deepEqual(steps.map(s => s.state), [
+    'INIT', 'CONTEXT_COLLECTION', 'DOCUMENT_REVIEW', 'EVIDENCE_VALIDATION',
+    'FINDING_VERIFICATION', 'FINALIZATION', 'DECISION', 'PUBLISHED',
+  ]);
+  assert.equal(steps[2].status, 'done');
+  assert.equal(steps[3].status, 'active');
+  // A merge request review never shows the document step.
+  assert.ok(!walk('DEFECT_REVIEW', ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'DEFECT_REVIEW'])
+    .steps.some(s => s.state === 'DOCUMENT_REVIEW'));
+});

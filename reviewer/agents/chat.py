@@ -21,7 +21,11 @@ PROMPT_LIMIT_RATIO = 0.7
 
 
 class ChatContextRequest(Schema):
-    kind: Literal["file", "symbol", "issue", "page", "events", "comments"]
+    # `search` and `section` apply to document reviews, whose sources answer
+    # them from the pages the review read.
+    kind: Literal[
+        "file", "symbol", "issue", "page", "events", "comments", "search", "section"
+    ]
     target: str = Field(default="", max_length=300)
     reason: str = Field(default="", max_length=300)
     line_start: int | None = Field(default=None, ge=1)

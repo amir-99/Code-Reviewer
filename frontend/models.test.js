@@ -69,3 +69,12 @@ test('roles are labelled for people, not for Python', () => {
   assert.equal(roleLabel('system_context'), 'System context');
   assert.equal(roleLabel('unknown_role'), 'unknown_role');
 });
+
+test('each review kind selects models for its own roles', async () => {
+  const {rolesFor, DOCUMENT_ROLES} = await import('./models.js');
+  const roles = ['defect_review', 'verification', 'chat', 'document_review', 'document_verification'];
+  assert.deepEqual(rolesFor('document', roles), ['chat', 'document_review', 'document_verification']);
+  assert.equal(DOCUMENT_ROLES.length, 3);
+  assert.deepEqual(rolesFor('code', roles), ['defect_review', 'verification', 'chat']);
+  assert.equal(roleLabel('document_review'), 'Document review');
+});

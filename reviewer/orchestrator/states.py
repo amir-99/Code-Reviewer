@@ -6,6 +6,8 @@ class ReviewState(StrEnum):
     CONTEXT_COLLECTION = "CONTEXT_COLLECTION"
     STATIC_ANALYSIS = "STATIC_ANALYSIS"
     DEFECT_REVIEW = "DEFECT_REVIEW"
+    # Document reviews: the single analysis stage over page sections.
+    DOCUMENT_REVIEW = "DOCUMENT_REVIEW"
     PURPOSE_REVIEW = "PURPOSE_REVIEW"
     DESIGN_REVIEW = "DESIGN_REVIEW"
     ANALYSIS_FAN_OUT = "ANALYSIS_FAN_OUT"
@@ -34,12 +36,16 @@ TERMINAL = frozenset(
 )
 LEGAL = {
     ReviewState.INIT: {ReviewState.CONTEXT_COLLECTION, ReviewState.FINALIZATION},
-    ReviewState.CONTEXT_COLLECTION: {ReviewState.STATIC_ANALYSIS},
+    ReviewState.CONTEXT_COLLECTION: {
+        ReviewState.STATIC_ANALYSIS,
+        ReviewState.DOCUMENT_REVIEW,
+    },
     ReviewState.STATIC_ANALYSIS: {
         ReviewState.PURPOSE_REVIEW,
         ReviewState.DEFECT_REVIEW,
     },
     ReviewState.DEFECT_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
+    ReviewState.DOCUMENT_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
     ReviewState.PURPOSE_REVIEW: {
         ReviewState.DESIGN_REVIEW,
     },
@@ -60,6 +66,25 @@ for state in set(ReviewState) - TERMINAL:
         ReviewState.CANCELLED,
         ReviewState.SUPERSEDED,
     }
+
+
+# Forward order of the working states. `advance` only ever moves a review to a
+# later entry, so a stage a run does not visit is simply skipped.
+ORDER = [
+    "INIT",
+    "CONTEXT_COLLECTION",
+    "STATIC_ANALYSIS",
+    "DEFECT_REVIEW",
+    "DOCUMENT_REVIEW",
+    "PURPOSE_REVIEW",
+    "DESIGN_REVIEW",
+    "ANALYSIS_FAN_OUT",
+    "SYSTEM_CONTEXT_REVIEW",
+    "EVIDENCE_VALIDATION",
+    "FINDING_VERIFICATION",
+    "FINALIZATION",
+    "DECISION",
+]
 
 
 def check_transition(old: str, new: str) -> None:

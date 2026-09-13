@@ -51,6 +51,11 @@ class ReviewOverrides(BaseModel):
     # model behaves exactly like a webhook run. Persisted with the review, so a
     # replay reruns on the models the run was triggered with.
     models: dict[str, str] = Field(default_factory=dict)
+    # Document reviews only. The instruction steers what the reviewer looks
+    # for; it is framed as operator text and can never change the contract.
+    instruction: str | None = Field(default=None, max_length=4000)
+    supporting_urls: list[str] = Field(default_factory=list, max_length=20)
+    check_space: bool = False
 
 
 class Hunk(BaseModel):

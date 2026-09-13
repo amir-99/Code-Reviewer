@@ -12,7 +12,14 @@ export const ROLE_LABELS = {
   purpose: 'Purpose', design: 'Design', correctness: 'Correctness', complexity: 'Complexity',
   defect_review: 'Defect review', tests_: 'Tests', line_review: 'Line review', system_context: 'System context',
   verification: 'Verification', recheck: 'Recheck', chat: 'Chat',
+  document_review: 'Document review', document_verification: 'Document verification',
 };
+
+// Which roles a run of each kind selects a model for.
+export const DOCUMENT_ROLES = ['document_review', 'document_verification', 'chat'];
+export const rolesFor = (kind, roles) => roles.filter(role => kind === 'document'
+  ? DOCUMENT_ROLES.includes(role)
+  : !DOCUMENT_ROLES.includes(role) || role === 'chat');
 
 // Tools that call a model of their own rather than inheriting a stage's.
 export const TOOL_ROLES = {'Independent verifier': 'verification', 'Fix recheck': 'recheck'};

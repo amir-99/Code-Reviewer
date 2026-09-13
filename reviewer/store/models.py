@@ -52,8 +52,16 @@ class Review(Base):
     credential_refs: Mapped[dict | None] = mapped_column(json_type)
     principal_id: Mapped[str | None] = mapped_column(String(128))
     event_id: Mapped[str] = mapped_column(String(128), unique=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
-    mr_iid: Mapped[int] = mapped_column(Integer)
+    # "code" reviews a merge request and needs a project and iid; "document"
+    # reviews a Confluence page and records it in `subject` instead.
+    kind: Mapped[str] = mapped_column(String(10), default="code", server_default="code")
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    mr_iid: Mapped[int | None] = mapped_column(Integer)
+    # Document reviews: page_id, space, title, url, version and the supporting
+    # pages the run was asked to read. `subject_key` ("confluence:<page_id>")
+    # is what the one-active-review index is keyed on.
+    subject: Mapped[dict | None] = mapped_column(json_type)
+    subject_key: Mapped[str | None] = mapped_column(String(200))
     head_sha: Mapped[str] = mapped_column(String(64))
     merge_base_sha: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(default="INIT")
@@ -84,6 +92,18 @@ class Review(Base):
                 "state NOT IN ('PUBLISHED','TERMINATED_EARLY','FAILED_CONTEXT','FAILED_INTERNAL','CANCELLED','SUPERSEDED')"
             ),
         ),
+        # The document analogue: at most one non-terminal review per page.
+        Index(
+            "uq_active_document_review",
+            "subject_key",
+            unique=True,
+            postgresql_where=text(
+                "kind = 'document' AND state NOT IN ('PUBLISHED','TERMINATED_EARLY','FAILED_CONTEXT','FAILED_INTERNAL','CANCELLED','SUPERSEDED')"
+            ),
+            sqlite_where=text(
+                "kind = 'document' AND state NOT IN ('PUBLISHED','TERMINATED_EARLY','FAILED_CONTEXT','FAILED_INTERNAL','CANCELLED','SUPERSEDED')"
+            ),
+        ),
     )
 
 
@@ -103,12 +123,14 @@ class FindingRow(Base):
     __tablename__ = "findings"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     review_id: Mapped[str] = mapped_column(ForeignKey("reviews.id"), index=True)
-    project_id: Mapped[int] = mapped_column(Integer)
-    mr_iid: Mapped[int] = mapped_column(Integer)
+    # NULL for document findings, which have no merge request.
+    project_id: Mapped[int | None] = mapped_column(Integer)
+    mr_iid: Mapped[int | None] = mapped_column(Integer)
     fingerprint: Mapped[str] = mapped_column(String(32))
     data: Mapped[dict] = mapped_column(json_type)
     severity_final: Mapped[str | None]
     status: Mapped[str]
+    # The anchored file for code, the page id for documents.
     file: Mapped[str]
     __table_args__ = (
         Index("ix_finding_identity", "project_id", "mr_iid", "fingerprint"),
