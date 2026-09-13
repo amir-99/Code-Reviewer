@@ -1,7 +1,17 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -33,6 +43,14 @@ class Review(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("accounts.id"), index=True
+    )
+    trigger_source: Mapped[str] = mapped_column(
+        default="system", server_default="system"
+    )
+    credential_refs: Mapped[dict | None] = mapped_column(json_type)
+    principal_id: Mapped[str | None] = mapped_column(String(128))
     event_id: Mapped[str] = mapped_column(String(128), unique=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     mr_iid: Mapped[int] = mapped_column(Integer)
@@ -164,3 +182,94 @@ class ReviewUnit(Base):
     stage: Mapped[str] = mapped_column(String(32), primary_key=True)
     input_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     data: Mapped[dict] = mapped_column(json_type)
+
+
+class Account(Base):
+    __tablename__ = "accounts"
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    login: Mapped[str] = mapped_column(String(254), unique=True)
+    display_name: Mapped[str] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(10))
+    active: Mapped[bool] = mapped_column(default=True)
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'user')", name="account_role"),
+    )
+
+
+class LoginSession(Base):
+    __tablename__ = "login_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AccountToken(Base):
+    __tablename__ = "account_tokens"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class IntegrationCredential(Base):
+    __tablename__ = "integration_credentials"
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    integration: Mapped[str] = mapped_column(String(20))
+    version: Mapped[int] = mapped_column(Integer)
+    key_id: Mapped[str] = mapped_column(String(128))
+    ciphertext: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(20), default="active")
+    validation_status: Mapped[str] = mapped_column(String(20), default="unchecked")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    __table_args__ = (
+        Index(
+            "uq_credential_version", "user_id", "integration", "version", unique=True
+        ),
+    )
+
+
+class ReviewTrigger(Base):
+    __tablename__ = "review_triggers"
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    credential_refs: Mapped[dict] = mapped_column(json_type)
+    payload: Mapped[dict] = mapped_column(json_type)
+    state: Mapped[str] = mapped_column(String(20), default="QUEUED")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+class AccountEvent(Base):
+    __tablename__ = "account_events"
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    actor_id: Mapped[str | None] = mapped_column(ForeignKey("accounts.id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"))
+    action: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+class LoginThrottle(Base):
+    __tablename__ = "login_throttles"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    attempts: Mapped[int] = mapped_column(default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

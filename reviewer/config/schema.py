@@ -195,6 +195,10 @@ class Settings(BaseSettings):
     project_ids: list[PositiveInt] = Field(default_factory=list)
     webhook_secrets: dict[int, SecretStr] = Field(default_factory=dict)
     admin_token: SecretStr = SecretStr("")
+    session_origin: str = ""
+    session_local_http: bool = False
+    credential_keys: dict[str, SecretStr] = Field(default_factory=dict)
+    credential_active_key: str = ""
     milestone: Literal["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"] = (
         "M9"
     )
