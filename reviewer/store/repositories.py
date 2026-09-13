@@ -710,18 +710,22 @@ class Store:
 
     async def chat_tokens(self, review_id):
         """Tokens every question about this review has spent so far."""
+        return sum(await self.chat_usage(review_id))
+
+    async def chat_usage(self, review_id):
+        """(input, output) tokens spent by every question about this review."""
         from reviewer.store.models import LLMCall
 
         async with self.sessions() as session:
-            return int(
-                await session.scalar(
+            row = (
+                await session.execute(
                     select(
-                        func.coalesce(
-                            func.sum(LLMCall.tokens_in + LLMCall.tokens_out), 0
-                        )
+                        func.coalesce(func.sum(LLMCall.tokens_in), 0),
+                        func.coalesce(func.sum(LLMCall.tokens_out), 0),
                     ).where(LLMCall.review_id == review_id, LLMCall.stage == "chat")
                 )
-            )
+            ).one()
+            return int(row[0]), int(row[1])
 
     async def _spend_rows(self, *conditions):
         from reviewer.store.models import LLMCall

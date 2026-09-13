@@ -290,9 +290,18 @@ async def replay_review(ctx, project_id, iid, event_id, overrides=None):
     )
 
 
+async def answer_chat(ctx, message_id):
+    from reviewer.accounts.chat import answer_chat as run
+
+    return await run(ctx, message_id)
+
+
 async def recover(ctx):
     if "blobs" in ctx:
         ctx["blobs"].reap()
+    from reviewer.accounts.chat import recover_chat
+
+    await recover_chat(ctx)
     from sqlalchemy import select
 
     from reviewer.store.models import ReviewTrigger
@@ -318,7 +327,7 @@ async def recover(ctx):
 
 
 class WorkerSettings:
-    functions = [receive_event, run_review, replay_review, recheck_review]
+    functions = [receive_event, run_review, replay_review, recheck_review, answer_chat]
     cron_jobs = [cron(recover, second={0, 30}, run_at_startup=True)]
     on_startup = startup
     on_shutdown = shutdown
