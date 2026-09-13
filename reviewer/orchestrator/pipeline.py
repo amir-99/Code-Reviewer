@@ -408,6 +408,13 @@ class Pipeline:
                         normalize(
                             f, {file.path for file in bundle.code.files}, categories
                         )
+                    if any(
+                        f.evidence_scope != "local"
+                        and not f.verified
+                        and f.status == "suppressed"
+                        for f in values
+                    ):
+                        bundle.degradations.append("unverified_scope_claims")
                     return values
 
                 raw = []
@@ -476,6 +483,7 @@ class Pipeline:
                     or llm is None
                     or "prompt_requirements_truncated" in bundle.degradations
                     or "budget_exhausted" in bundle.degradations
+                    or "unverified_scope_claims" in bundle.degradations
                     or "whole_change_summary_truncated" in bundle.degradations
                     or level < 7
                 )

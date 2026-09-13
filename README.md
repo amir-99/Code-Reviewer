@@ -172,6 +172,20 @@ allows at most three concrete findings per chunk with up to two evidence ranges;
 models must flag omitted findings, making the review partial. Anchor hashes and
 other derived fields are populated in code. Impact remains nullable and advisory.
 
+Code chunks carry actual file lengths (unknown when unreadable), supplied line
+ranges and continuation flags. Both analysis modes preserve intact lines and
+prefer complete symbols when they fit. Requested context uses scanned, numbered
+file ranges or symbol bodies; it never silently presents a fixed file prefix as
+the whole file. Context rounds and verification are sized for the receiving model.
+
+Proposals declare `evidence_scope`: `local`, `symbol` for absence within a
+function, or `file` for file-wide absence such as unused imports. Verification
+independently expands cited code to full files or enclosing symbols within its
+budget. Incomplete required scope cannot confirm an absence claim. Unverified
+scope claims remain suppressed in the audit snapshot and mark the review partial
+with `unverified_scope_claims`; they are not published as suggestions. Historical
+findings default to `local` and retain their existing behavior.
+
 There is no changed-line threshold or fixed triage selection. Every eligible chunk
 enters a breadth-first queue, visiting one chunk per file before additional chunks
 and prioritizing source changes. Workers keep taking chunks while the actual

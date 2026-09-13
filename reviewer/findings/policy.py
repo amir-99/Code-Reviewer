@@ -16,14 +16,25 @@ BASE = {
 
 
 def needs_verification(f):
-    return BASE.get(f.category, Severity.SUGGESTION) in {
-        Severity.BLOCKER,
-        Severity.REQUIRED,
-    } or f.severity_proposed in {Severity.BLOCKER, Severity.REQUIRED}
+    return (
+        f.evidence_scope != "local"
+        or BASE.get(f.category, Severity.SUGGESTION)
+        in {
+            Severity.BLOCKER,
+            Severity.REQUIRED,
+        }
+        or f.severity_proposed in {Severity.BLOCKER, Severity.REQUIRED}
+    )
 
 
 def normalize(f, touched, static_categories=()):
     if f.status in {"discarded", "suppressed", "resolved"}:
+        return f
+    if f.evidence_scope != "local" and not f.verified:
+        # Absence needs positive verification of the complete scope. Preserve
+        # the claim in the audit, but do not publish a speculative suggestion.
+        f.status = "suppressed"
+        f.severity_final = Severity.SUGGESTION
         return f
     severity = BASE.get(f.category, Severity.SUGGESTION)
     if (

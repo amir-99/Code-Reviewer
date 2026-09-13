@@ -59,6 +59,8 @@ class ProposedFinding(Schema):
     # Advisory only; null supports historical records and non-defect findings.
     impact_level: ImpactLevel | None = None
     failure_scenario: str | None = None
+    # Scope needed to establish absence; historical claims retain local behavior.
+    evidence_scope: Literal["local", "symbol", "file"] = "local"
     evidence: list[Evidence] = Field(min_length=1)
     suggested_direction: str = Field(max_length=600)
     requirement_ref: str | None = None
@@ -141,6 +143,8 @@ class ContextRequest(Schema):
     kind: Literal["symbol", "file", "callers", "tests_for"]
     target: str
     reason: str
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
 
 
 class StageEnvelope(Schema):

@@ -1,6 +1,15 @@
 import re
 
 
+def redact_source(value, redactor):
+    """Redact before numbering code, preserving multiline-secret line positions."""
+    for secret, rule in sorted(
+        getattr(redactor, "secrets", {}).items(), key=lambda item: -len(item[0])
+    ):
+        value = value.replace(secret, f"[REDACTED:{rule}]" + "\n" * secret.count("\n"))
+    return redactor.text(value)
+
+
 class Redactor:
     def __init__(self, matches=()):
         from reviewer.accounts.execution import personal_secrets

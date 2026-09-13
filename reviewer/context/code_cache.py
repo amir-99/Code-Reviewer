@@ -3,7 +3,7 @@
 import asyncio
 
 from reviewer.context.models import ChangedFile, DiffLine
-from reviewer.context.redaction import Redactor
+from reviewer.context.redaction import Redactor, redact_source
 
 
 class ScannedCodeCache:
@@ -34,6 +34,6 @@ class ScannedCodeCache:
                     ]
                 )
                 self.redactor.secrets.update(Redactor(matches).secrets)
-                self.content[path] = self.redactor.text(text[:6000])
+                self.content[path] = redact_source(text, self.redactor)
             # Later scans can discover secrets in already-cached files.
-            return self.redactor.text(self.content[path])
+            return redact_source(self.content[path], self.redactor)

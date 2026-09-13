@@ -52,7 +52,14 @@ async def verify_findings(
             # The context provider accepts at most five requests per invocation.
             for offset in range(0, len(requests), 5):
                 async with asyncio.timeout(remaining()):
-                    await context_provider(requests[offset : offset + 5])
+                    scanned = await context_provider(requests[offset : offset + 5])
+                    if isinstance(scanned, dict) and any(
+                        value == "unavailable"
+                        or isinstance(value, dict)
+                        and value.get("unavailable")
+                        for value in scanned.values()
+                    ):
+                        raise ValueError("Evidence scan unavailable")
         except Exception as error:
             unavailable(finding, bundle, error)
         else:

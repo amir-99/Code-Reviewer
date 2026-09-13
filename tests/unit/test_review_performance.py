@@ -159,7 +159,13 @@ async def test_legacy_triage_limits_do_not_skip_units_when_time_remains(
     # Ten seconds of analysis remain: the old worst-case estimate selected zero
     # chunks despite these responses finishing well inside the real deadline.
     b.degradations.append("triage_mode")
-    b.code.files[0].lines[0].text = "x" * 10000
+    # Large *file* with intact bounded lines: oversized individual lines are
+    # now deliberately omitted in deep mode as well as standard mode.
+    original = b.code.files[0].lines[0]
+    b.code.files[0].lines = [
+        original.model_copy(update={"text": "x" * 80, "new_line": n})
+        for n in range(1, 101)
+    ]
     config = ProjectConfig(
         review={"unit_tokens": 256}, triage_unit_tokens=256, triage_max_units=3
     )

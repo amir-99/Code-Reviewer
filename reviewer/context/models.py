@@ -77,6 +77,8 @@ class ChangedFile(BaseModel):
     is_generated: bool = False
     is_vendored: bool = False
     is_excluded: bool = False
+    total_lines: int | None = None
+    symbol_ranges: list[tuple[int, int]] = []
     size_bytes: int = 0
     lines: list[DiffLine] = []
 

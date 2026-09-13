@@ -843,3 +843,51 @@ async def test_large_change_reviews_clock_source_and_excludes_only_lockfiles(
     stage = (await store.stages(review.id))["defect_review"]
     assert any(unit.startswith("clock_test.go:") for unit in stage.examined)
     assert not stage.skipped and not snapshot["partial"]
+
+
+@pytest.mark.parametrize("verdict", ["uncertain", "unavailable"])
+async def test_unverified_absence_is_a_coverage_gap_not_a_published_suggestion(
+    store, history, tmp_path, verdict
+):
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+
+    class MissingScope(Reviewing):
+        async def complete(self, **kwargs):
+            if kwargs["response_model"] is VerificationResult:
+                if verdict == "unavailable":
+                    from reviewer.orchestrator.budget import BudgetExhausted
+
+                    raise BudgetExhausted()
+                return VerificationResult(
+                    verdict="uncertain",
+                    counterargument="Incomplete scope",
+                    reasoning="Cannot establish absence",
+                )
+            result = await super().complete(**kwargs)
+            for proposed in result.findings:
+                proposed.evidence_scope = "file"
+            return result
+
+    review = await store.accept(7, 2, head, "scope-" + verdict)
+    assert (
+        await pipeline(store, forge, tmp_path, llm=MissingScope(), mode="standard").run(
+            review.id
+        )
+        == "PUBLISHED"
+    )
+    snapshot = await store.snapshot(review.id)
+    claims = [f for f in snapshot["findings"] if f["evidence_scope"] == "file"]
+    assert claims and all(f["status"] == "suppressed" for f in claims)
+    assert snapshot["partial"]
+    assert "unverified_scope_claims" in snapshot["bundle"]["degradations"]
+    assert "The assigned value is never checked" not in str(forge.discussions)

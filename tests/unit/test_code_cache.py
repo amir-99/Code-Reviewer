@@ -13,7 +13,7 @@ async def test_concurrent_reads_scan_once_and_reapply_new_redactions():
     async def read_file(wt, path):
         reads.append(path)
         await asyncio.sleep(0)
-        return "known-secret later-secret\n" + "x" * 6000 + "tail-secret"
+        return "known-secret later-secret\n# " + "x" * 6000 + "tail-secret"
 
     async def scan(files):
         scans.append(files)
@@ -30,6 +30,7 @@ async def test_concurrent_reads_scan_once_and_reapply_new_redactions():
     assert reads == ["a.py"] and len(scans) == 1
     assert "tail-secret" in scans[0][0].lines[-1].text
     assert all("known-secret" not in value for value in results)
+    assert all(value.endswith("tail-secret") for value in results)
     redactor.secrets["later-secret"] = "later"
     assert "later-secret" not in await cache.read("a.py")
     # A new pinned worktree/review must scan again.

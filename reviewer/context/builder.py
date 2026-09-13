@@ -150,7 +150,13 @@ async def build(
         if file.change_type == "deleted":
             continue
         try:
-            symbols.add(file.path, await git.read_file(wt, file.path))
+            source = await git.read_file(wt, file.path)
+            symbols.add(file.path, source)
+            supplied = next(f for f in bundle.code.files if f.path == file.path)
+            supplied.total_lines = len(source.splitlines())
+            supplied.symbol_ranges = [
+                (s["start"], s["end"]) for s in symbols.symbols.get(file.path, [])
+            ]
         except Exception:
             pass
 
@@ -177,9 +183,20 @@ async def build(
                 ][:3]
             for path in paths:
                 try:
-                    output[path] = await code_cache.read(path)
+                    from reviewer.context.excerpts import excerpt
+
+                    source = await code_cache.read(path)
+                    start, end = request.line_start or 1, request.line_end
+                    if request.kind == "symbol":
+                        match = next(
+                            s
+                            for s in symbols.symbols[path]
+                            if s["name"] == request.target
+                        )
+                        start, end = match["start"], match["end"]
+                    output[path] = excerpt(source.splitlines(), start, end)
                 except Exception:
-                    output[path] = "unavailable"
+                    output[path] = {"unavailable": True}
         return output
 
     return bundle, redactor, symbols, secret_findings, context_provider

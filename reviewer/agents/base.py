@@ -120,6 +120,37 @@ class StageAgent(ABC):
                 + "\n"
                 + frame(json.dumps(context), "requested-code-context")
             )
+            # Additional rounds share the receiving model's input allowance.
+            # Trim intact numbered excerpts, never silently slice source text.
+            from reviewer.context.excerpts import shorten
+
+            limit = self.context_tokens * 3 // 4 if self.context_tokens else 64000
+            while (
+                len(
+                    json.dumps(
+                        [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        ensure_ascii=False,
+                    ).encode()
+                )
+                > limit
+            ):
+                candidates = [
+                    path
+                    for path, value in context.items()
+                    if isinstance(value, dict) and value.get("code")
+                ]
+                if not candidates:
+                    break
+                path = max(candidates, key=lambda p: len(context[p]["code"]))
+                context[path] = shorten(context[path])
+                user = (
+                    initial_user
+                    + "\n"
+                    + frame(json.dumps(context), "requested-code-context")
+                )
         return result
 
 

@@ -39,6 +39,7 @@ class DefectClaim(Schema):
     failure_scenario: str = Field(min_length=1, max_length=300)
     impact: str = Field(max_length=300)
     impact_level: ImpactLevel | None
+    evidence_scope: Literal["local", "symbol", "file"] = "local"
     evidence: list[DefectAnchor] = Field(min_length=1, max_length=2)
     suggested_direction: str = Field(max_length=200)
     confidence: Confidence
