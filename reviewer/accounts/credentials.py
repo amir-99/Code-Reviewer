@@ -4,6 +4,7 @@ import base64
 import json
 import secrets
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -171,7 +172,9 @@ class Credentials:
                     raise CredentialUnavailable(
                         "Pinned credentials are unavailable"
                     ) from None
-        return CredentialContext(user_id, dict(refs), tokens)
+        return CredentialContext(
+            user_id, MappingProxyType(dict(refs)), MappingProxyType(tokens)
+        )
 
     async def check_access(self, context):
         await self.load(context.user_id, context.refs)

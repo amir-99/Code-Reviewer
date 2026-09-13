@@ -779,6 +779,20 @@ class Pipeline:
         )
         if not previous:
             return {"rechecked": False, "reason": "no_published_review"}
+        source_review = await self.store.get(previous_id)
+        from reviewer.context.models import ReviewOverrides
+
+        source_overrides = (
+            ReviewOverrides.model_validate(source_review.overrides)
+            if source_review and source_review.overrides
+            else None
+        )
+        if source_review and source_review.execution_config:
+            config = frozen_config(source_review.execution_config["config"])
+        if config.enforcement == "silent" or (
+            source_overrides and source_overrides.report_mode == "none"
+        ):
+            return {"rechecked": False, "reason": "disabled"}
         mr = await self.forge.get_merge_request(project_id, iid)
         if mr.state != "opened" or mr.draft:
             return {"rechecked": False, "reason": "merge_request_not_open"}
@@ -846,7 +860,7 @@ class Pipeline:
                     False,
                     llm,
                     redactor,
-                    None,
+                    source_overrides.report_mode if source_overrides else None,
                 )
                 if report is not None and review_id is None:
                     # The recheck runs outside any review of its own, so its

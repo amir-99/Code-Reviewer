@@ -213,7 +213,7 @@ async def trigger(body: ManualReviewRequest, request: Request):
             iid=iid,
             event_id=job.event_id,
         )
-        raise HTTPException(503, "Queue unavailable; retry the request") from None
+        # The committed trigger remains accepted; recovery will enqueue it.
     # The review runs in the worker, so no findings exist yet. Hand back the
     # address to poll rather than pretending this call carries results.
     return {

@@ -169,7 +169,7 @@ function reviewRow(review) {
   when.dataset.ago = review.started_at ?? '';
   bottom.append(when);
   if (account?.role === 'admin') bottom.append(el('span', review.owner_user_id || 'system / legacy'));
-  if (review.spend) bottom.append(el('span', `${money(review.spend.cost)} · ${count(review.spend.tokens)} tokens`));
+  if (review.spend) bottom.append(el('span', `${money(review.spend.cost, {unpriced: review.spend.unpriced_calls})} · ${count(review.spend.tokens)} tokens`));
   button.append(top, bottom);
   button.onclick = () => select(review.id);
   return button;
@@ -888,7 +888,7 @@ const delay = (ms, signal) => new Promise(resolve => {
 });
 
 function render(review) {
-  for (const id of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(id).hidden = !review.capabilities?.execute;
+  for (const id of ['replay', 'recheck', 'recheck-tab-action', 'recheck-report-action']) $(id).hidden = !review.capabilities?.execute;
 
   current = review;
   snapshotSeq = Number(review.sequence ?? 0);
@@ -1116,6 +1116,11 @@ $('trigger').onsubmit = async event => {
     while (!signal.aborted) {
       const review = await (await request(job.poll, {signal})).json();
       if (review.id) { select(review.id); break; }
+      if (['CONFLICT', 'REJECTED'].includes(review.state)) {
+        const message = review.state === 'CONFLICT' ? 'Another review is active for this merge request. Try again after it finishes.' : 'The queued review is no longer eligible. Check your account, credentials and merge request.';
+        $('empty').replaceChildren(el('h2', 'Review not admitted'), el('p', message));
+        throw new Error(message);
+      }
       await delay(2000, signal);
     }
   } catch (error) { if (error.name !== 'AbortError') notice(error.message, 'error'); }
@@ -1202,4 +1207,21 @@ $('nav-users').onclick = async () => {
     } catch (error) { notice(error.message,'error'); }
   }
   search.oninput = listUsers; await listUsers();
+};
+
+$('replay').onclick = async () => {
+  if (!selected || !current?.capabilities?.execute) return;
+  $('replay').disabled = true;
+  try {
+    const job = await (await request(`/admin/reviews/${encodeURIComponent(selected)}/replay`, {method:'POST'})).json();
+    notice('Replay queued. Waiting for worker admission…');
+    const signal = controller.signal;
+    while (!signal.aborted) {
+      const review = await (await request(`/admin/reviews?event_id=${encodeURIComponent(job.event_id)}`, {signal})).json();
+      if (review.id) { select(review.id); break; }
+      if (['CONFLICT','REJECTED'].includes(review.state)) throw new Error('Replay was not admitted. Check credentials and retry after any active review finishes.');
+      await delay(2000, signal);
+    }
+  } catch (error) { if (error.name !== 'AbortError') notice(error.message,'error'); }
+  finally { $('replay').disabled = false; }
 };

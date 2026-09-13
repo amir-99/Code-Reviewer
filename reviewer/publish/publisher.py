@@ -11,13 +11,19 @@ logger = structlog.get_logger()
 FINGERPRINT = re.compile(r"<!-- ai-review:fingerprint=([a-f0-9]{32}) -->")
 
 
+def owns_body(forge, body):
+    owner = getattr(forge, "owner_user_id", None)
+    marker = re.search(r"<!-- ai-review:owner=([a-zA-Z0-9-]+) -->", body)
+    return marker.group(1) == owner if marker else owner is None
+
+
 async def existing(forge, project, iid):
     bot = await forge.identity()
     discussions = await forge.list_discussions(project, iid)
     fingerprints = {}
     for d in discussions:
         for n in d.notes:
-            if n.author_id == bot and not d.resolved:
+            if n.author_id == bot and not d.resolved and owns_body(forge, n.body):
                 for fp in FINGERPRINT.findall(n.body):
                     fingerprints[fp] = d
     return fingerprints, discussions
@@ -29,7 +35,11 @@ async def pending(forge, project, iid):
     Draft notes are not discussions, so `existing` cannot see them. Without
     this a second drafted run would queue every comment a second time.
     """
-    notes = await forge.list_draft_notes(project, iid)
+    notes = [
+        n
+        for n in await forge.list_draft_notes(project, iid)
+        if owns_body(forge, n.body)
+    ]
     fingerprints = {fp: n for n in notes for fp in FINGERPRINT.findall(n.body)}
     return fingerprints, notes
 
@@ -164,7 +174,7 @@ class Publisher:
                     head_sha=bundle.code.head_sha,
                 )
         elif not any(
-            marker in n.body and n.author_id == bot
+            marker in n.body and n.author_id == bot and owns_body(self.forge, n.body)
             for d in discussions
             for n in d.notes
         ):

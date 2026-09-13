@@ -45,7 +45,7 @@ services:
       postgres: { condition: service_healthy }
   api:
     <<: *app
-    ports: ["8092:8080"]
+    ports: ["${API_BIND_ADDRESS:-127.0.0.1}:8092:8080"]
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }

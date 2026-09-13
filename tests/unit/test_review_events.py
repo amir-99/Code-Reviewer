@@ -9,14 +9,22 @@ from reviewer.api.events import CLOSING_GRACE, closing, stream
 from reviewer.config.schema import Settings
 from reviewer.main import create_app
 from reviewer.telemetry.activity import activity, close_run, open_run, sink
+from tests.account_helpers import signed_in
 
 
-def connected(store):
+async def authenticated_request(store):
     async def never():
         return False
 
+    app = create_app(settings=Settings(), store=store)
+    headers = await signed_in(app)
     return SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(store=store)), is_disconnected=never
+        app=app,
+        is_disconnected=never,
+        method="GET",
+        headers=headers,
+        cookies={"reviewer_session": headers["Cookie"].split("=", 1)[1]},
+        state=SimpleNamespace(principal=app.state.test_account),
     )
 
 
@@ -24,13 +32,16 @@ async def test_authenticated_list_and_sse_replay(store):
     review = await store.accept(7, 2, "a" * 40, "event")
     await store.append_event(review.id, "tool", {"name": "Git", "status": "started"})
     await store.transition(review.id, "CANCELLED")
-    app = create_app(settings=Settings(admin_token="operator"), store=store)
+    app = create_app(
+        settings=Settings(session_origin="http://localhost", session_local_http=True),
+        store=store,
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         path = f"/admin/reviews/{review.id}/events"
         assert (await client.get(path)).status_code == 401
-        client.headers["Authorization"] = "Bearer operator"
+        client.headers.update(await signed_in(app))
         listed = (await client.get("/admin/reviews")).json()["reviews"]
         assert listed[0]["id"] == review.id
         assert listed[0]["project_id"] == 7
@@ -38,9 +49,7 @@ async def test_authenticated_list_and_sse_replay(store):
         assert (await client.get("/admin/reviews?event_id=event")).json()[
             "id"
         ] == review.id
-        assert (await client.get("/admin/reviews?event_id=queued")).json()[
-            "state"
-        ] == "QUEUED"
+        assert (await client.get("/admin/reviews?event_id=queued")).status_code == 404
         response = await client.get(path, headers={"Last-Event-ID": "1"})
         assert response.headers["content-type"].startswith("text/event-stream")
         assert response.headers["cache-control"] == "no-store"
@@ -130,10 +139,8 @@ async def test_stream_drains_more_than_one_page_and_disconnects(store):
     async def connected():
         return False
 
-    request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(store=store)),
-        is_disconnected=connected,
-    )
+    request = await authenticated_request(store)
+    request.is_disconnected = connected
     frames = [frame async for frame in stream(request, review.id, 0)]
     assert sum("event: activity" in frame for frame in frames) == 203
     assert "event: complete" in frames[-1]
@@ -193,7 +200,10 @@ async def test_terminal_state_is_not_the_end_of_the_run(store):
     assert await closing(store, await store.get(review.id)) is False
     assert (await store.run_state(review.id)) == "cancelled"
 
-    frames = [frame async for frame in stream(connected(store), review.id, 0)]
+    frames = [
+        frame
+        async for frame in stream(await authenticated_request(store), review.id, 0)
+    ]
     # INIT, the run opening, CANCELLED and the run closing all reach the client.
     assert sum("event: activity" in frame for frame in frames) == 4
     assert "event: complete" in frames[-1]
@@ -223,7 +233,10 @@ async def test_snapshot_reports_the_events_it_already_reflects(store):
     review = await store.accept(7, 2, "a" * 40, "cursor")
     await store.transition(review.id, "CONTEXT_COLLECTION")
     await store.transition(review.id, "CANCELLED")
-    frames = [frame async for frame in stream(connected(store), review.id, 0)]
+    frames = [
+        frame
+        async for frame in stream(await authenticated_request(store), review.id, 0)
+    ]
     opening = next(frame for frame in frames if "event: snapshot" in frame)
     assert '"sequence": 3' in opening
     assert '"id: 3' not in opening

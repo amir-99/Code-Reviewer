@@ -32,6 +32,7 @@ class PersonalForge:
     def __init__(self, forge, guard, principal_id, project, iid, head):
         self.forge, self.guard, self.principal_id = forge, guard, principal_id
         self.project, self.iid, self.head = project, iid, head
+        self.owner_user_id = None
 
     def __getattr__(self, name):
         method = getattr(self.forge, name)
@@ -58,10 +59,24 @@ class PersonalForge:
                         d.id == discussion_id
                         and d.notes
                         and str(d.notes[0].author_id) == self.principal_id
+                        and f"<!-- ai-review:owner={self.owner_user_id} -->"
+                        in d.notes[0].body
                         for d in discussions
                     ):
                         raise CredentialUnavailable("Discussion ownership changed")
                 await self.guard()
+            if name in {
+                "post_note",
+                "post_inline_discussion",
+                "post_draft_note",
+                "reply",
+            }:
+                marker = f"\n\n<!-- ai-review:owner={self.owner_user_id} -->"
+                if "body" in kwargs:
+                    kwargs["body"] += marker
+                else:
+                    args = list(args)
+                    args[3 if name == "reply" else 2] += marker
             return await method(*args, **kwargs)
 
         return call
@@ -100,6 +115,15 @@ async def personal_machine(ctx, review, *, recheck=False):
             if recheck
             else review.head_sha
         )
+        personal_forge = PersonalForge(
+            forge, guard, review.principal_id, project, review.mr_iid, head
+        )
+        personal_forge.owner_user_id = review.owner_user_id
+        if settings.milestone == "M0":
+            from reviewer.orchestrator.machine import ReviewStateMachine
+
+            yield ReviewStateMachine(ctx["store"], personal_forge)
+            return
         personal = settings.model_copy(
             update={
                 "gitlab_token": SecretStr(tokens["gitlab"]),
@@ -131,11 +155,11 @@ async def personal_machine(ctx, review, *, recheck=False):
                 )
         machine = Pipeline(
             ctx["store"],
-            PersonalForge(
-                forge, guard, review.principal_id, project, review.mr_iid, head
-            ),
+            personal_forge,
             personal,
-            GitService(personal.repo_cache, tokens["gitlab"]),
+            GitService(
+                personal.repo_cache, tokens["gitlab"], quota_root=settings.repo_cache
+            ),
             issues,
             docs,
             SecretScanner(),
@@ -143,7 +167,12 @@ async def personal_machine(ctx, review, *, recheck=False):
         )
         machine.forge.owner_user_id = review.owner_user_id
         machine.gateway_slots = ctx.setdefault(
-            "gateway_slots", asyncio.Semaphore(settings.gateway_concurrency)
+            "gateway_slots",
+            getattr(
+                ctx["machine"],
+                "gateway_slots",
+                asyncio.Semaphore(settings.gateway_concurrency),
+            ),
         )
         machine.owner_user_id, machine.principal_id = (
             review.owner_user_id,

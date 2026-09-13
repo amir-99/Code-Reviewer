@@ -79,3 +79,11 @@ class ProxyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouteTests(unittest.TestCase):
+    def test_account_route_allowlist(self):
+        for method, path in [("POST", "/api/auth/login"), ("PUT", "/api/profile/integrations/gitlab"), ("DELETE", "/api/profile/integrations/gateway"), ("POST", "/api/auth/users/abc-123"), ("GET", "/api/auth/users?search=alice")]:
+            self.assertTrue(server.allowed(method, path))
+        for method, path in [("GET", "/api/profile/integrations/gitlab"), ("DELETE", "/api/auth/users/abc"), ("POST", "/api/admin/anything"), ("POST", "/api/../outside"), ("GET", "https://evil.invalid/api/auth/me")]:
+            self.assertFalse(server.allowed(method, path))

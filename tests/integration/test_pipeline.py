@@ -157,6 +157,10 @@ async def test_onboarding_manual_review_and_publication(
     await worker.startup(ctx)
     assert await store.is_configured(88) == bool(project_ids or webhook_secrets)
     app = create_app(settings, store, queue, forge)
+    from tests.account_helpers import signed_in
+
+    auth = await signed_in(app, "user", forge)
+    ctx["personal_forge_factory"] = lambda *_: forge
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:
@@ -173,7 +177,7 @@ async def test_onboarding_manual_review_and_publication(
             json={
                 "merge_request_url": f"{settings.gitlab_base_url}/group/proj/-/merge_requests/2"
             },
-            headers={"Authorization": "Bearer admin"},
+            headers=auth,
         )
     assert response.status_code == 202
     assert response.json()["report_mode"] == "applied"

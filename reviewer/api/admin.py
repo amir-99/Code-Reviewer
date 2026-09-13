@@ -105,6 +105,11 @@ async def inspect(review_id: str, request: Request):
         )
     }
     body["owner_user_id"] = review.owner_user_id
+    body["missing_integrations"] = (
+        sorted({"jira", "confluence"} - (review.credential_refs or {}).keys())
+        if review.owner_user_id
+        else []
+    )
     body["capabilities"] = {
         "execute": request.state.principal.role == "user"
         and review.owner_user_id == request.state.principal.id
@@ -185,6 +190,8 @@ async def replay(review_id: str, request: Request):
         context = await service.load(request.state.principal.id, refs)
     except CredentialUnavailable as exc:
         raise HTTPException(400, str(exc)) from None
+    import httpx
+
     forge = getattr(request.app.state, "personal_forge_factory", GitLab)(
         settings.gitlab_base_url, context.tokens["gitlab"]
     )
@@ -193,6 +200,8 @@ async def replay(review_id: str, request: Request):
         mr = await forge.get_merge_request(project_id, review.mr_iid)
         if mr.state != "opened" or mr.draft:
             raise HTTPException(409, "Merge request is closed, merged or a draft")
+    except httpx.HTTPError:
+        raise HTTPException(502, "GitLab lookup is unavailable") from None
     finally:
         await forge.close()
     job = ReviewJob(
@@ -211,9 +220,12 @@ async def replay(review_id: str, request: Request):
                 payload=job.model_dump() | {"principal_id": principal_id},
             )
         )
-    await request.app.state.queue.enqueue_job(
-        "receive_event", job.model_dump(), _job_id=job.event_id
-    )
+    try:
+        await request.app.state.queue.enqueue_job(
+            "receive_event", job.model_dump(), _job_id=job.event_id
+        )
+    except Exception:
+        pass  # The durable trigger is recovered independently of this request.
     return {"accepted": True, "event_id": job.event_id}
 
 

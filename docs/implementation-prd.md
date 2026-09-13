@@ -999,3 +999,15 @@ The system is done for v1 when:
 - p95 latency to a published review is under 8 minutes for changes under 400 lines.
 - No source code, ticket content or documentation reaches any endpoint outside the internal network, and this is demonstrated by an egress test.
 - Every published finding can be traced from the comment back to its prompt, model, prompt version and context bundle hash.
+
+## Account ownership amendment
+
+`docs/user-management-plan.md` supersedes shared dashboard-token authentication and
+shared credentials for interactive reviews. Interactive roles are exactly admin and
+user. Admins have global read access and account management, with no review execution
+or access to personal tokens. Users execute and view their own reviews with encrypted,
+versioned personal credentials. System automation remains separate. Preserve the global
+active-MR constraint, reject cross-owner manual supersession, and retain system authority
+for actual head changes and close/merge events. Account sessions and CSRF protect every
+interactive route, including event polling and revocation-aware streams. Rollback must
+not re-expose owned reviews through a legacy shared-token build.

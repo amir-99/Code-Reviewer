@@ -308,6 +308,9 @@ class FakeForge:
             {"project_id": project_id, "sha": sha, "state": state, "name": name}
         )
 
+    async def close(self):
+        pass
+
     async def identity(self):
         return self.bot_id
 

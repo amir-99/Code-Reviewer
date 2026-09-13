@@ -11,11 +11,11 @@ From the repository root, with the existing `.env` configured:
 docker compose -f compose.yml -f compose.frontend.yml up -d --build
 ```
 
-Open http://127.0.0.1:8093 and enter the configured `ADMIN_TOKEN`. The API retains
+Open the configured dashboard URL and sign in with your local account. The API retains
 its existing localhost port 8092. The optional Compose file adds a fifth healthy
 long-running service. It does not mount credentials in the frontend container.
-The token is held only in tab memory and attached as a Bearer header, including
-on fetch-based SSE requests. Reloading or disconnecting clears it.
+Login creates an HttpOnly cookie session; write requests also send the CSRF token.
+Logout aborts streams and requests, clears account data, and revokes the session.
 
 For standalone packaging:
 
@@ -105,7 +105,7 @@ Apply Alembic migration `0005` before starting the updated API and worker.
 It accepts `limit` (1–100, default 50) and `offset` (default 0). The existing
 `?event_id=...` lookup and queued response retain their behavior.
 
-`GET /admin/reviews/{id}/events` requires the existing admin Bearer token.
+`GET /admin/reviews/{id}/events` requires an authorized account session and rechecks session validity while streaming.
 Optional `Last-Event-ID` resumes after a review-local integer sequence. An
 unknown review returns 404; invalid cursors return 400. The stream contains:
 
@@ -172,14 +172,16 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-The request path is `/agentic/api/admin/...` → Nginx `/api/admin/...` on
-`127.0.0.1:8093` → the frontend proxy `/admin/...` on `http://api:8080`.
+The supplied ingress sends `/agentic/api/...` directly to `review_agentic_backend`,
+stripping the prefix, and `/agentic/...` to `review_agentic_frontend`. Configure
+those upstream targets to reachable operator-approved API and frontend addresses.
+The standalone frontend proxy remains available for deployments routing both
+assets and API requests through the frontend.
 Keep `REVIEWER_API_URL=http://api:8080` in Compose; it is an internal endpoint,
 not the public `/agentic/` URL. No backend route prefix, CORS change or additional
 public port is required. This exposes dashboard admin routes, not GitLab
-webhook routes or FastAPI's documentation UI. Connect using `ADMIN_TOKEN` as
-usual. Nginx must run on the Docker host for the sample localhost upstream to
-work; a containerized ingress needs an upstream reachable on its Docker network.
+webhook routes or FastAPI's documentation UI. Sign in with an account. Nginx must be able to reach its configured upstream interfaces. This installation
+uses the operator-supplied 192.168.30.161 ports 8092 and 8093.
 
 For manual reviews, select **None — frontend only, no GitLab comments** to keep
 findings and the rendered report in the dashboard. This mode writes no GitLab

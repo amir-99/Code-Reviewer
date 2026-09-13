@@ -53,6 +53,8 @@ async def closing(store, review):
 
 async def stream(request, review_id, after):
     store = request.app.state.store
+    await authenticate(request)
+    await review_access(request, review_id)
     yield "retry: 2000\n\n"
     yield await picture(request, review_id)
     ticks = 0

@@ -1,6 +1,7 @@
 """SHA-pinned worktrees. Repository programs, hooks and filters never run here."""
 
 import asyncio
+import fcntl
 import os
 import re
 import shutil
@@ -42,8 +43,10 @@ class GitService:
         quota_bytes=10_000_000_000,
         timeout=60,
         allow_local=False,
+        quota_root=None,
     ):
         self.cache = Path(cache)
+        self.quota_root = Path(quota_root) if quota_root is not None else self.cache
         self.cache.mkdir(parents=True, exist_ok=True)
         self.token, self.quota, self.timeout = token, quota_bytes, timeout
         self.allow_local = allow_local
@@ -52,6 +55,12 @@ class GitService:
 
     @activity("tool", "Git read operation")
     async def command(self, *args, cwd=None, limit=20_000_000):
+        if args and args[0] in {"clone", "fetch"}:
+            from reviewer.accounts.execution import credential_guard
+
+            guard = credential_guard.get()
+            if guard:
+                await guard()
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         env.update(
             GIT_CONFIG_NOSYSTEM="1",
@@ -136,7 +145,18 @@ class GitService:
         return mirror
 
     def evict(self):
-        mirrors = sorted(self.cache.glob("*.git"), key=lambda p: p.stat().st_mtime)
+        with (self.quota_root / ".quota.lock").open("a") as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX)
+            try:
+                self._evict()
+            finally:
+                fcntl.flock(lease, fcntl.LOCK_UN)
+
+    def _evict(self):
+        mirrors = sorted(
+            [*self.quota_root.glob("*.git"), *self.quota_root.glob("users/*/*/*.git")],
+            key=lambda p: p.stat().st_mtime,
+        )
         sizes = {
             p: sum(
                 f.stat().st_size
@@ -151,10 +171,34 @@ class GitService:
                 break
             if path in self.active:
                 continue
-            shutil.rmtree(path)
-            total -= sizes[path]
+            with path.with_suffix(".lock").open("a") as lease:
+                try:
+                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                try:
+                    shutil.rmtree(path)
+                    total -= sizes[path]
+                finally:
+                    fcntl.flock(lease, fcntl.LOCK_UN)
         if total > self.quota:
             raise GitError("Repository cache quota exhausted")
+
+    @asynccontextmanager
+    async def mirror_lock(self, project_id):
+        # Personal runs use distinct clients. A filesystem lease also protects
+        # their shared mirror across worker processes and quota eviction.
+        with (self.cache / f"{int(project_id)}.lock").open("a") as lease:
+            while True:
+                try:
+                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.05)
+            try:
+                yield
+            finally:
+                fcntl.flock(lease, fcntl.LOCK_UN)
 
     @asynccontextmanager
     async def workspace(self, project_id, url, sha):
@@ -162,7 +206,7 @@ class GitService:
             raise GitError("Invalid SHA")
         lock = self.locks.setdefault(project_id, asyncio.Lock())
         # Hold project lock through the lease: fetch/eviction cannot invalidate it.
-        async with lock:
+        async with lock, self.mirror_lock(project_id):
             mirror = await self.sync_mirror(project_id, url)
             self.active.add(mirror)
             path = self.cache / f"work-{uuid4()}"

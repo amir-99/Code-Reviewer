@@ -271,3 +271,176 @@ async def test_personal_forge_rechecks_eligibility_and_author_before_writes(forg
     with pytest.raises(CredentialUnavailable):
         await client.post_note(7, 2, "wrong identity")
     assert len(forge.comments) == count
+
+
+async def test_two_owners_sharing_forge_identity_do_not_collect_each_others_threads(
+    store, forge
+):
+    from reviewer.publish.publisher import existing
+    from reviewer.services.forge.gitlab import Discussion, Note
+
+    fingerprint = "a" * 32
+    forge.discussions = [
+        Discussion(
+            id="personal",
+            file="a.py",
+            notes=[
+                Note(
+                    id=1,
+                    author_id=forge.bot_id,
+                    body=f"<!-- ai-review:fingerprint={fingerprint} -->\n<!-- ai-review:owner=alice -->",
+                )
+            ],
+        )
+    ]
+    assert (await existing(forge, 7, 2))[0] == {}
+    forge.owner_user_id = "bob"
+    assert (await existing(forge, 7, 2))[0] == {}
+    forge.owner_user_id = "alice"
+    assert fingerprint in (await existing(forge, 7, 2))[0]
+
+
+async def test_invalid_secret_inputs_never_echo_values(store, forge):
+    from httpx import ASGITransport, AsyncClient
+
+    from reviewer.config.schema import Settings
+    from reviewer.main import create_app
+
+    app = create_app(
+        Settings(
+            _env_file=None, session_origin="http://localhost", session_local_http=True
+        ),
+        store=store,
+        forge=forge,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost"
+    ) as client:
+        secret = "private"
+        response = await client.post(
+            "/auth/activate",
+            json={"token": "activation-secret", "password": secret},
+            headers={"Origin": "http://localhost"},
+        )
+        assert response.status_code == 422
+        assert secret not in response.text
+        assert "activation-secret" not in response.text
+        assert response.headers["cache-control"] == "no-store"
+
+
+async def test_outbox_persists_ownership_and_conflict(store, forge):
+    from httpx import ASGITransport, AsyncClient
+
+    from reviewer.config.schema import Settings
+    from reviewer.main import create_app
+    from reviewer.store.models import ReviewTrigger
+    from reviewer.worker import receive_event
+    from tests.account_helpers import signed_in
+    from tests.conftest import FakeQueue
+
+    queue = FakeQueue()
+    forge.projects["group/proj"] = 7
+    settings = Settings(_env_file=None)
+    app = create_app(settings, store, queue, forge)
+    a_headers = await signed_in(app, "user", forge)
+    a = app.state.test_account.id
+    b_headers = await signed_in(app, "user", forge)
+    b = app.state.test_account.id
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost"
+    ) as client:
+        response = await client.post(
+            "/admin/reviews",
+            headers=a_headers,
+            json={
+                "merge_request_url": "https://gitlab.example.invalid/group/proj/-/merge_requests/2"
+            },
+        )
+        assert response.status_code == 202
+        event_id = response.json()["event_id"]
+        assert (
+            await client.get(f"/admin/reviews?event_id={event_id}", headers=b_headers)
+        ).status_code == 404
+        async with store.sessions() as session:
+            trigger = await session.get(ReviewTrigger, event_id)
+            assert trigger.owner_user_id == a
+            assert "test-gitlab-token" not in str(trigger.payload)
+            assert "test-gateway-token" not in str(trigger.payload)
+        await store.accept(
+            7,
+            2,
+            forge.mr.head_sha,
+            "b-active",
+            owner_user_id=b,
+            trigger_source="manual",
+        )
+        await receive_event(
+            {
+                "store": store,
+                "settings": settings,
+                "forge": forge,
+                "redis": queue,
+                "personal_forge_factory": lambda *_: forge,
+            },
+            queue.jobs[0][1][0],
+        )
+        result = (
+            await client.get(f"/admin/reviews?event_id={event_id}", headers=a_headers)
+        ).json()
+        assert result["state"] == "CONFLICT"
+        assert b not in str(result)
+
+
+async def test_personal_m0_worker_retains_limited_state_machine(store, forge):
+    from reviewer.accounts.credentials import Credentials
+    from reviewer.accounts.execution import personal_machine
+    from reviewer.config.schema import Settings
+    from reviewer.main import create_app
+    from reviewer.orchestrator.machine import ReviewStateMachine
+    from tests.account_helpers import signed_in
+
+    settings = Settings(_env_file=None, milestone="M0")
+    app = create_app(settings, store=store, forge=forge)
+    await signed_in(app, "user", forge)
+    owner = app.state.test_account.id
+    refs = await Credentials(store, settings).pin(owner)
+    review = await store.accept(
+        7,
+        2,
+        forge.mr.head_sha,
+        "personal-m0",
+        owner_user_id=owner,
+        credential_refs=refs,
+        principal_id=str(forge.bot_id),
+        trigger_source="manual",
+    )
+    ctx = {
+        "settings": settings,
+        "store": store,
+        "machine": ReviewStateMachine(store, forge),
+        "personal_forge_factory": lambda *_: forge,
+    }
+    async with personal_machine(ctx, review) as machine:
+        assert isinstance(machine, ReviewStateMachine)
+        await machine.run(review.id)
+    assert (await store.get(review.id)).state == "PUBLISHED"
+    assert await store.stages(review.id) == {}
+    assert await store.findings_for(review.id) == []
+
+
+async def test_personal_git_clients_share_mirror_leases(tmp_path):
+    from reviewer.services.git.service import GitService
+
+    first, second = GitService(tmp_path), GitService(tmp_path)
+    entered = asyncio.Event()
+
+    async def contender():
+        async with second.mirror_lock(7):
+            entered.set()
+
+    async with first.mirror_lock(7):
+        task = asyncio.create_task(contender())
+        await asyncio.sleep(0.1)
+        assert not entered.is_set()
+    await asyncio.wait_for(task, 1)
+    assert entered.is_set()

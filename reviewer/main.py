@@ -2,7 +2,9 @@ from contextlib import asynccontextmanager
 
 from arq import create_pool
 from arq.connections import RedisSettings
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from reviewer.api import accounts, admin, events, health, manual, profile, webhooks
 from reviewer.config.schema import Settings
@@ -37,6 +39,31 @@ def create_app(settings=None, store=None, queue=None, forge=None):
                 await app.state.store.engine.dispose()
 
     app = FastAPI(title="AI Code Reviewer", version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc):
+        # Validation diagnostics must not echo password/token request values.
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {
+                        "loc": list(error["loc"]),
+                        "type": error["type"],
+                        "msg": error["msg"],
+                    }
+                    for error in exc.errors()
+                ]
+            },
+        )
+
+    @app.middleware("http")
+    async def private_responses(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(("/auth/", "/profile/", "/admin/")):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     app.state.settings = settings
     # Explicit injection supports network-free ASGI integration tests.
     if store is not None:

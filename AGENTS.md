@@ -245,3 +245,23 @@ rather than taking the highest impact of merged findings. Verifier inputs exclud
 this attribute. Impact persists in finding JSON, is displayed in reports and the
 dashboard, and can be filtered alongside disposition in the dashboard. No new
 column or index is needed for filtering an already-loaded review snapshot.
+
+
+### Account isolation
+
+Human access uses local `admin` / `user` accounts and revocable cookie sessions,
+never an ADMIN_TOKEN bypass. Admins read all reviews and manage accounts but cannot
+execute reviews or access personal integration profiles. Users can read and execute
+only their own reviews; ownership is immutable after admission. Legacy/webhook runs
+are system-owned. Personal triggers persist ownership and credential-version references
+before queue delivery. Worker admission retains the global one-active-MR index;
+same-owner reruns supersede, different owners conflict, and actual head changes retain
+system lifecycle authority. Missing personal credentials never fall back to installation
+secrets. Recovery revokes integrations; removal revokes pinned versions. Personal
+publication validates eligibility, head and identity and shares an MR lock with system
+publication/rechecks. Reuse and thread lookup are scoped by owner and principal.
+
+The operator's confirmed remote Nginx upstreams use `192.168.30.161:8092` for the
+API and `192.168.30.161:8093` for the frontend. This deployment explicitly binds to
+that interface through API_BIND_ADDRESS / FRONTEND_BIND_ADDRESS; shipped Compose
+defaults remain localhost. Do not expand these bindings to all interfaces.

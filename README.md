@@ -46,7 +46,8 @@ Required deployment settings:
 | `MODEL_CATALOG` | Optional JSON array of model IDs an operator may select for a manual run |
 | `MODEL_STRONG`, `MODEL_FAST`, `MODEL_VERIFIER` | Legacy tier model IDs, still honoured |
 | `MODEL_CONTEXT_TOKENS` | Approved context-window limit, used for models `MODEL_LIMITS` does not name |
-| `ADMIN_TOKEN` | Bearer token for admin and metrics endpoints |
+| `SESSION_ORIGIN` | Exact browser origin for account sessions, e.g. `https://review.blubank.ai` (no path) |
+| `CREDENTIAL_KEYS`, `CREDENTIAL_ACTIVE_KEY` | Operator-managed AES-256 keyring and active key identifier |
 
 Confluence's REST content endpoint must be available on your installation.
 Model availability and context limits must be confirmed before connecting real
@@ -357,7 +358,7 @@ Users with at least Developer access may issue:
 
 ## Audit and observability
 
-Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
+Dashboard routes require an account session. Writes also require the configured Origin and `X-CSRF-Token` from login. Admins can read every review but cannot trigger, replay or recheck one. Users can read and execute only their own reviews. `ADMIN_TOKEN` no longer authorizes these routes or metrics.
 
 - `POST /admin/reviews`: trigger a review from a merge request link, with no
   hook involved. The body takes `merge_request_url` plus optional `issue_key`,
@@ -371,8 +372,7 @@ Admin routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   all. The link must be on the configured GitLab instance, its project must
   be visible to the reviewer's token, and the merge request must be open and not
   a draft. No `PROJECT_IDS` or webhook configuration is required for a manual
-  request. A manual run supersedes an in-flight review for the same
-  merge request, exactly as a new push does. `report_mode` chooses what happens
+  request. A manual run supersedes an in-flight review owned by the same account. A different owner receives a durable conflict without cancelling that run. `report_mode` chooses what happens
   to the finished report: `applied` (default) posts it on the merge request,
   `draft` leaves it on the merge request as GitLab draft notes — pending
   comments only the reviewer account can see, which notify nobody and resolve
@@ -482,7 +482,7 @@ Docker image. Start it alongside the reviewer with:
 docker compose -f compose.yml -f compose.frontend.yml up -d --build
 ```
 
-Open http://127.0.0.1:8093 and connect using `ADMIN_TOKEN`. The dashboard starts
+Open the configured dashboard URL and sign in with your local account. The dashboard starts
 reviews from GitLab links, accepts requirement overrides, displays findings and
 reports, rechecks a review's open comments at the branch's current head, and
 follows live stage-agent, work-unit, and tool activity. Reviews are filterable
@@ -512,3 +512,68 @@ rather than taking the highest impact of merged findings. Verifier inputs exclud
 this attribute. Impact persists in finding JSON, is displayed in reports and the
 dashboard, and can be filtered alongside disposition in the dashboard. No new
 column or index is needed for filtering an already-loaded review snapshot.
+
+
+## Local accounts and personal credentials
+
+Before rollout, back up PostgreSQL and the credential-encryption material privately.
+Set `SESSION_ORIGIN` to the browser origin, without a path or trailing slash. For
+`https://review.blubank.ai/agentic/`, use `https://review.blubank.ai`. HTTPS sessions
+use Secure, HttpOnly, SameSite=Strict cookies. Local HTTP requires both an explicit
+localhost origin and `SESSION_LOCAL_HTTP=true`; never use this exception for a
+remote deployment. The proxy forwards cookies, Origin and CSRF headers only to
+its configured API. Logout revokes the current session; password changes, recovery,
+role changes and disablement revoke all affected sessions.
+
+Bootstrap the first admin after migrations, from the operator terminal:
+
+```sh
+docker compose exec -T api python -m reviewer.accounts.cli admin Admin
+```
+
+Deliver the printed, single-use activation token privately; it expires in one
+hour. The recipient sets their password in the dashboard activation form. There
+is no default password or public registration. Admins create accounts and initiate
+recovery. Recovery revokes all saved integration versions and requires reconnecting
+them, so possession of an operator-delivered recovery token cannot expose existing
+integration access. The last active admin cannot be demoted or disabled.
+
+Users save Gateway and GitLab tokens before starting reviews. Jira and Confluence
+are optional; without them requirement collection degrades. Tokens are never
+returned by the API. Admins have no access to another user's token profile. Review
+triggers durably pin credential-version references before enqueueing; jobs contain
+no token values. Replacing a token affects new runs, while removal revokes every
+version of that integration, including queued and resumed work. Disabled or promoted
+accounts cannot execute personal work. System hooks retain installation credentials
+and system ownership; legacy reviews are visible only to admins.
+
+`CREDENTIAL_KEYS` is a JSON object mapping key identifiers to base64-encoded random
+32-byte AES keys. `CREDENTIAL_ACTIVE_KEY` selects the key for newly saved tokens.
+Keep these values only in the ignored `.env` or the operator secret delivery system,
+never in the database or source control. Back up the keyring separately and privately.
+To rotate, add a new key, select it as active, and replace credentials. Retain older
+keys until all referencing runs and retained credentials are retired; deleting a
+key makes those ciphertexts unusable. Explicit token removal, not key removal, is
+the supported access-revocation operation.
+
+Connection checks use configured service endpoints only. Gateway checks require
+`GATEWAY_AUTH_CHECK_PATH` to name a supported non-billable endpoint under the gateway
+base URL; leave it empty when none exists. No model call is used as a connection test.
+All personal execution uses the account's pinned token versions and publishing
+identity. Git mirrors are separated by account and principal. Publication and recheck
+share an MR lock across personal and system runs.
+
+Deploy API, worker and frontend together. Do not roll back to a build that exposes
+owned reviews through the old shared-token routes: disable access or deploy an
+ownership-aware rollback build. Never remove database volumes to roll back. Offline
+regression tests do not establish production review quality or approved egress.
+
+For an explicitly authorized migration from the old installation token, the bootstrap
+CLI accepts `--password-from-admin-token`. It reads the value inside the container and
+sets that password without printing it. This option applies only to an empty account
+table and does not restore bearer-token authentication.
+
+For the supplied remote Nginx ingress, this deployment sets `API_BIND_ADDRESS` and
+`FRONTEND_BIND_ADDRESS` to `192.168.30.161`, matching the operator's upstreams on
+8092 and 8093. Both Compose defaults remain `127.0.0.1`. The Nginx sample uses the
+existing `review_agentic_backend` and `review_agentic_frontend` upstream groups.

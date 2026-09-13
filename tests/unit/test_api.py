@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from reviewer.api.webhooks import event_job
 from reviewer.config.schema import ProjectConfig, Settings
 from reviewer.main import create_app
+from tests.account_helpers import signed_in
 
 
 @pytest.mark.parametrize(
@@ -39,7 +40,13 @@ def test_trigger_matrix(action, oldrev, draft, expected):
 async def test_auth_and_input_limits(store):
     queue = FakeQueue()
     app = create_app(
-        Settings(webhook_secrets={7: "secret"}, admin_token="admin", milestone="M0"),
+        Settings(
+            webhook_secrets={7: "secret"},
+            admin_token="admin",
+            session_origin="http://localhost",
+            session_local_http=True,
+            milestone="M0",
+        ),
         store,
         queue,
     )
@@ -55,9 +62,7 @@ async def test_auth_and_input_limits(store):
         ).status_code == 413
         assert (await client.get("/admin/reviews/missing")).status_code == 401
         assert (
-            await client.get(
-                "/admin/reviews/missing", headers={"Authorization": "Bearer admin"}
-            )
+            await client.get("/admin/reviews/missing", headers=await signed_in(app))
         ).status_code == 404
         assert (await client.get("/health/live")).json()["ai_analysis"] is False
     assert queue.jobs == []
@@ -91,14 +96,20 @@ async def test_inspect_returns_findings_and_drafted_report(store):
         },
     )
     app = create_app(
-        Settings(webhook_secrets={7: "secret"}, admin_token="admin", milestone="M0"),
+        Settings(
+            webhook_secrets={7: "secret"},
+            admin_token="admin",
+            session_origin="http://localhost",
+            session_local_http=True,
+            milestone="M0",
+        ),
         store,
         FakeQueue(),
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:
-        auth = {"Authorization": "Bearer admin"}
+        auth = await signed_in(app)
         body = (await client.get(f"/admin/reviews/{review.id}", headers=auth)).json()
         assert [x["claim"] for x in body["findings"]] == [f.claim]
         assert body["findings"][0]["severity"] == "REQUIRED"
@@ -112,7 +123,7 @@ async def test_inspect_returns_findings_and_drafted_report(store):
         ).json()
         assert found["id"] == review.id and len(found["findings"]) == 1
         queued = (await client.get("/admin/reviews?event_id=nope", headers=auth)).json()
-        assert queued["state"] == "QUEUED" and queued["findings"] == []
+        assert queued["detail"] == "Review not found"
 
 
 async def test_recheck_endpoint_enqueues_for_the_reviewed_merge_request(store):
@@ -120,14 +131,25 @@ async def test_recheck_endpoint_enqueues_for_the_reviewed_merge_request(store):
     review = await store.accept(7, 2, "a" * 40, "event-1")
     queue = FakeQueue()
     app = create_app(
-        Settings(webhook_secrets={7: "secret"}, admin_token="admin", milestone="M0"),
+        Settings(
+            webhook_secrets={7: "secret"},
+            admin_token="admin",
+            session_origin="http://localhost",
+            session_local_http=True,
+            milestone="M0",
+        ),
         store,
         queue,
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:
-        auth = {"Authorization": "Bearer admin"}
+        auth = await signed_in(app, "user")
+        from reviewer.store.models import Review
+
+        async with store.transaction() as session:
+            owned = await session.get(Review, review.id)
+            owned.owner_user_id = app.state.test_account.id
         response = await client.post(
             f"/admin/reviews/{review.id}/recheck", headers=auth
         )
@@ -170,7 +192,13 @@ async def test_inspect_reports_spend_against_the_ceiling_the_run_announced(store
                 )
             )
     app = create_app(
-        Settings(webhook_secrets={7: "secret"}, admin_token="admin", milestone="M0"),
+        Settings(
+            webhook_secrets={7: "secret"},
+            admin_token="admin",
+            session_origin="http://localhost",
+            session_local_http=True,
+            milestone="M0",
+        ),
         store,
         FakeQueue(),
     )
@@ -180,7 +208,7 @@ async def test_inspect_reports_spend_against_the_ceiling_the_run_announced(store
         body = (
             await client.get(
                 f"/admin/reviews/{review.id}",
-                headers={"Authorization": "Bearer admin"},
+                headers=await signed_in(app),
             )
         ).json()
     spend = body["spend"]

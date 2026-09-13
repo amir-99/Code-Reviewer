@@ -63,7 +63,7 @@ def test_url_parsing_honours_a_base_path_prefix():
 
 
 @pytest.fixture
-def client_parts(store, forge):
+async def client_parts(store, forge):
     forge.projects["group/proj"] = 7
     queue = FakeQueue()
     app = create_app(
@@ -81,6 +81,9 @@ def client_parts(store, forge):
         queue,
         forge,
     )
+    from tests.account_helpers import signed_in
+
+    app.state.test_headers = await signed_in(app, "user", forge)
     return app, queue, forge
 
 
@@ -91,7 +94,9 @@ async def post(app, body, token="admin"):
         return await client.post(
             "/admin/reviews",
             json=body,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=app.state.test_headers
+            if token == "admin"
+            else {"Origin": "http://localhost"},
         )
 
 
@@ -335,9 +340,7 @@ async def test_models_endpoint_reports_defaults_and_what_may_be_selected(client_
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:
-        response = await client.get(
-            "/admin/models", headers={"Authorization": "Bearer admin"}
-        )
+        response = await client.get("/admin/models", headers=app.state.test_headers)
     assert response.status_code == 200
     body = response.json()
     assert set(body["roles"]) == set(ROLES)

@@ -154,6 +154,12 @@ async def _receive_event(ctx, payload):
     # newer run with an older SHA. The machine independently re-checks it.
     mr = await ctx["forge"].get_merge_request(job.project_id, job.iid)
     if mr.state != "opened" or mr.draft:
+        if ctx.get("personal_trigger"):
+            from reviewer.store.models import ReviewTrigger
+
+            async with ctx["store"].transaction() as session:
+                trigger = await session.get(ReviewTrigger, job.event_id)
+                trigger.state = "REJECTED"
         logger.info(
             "mr_skipped",
             project_id=job.project_id,
