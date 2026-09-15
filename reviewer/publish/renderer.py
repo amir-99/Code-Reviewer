@@ -115,7 +115,7 @@ def summary(bundle, decision, findings, summary_findings, overflow, stage_result
     )
 
     lines = [
-        f"## 🤖 AI Code Review · {DECISION_ICON.get(str(decision), '💬')} {safe(decision)}",
+        f"## Code Review · {DECISION_ICON.get(str(decision), '💬')} {safe(decision)}",
         "",
         "| | |",
         "|---|---|",
