@@ -35,7 +35,10 @@ async def build(
             wt, base, review.head_sha, context_lines=config.review.context_lines
         )
         remote = await forge.get_changed_paths(mr.project_id, mr.iid)
-        if set(remote) != {f.path for f in files}:
+        # Compare affected paths, independent of rename pairing/thresholds.
+        local_paths = {f.path for f in files}
+        local_paths.update(f.old_path for f in files if f.old_path)
+        if set(remote) != local_paths:
             raise StaleReview("Local and forge diff inventories differ")
         return files
 

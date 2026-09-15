@@ -139,7 +139,9 @@ async def test_onboarding_manual_review_and_publication(
         )
     )
     forge.projects["group/proj"] = 88
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     settings = Settings(
         _env_file=None,
         project_ids=project_ids,
@@ -206,7 +208,9 @@ async def test_complete_pipeline_with_real_git_and_fake_external_services(
         repository_url=str(repo),
     )
     forge = FakeForge(mr)
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     review = await store.accept(7, 2, head, "pipeline")
     state = await pipeline(store, forge, tmp_path).run(review.id)
     assert state == "PUBLISHED"
@@ -250,7 +254,9 @@ async def test_secret_warning_continues_redacted_review(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     scanner = FakeSecretScanner(
         [
             {
@@ -319,7 +325,9 @@ async def test_failed_stage_never_blocks_gating_review(store, history, tmp_path)
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
 
     class Broken:
         async def complete(self, **kwargs):
@@ -363,7 +371,9 @@ async def test_incremental_push_only_dispatches_affected_files(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     machine = pipeline(store, forge, tmp_path)
     first = await store.accept(7, 2, head, "first-push")
     assert await machine.run(first.id) == "PUBLISHED"
@@ -396,7 +406,9 @@ async def test_verified_blocker_becomes_warning_and_continues(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
 
     class Blocker(Echo):
         async def complete(self, **kwargs):
@@ -473,7 +485,9 @@ async def test_recheck_answers_open_comments_after_a_push(store, history, tmp_pa
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     llm = Reviewing()
     machine = pipeline(store, forge, tmp_path, llm=llm)
     first = await store.accept(7, 2, head, "first-push")
@@ -485,7 +499,9 @@ async def test_recheck_answers_open_comments_after_a_push(store, history, tmp_pa
     git(repo, "commit", "-m", "guard the value")
     newhead = git(repo, "rev-parse", "HEAD")
     forge.mr.head_sha = newhead
-    forge.paths = git(repo, "diff", "--name-only", base, newhead).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, newhead
+    ).splitlines()
     second = await store.accept(7, 2, newhead, "second-push")
     assert await machine.run(second.id) == "PUBLISHED"
 
@@ -515,7 +531,9 @@ async def test_recheck_command_answers_threads_without_running_a_review(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     llm = Reviewing()
     machine = pipeline(store, forge, tmp_path, llm=llm)
     review = await store.accept(7, 2, head, "first-push")
@@ -571,7 +589,9 @@ async def test_a_run_resolves_its_models_once_and_records_what_it_used(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     # The operator moved one role for this run only; the rest keep the defaults.
     review = await store.accept(
         7,
@@ -621,7 +641,9 @@ async def test_frontend_only_manual_report_is_persisted_without_comments(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     review = await store.accept(
         7,
         2,
@@ -656,7 +678,9 @@ async def test_pipeline_verifies_independent_findings_concurrently(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
 
     class Parallel(Reviewing):
         def __init__(self):
@@ -712,7 +736,9 @@ async def test_recovery_keeps_frozen_models_and_config_without_resolving_again(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     review = await store.accept(7, 2, head, "frozen-recovery")
     original = store.save_stage
 
@@ -759,7 +785,9 @@ async def test_standard_review_uses_one_proposer_and_verifies_findings(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     config = {"defaults": {"analysis_mode": "standard", "enforcement": "gating"}}
     if legacy_limits:
         config["defaults"]["review"] = {"max_changed_lines": 1}
@@ -827,7 +855,9 @@ async def test_large_change_reviews_clock_source_and_excludes_only_lockfiles(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
     review = await store.accept(7, 2, head, "large-change")
     assert (
         await pipeline(store, forge, tmp_path, llm=Echo(), mode="standard").run(
@@ -859,7 +889,9 @@ async def test_unverified_absence_is_a_coverage_gap_not_a_published_suggestion(
             repository_url=str(repo),
         )
     )
-    forge.paths = git(repo, "diff", "--name-only", base, head).splitlines()
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
 
     class MissingScope(Reviewing):
         async def complete(self, **kwargs):

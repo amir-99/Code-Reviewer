@@ -143,6 +143,11 @@ class GitLab:
         return DiffRefs.model_validate(r.json()["diff_refs"])
 
     async def get_changed_paths(self, project_id, iid):
+        """Return every affected path, including both sides of renames.
+
+        Rename detection can differ from local Git. Comparing both endpoints
+        also matches a rename represented as a deletion and an addition.
+        """
         paths = []
         page = 1
         while True:
@@ -152,7 +157,10 @@ class GitLab:
             )
             r.raise_for_status()
             data = r.json()
-            paths.extend(x["new_path"] for x in data)
+            for change in data:
+                paths.append(change["new_path"])
+                if change["old_path"] != change["new_path"]:
+                    paths.append(change["old_path"])
             if len(data) < 100:
                 return paths
             page += 1
