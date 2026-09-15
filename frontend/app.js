@@ -475,12 +475,24 @@ function renderFindings() {
 
   const shown = findings.filter(f => matchesFinding(f, severity, impactLevel))
     .slice().sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity));
+  const normal = shown.filter(f => f.verdict !== 'rejected');
+  const rejected = shown.filter(f => f.verdict === 'rejected');
+  const previous = $('findings').querySelector('.rejected-findings');
+  const keepOpen = previous?.open && previous.dataset.reviewId === String(current?.id);
   $('findings').replaceChildren();
   if (!shown.length) {
     $('findings').append(el('p', findings.length ? 'No findings match these filters.' : 'No stored findings to show.', 'empty-line'));
     return;
   }
-  for (const finding of shown) $('findings').append(findingCard(finding));
+  for (const finding of normal) $('findings').append(findingCard(finding));
+  if (rejected.length) {
+    const section = el('details', '', 'rejected-findings');
+    section.dataset.reviewId = String(current?.id);
+    section.open = Boolean(keepOpen);
+    section.append(el('summary', `Rejected findings (${rejected.length})`));
+    for (const finding of rejected) section.append(findingCard(finding));
+    $('findings').append(section);
+  }
 }
 
 function findingCard(finding) {

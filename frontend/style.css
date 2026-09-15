@@ -692,6 +692,10 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
 
 /* ---------- findings ---------- */
 
+.rejected-findings { margin-top: 16px; }
+.rejected-findings > summary { cursor: pointer; padding: 12px 0; color: var(--text-dim); font-weight: 620; }
+.rejected-findings > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .sevbar { display: flex; gap: 2px; height: 6px; margin-bottom: 14px; border-radius: 999px; overflow: hidden; background: var(--surface-3); }
 .sevbar i { flex-grow: var(--share, 1); flex-basis: 0; min-width: 3px; }
 .sevbar i.BLOCKER, .sevbar i.REQUIRED { background: var(--red); }
