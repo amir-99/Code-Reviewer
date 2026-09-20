@@ -15,6 +15,8 @@ Open the configured dashboard URL and sign in with your local account. The API r
 its existing localhost port 8092. The optional Compose file adds a fifth healthy
 long-running service. It does not mount credentials in the frontend container.
 Login creates an HttpOnly cookie session; write requests also send the CSRF token.
+Page loads restore the account and CSRF token through `/auth/me`, so refreshing
+or opening another tab keeps a valid session signed in.
 Logout aborts streams and requests, clears account data, and revokes the session.
 
 For standalone packaging:

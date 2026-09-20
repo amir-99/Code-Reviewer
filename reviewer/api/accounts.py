@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import select
 
-from reviewer.accounts.service import Accounts, digest, public
+from reviewer.accounts.service import Accounts, digest, public, session_csrf
 from reviewer.store.models import Account
 
 router = APIRouter(prefix="/auth")
@@ -50,8 +50,13 @@ async def authenticate(request: Request):
     transport(request)
     account, session = result
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
-        if not hmac.compare_digest(
-            session.csrf_hash, digest(request.headers.get("x-csrf-token", ""))
+        supplied = digest(request.headers.get("x-csrf-token", ""))
+        # Keep pre-upgrade tabs working with their original random CSRF token.
+        if not (
+            hmac.compare_digest(session.csrf_hash, supplied)
+            or hmac.compare_digest(
+                digest(session_csrf(request.cookies[COOKIE])), supplied
+            )
         ):
             raise HTTPException(403, "Invalid CSRF token")
     request.state.principal = account
@@ -139,9 +144,11 @@ async def activate(body: Activation, request: Request):
 
 
 @router.get("/me")
-async def me(account=Depends(authenticate)):
+async def me(request: Request, response: Response, account=Depends(authenticate)):
+    response.headers["Cache-Control"] = "no-store"
     return {
         "account": public(account),
+        "csrf_token": session_csrf(request.cookies[COOKIE]),
         "capabilities": {
             "execute": account.role == "user",
             "manage_accounts": account.role == "admin",

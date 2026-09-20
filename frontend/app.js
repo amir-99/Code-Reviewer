@@ -1359,23 +1359,8 @@ $('login').onsubmit = async event => {
   event.preventDefault();
   try {
     const result = await (await request('/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({login:$('login-name').value, password:$('token').value})})).json();
-    token = result.csrf_token; account = result.account;
-    applyAccount();
-    await refresh();
-    $('token').value = '';
-    $('connect').hidden = true;
-    $('workspace').hidden = false;
-    $('disconnect').hidden = false;
-    // Selection is optional: a deployment that cannot report its models still
-    // triggers reviews, they just run on whatever it is configured with.
-    loadModels().catch(() => {
-      $('models-panel').hidden = true;
-      notice('Model selection is unavailable; runs will use the configured defaults.');
-    });
-    clearInterval(refreshTimer);
-    refreshTimer = setInterval(() => refresh().catch(() => connection('bad', 'API unreachable')), 15000);
+    startSession(result);
   } catch (error) {
-    token = '';
     $('conn').hidden = true;
     notice(error.message, 'error');
   }
@@ -1513,6 +1498,41 @@ $('trigger').onsubmit = async event => {
   } catch (error) { if (error.name !== 'AbortError') notice(error.message, 'error'); }
   finally { $('start').disabled = false; }
 };
+
+
+function startSession(result) {
+  token = result.csrf_token; account = result.account;
+  applyAccount();
+  $('token').value = '';
+  $('connect').hidden = true;
+  $('workspace').hidden = false;
+  $('disconnect').hidden = false;
+  // A data-loading failure does not invalidate a successfully restored session.
+  refresh().catch(error => {
+    if (error.name !== 'AbortError' && error.status !== 401) {
+      connection('bad', 'API unreachable'); notice(error.message, 'error');
+    }
+  });
+  loadModels().catch(error => {
+    if (error.name === 'AbortError' || error.status === 401) return;
+    $('models-panel').hidden = true;
+    notice('Model selection is unavailable; runs will use the configured defaults.');
+  });
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => refresh().catch(() => connection('bad', 'API unreachable')), 15000);
+}
+
+async function restoreSession() {
+  // Wait for the cookie check before allowing a competing login request.
+  $('connect').hidden = true;
+  try {
+    startSession(await (await request('/auth/me')).json());
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    $('connect').hidden = false;
+    if (error.status !== 401) notice('Could not restore your session. Refresh to retry.', 'error');
+  }
+}
 
 
 function clearSession() {
@@ -1727,3 +1747,5 @@ $('replay').onclick = async () => {
   } catch (error) { if (error.name !== 'AbortError') notice(error.message,'error'); }
   finally { $('replay').disabled = false; }
 };
+
+void restoreSession();

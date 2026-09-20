@@ -484,3 +484,81 @@ async def test_personal_git_clients_share_mirror_leases(tmp_path):
         assert not entered.is_set()
     await asyncio.wait_for(task, 1)
     assert entered.is_set()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_cookie_session_restores_csrf_without_invalidating_other_tabs(
+    store, forge, legacy
+):
+    from httpx import ASGITransport, AsyncClient
+
+    from reviewer.config.schema import Settings
+    from reviewer.main import create_app
+    from tests.conftest import FakeQueue
+
+    accounts = Accounts(store)
+    owner = await active(accounts)
+    _, cookie, original_csrf = await accounts.login(
+        "alice", "a sufficiently long password", "local"
+    )
+    if legacy:
+        original_csrf = "pre-upgrade-random-csrf-token"
+        async with store.transaction() as session:
+            row = await session.get(LoginSession, digest(cookie))
+            row.csrf_hash = digest(original_csrf)
+    app = create_app(
+        Settings(
+            _env_file=None,
+            session_origin="http://localhost",
+            session_local_http=True,
+        ),
+        store,
+        FakeQueue(),
+        forge,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost"
+    ) as client:
+        assert (await client.get("/auth/me")).status_code == 401
+        client.cookies.set("reviewer_session", cookie)
+        restored = await client.get("/auth/me")
+        assert restored.status_code == 200
+        assert restored.headers["Cache-Control"] == "no-store"
+        assert restored.json()["account"]["id"] == owner["id"]
+        csrf = restored.json()["csrf_token"]
+        assert csrf != cookie
+        assert (await client.get("/auth/me")).json()["csrf_token"] == csrf
+        # A second session's CSRF token cannot authorize this session.
+        _, _, other_csrf = await accounts.login(
+            "alice", "a sufficiently long password", "other"
+        )
+        for invalid in ("", "wrong", other_csrf):
+            assert (
+                await client.post(
+                    "/auth/logout",
+                    headers={"Origin": "http://localhost", "X-CSRF-Token": invalid},
+                )
+            ).status_code == 403
+        assert (
+            await client.post(
+                "/auth/logout",
+                headers={"Origin": "https://other.invalid", "X-CSRF-Token": csrf},
+            )
+        ).status_code == 403
+        # Both the pre-refresh tab and restored tab pass authentication. This
+        # user-only account is rejected by the subsequent admin-role check.
+        for valid in (original_csrf, csrf):
+            response = await client.post(
+                "/auth/users",
+                json={"login": "new", "display_name": "New"},
+                headers={"Origin": "http://localhost", "X-CSRF-Token": valid},
+            )
+            assert response.json()["detail"] == "Admin role required"
+        assert (
+            await client.post(
+                "/auth/logout",
+                headers={"Origin": "http://localhost", "X-CSRF-Token": csrf},
+            )
+        ).status_code == 200
+        client.cookies.set("reviewer_session", cookie)
+        assert (await client.get("/auth/me")).status_code == 401

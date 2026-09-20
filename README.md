@@ -377,7 +377,7 @@ Users with at least Developer access may issue:
 
 ## Audit and observability
 
-Dashboard routes require an account session. Writes also require the configured Origin and `X-CSRF-Token` from login. Admins can read every review but cannot trigger, replay or recheck one. Users can read and execute only their own reviews. `ADMIN_TOKEN` no longer authorizes these routes or metrics.
+Dashboard routes require an account session. Writes also require the configured Origin and `X-CSRF-Token` from login or authenticated `GET /auth/me` session restoration. Admins can read every review but cannot trigger, replay or recheck one. Users can read and execute only their own reviews. `ADMIN_TOKEN` no longer authorizes these routes or metrics.
 
 - `POST /admin/reviews`: trigger a review from a merge request link, with no
   hook involved. The body takes `merge_request_url` plus optional `issue_key`,

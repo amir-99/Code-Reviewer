@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import hmac
 import secrets
 import unicodedata
 from datetime import UTC, timedelta
@@ -26,6 +27,11 @@ DUMMY_HASH = PASSWORDS.hash(secrets.token_urlsafe(32))
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def session_csrf(token):
+    """Recover a session-bound CSRF token without exposing the HttpOnly cookie."""
+    return hmac.new(token.encode(), b"reviewer-csrf-v1", hashlib.sha256).hexdigest()
 
 
 def normalize(login):
@@ -196,7 +202,8 @@ class Accounts:
                         LoginSession.token_hash == digest(old_token)
                     )
                 )
-            token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+            token = secrets.token_urlsafe(32)
+            csrf = session_csrf(token)
             session.add(
                 LoginSession(
                     token_hash=digest(token),
