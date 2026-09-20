@@ -997,3 +997,14 @@ dialog.confirm-dialog .form-actions { justify-content: flex-end; }
 .finding .related { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
 .finding .related q { color: var(--text); }
 .badge.tone-kind { background: var(--violet-soft); color: var(--violet); }
+
+.report-controls { display: flex; gap: 12px; align-items: center; }
+.report-controls [aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.markdown-preview { line-height: 1.65; overflow-wrap: anywhere; overflow-x: auto; }
+.markdown-preview > div > :first-child { margin-top: 0; }
+.markdown-preview h1, .markdown-preview h2, .markdown-preview h3 { margin: 24px 0 12px; }
+.markdown-preview table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+.markdown-preview th, .markdown-preview td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; }
+.markdown-preview th { background: var(--surface-2); }
+.markdown-preview code { font-family: var(--mono); background: var(--surface-2); padding: 2px 4px; border-radius: 4px; }
+.markdown-preview blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 16px; color: var(--text-dim); }

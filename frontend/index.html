@@ -244,7 +244,13 @@
       <section class="card" id="panel-report" role="tabpanel" aria-labelledby="tab-report" hidden>
         <div class="card-head">
           <h2>Review report</h2>
-          <button id="copy-report" type="button">Copy</button>
+          <div class="report-controls">
+            <div role="group" aria-label="Markdown display mode">
+              <button type="button" data-report-mode="view" aria-pressed="true" aria-controls="report-preview">View</button>
+              <button type="button" data-report-mode="text" aria-pressed="false" aria-controls="report">Text</button>
+            </div>
+            <button id="copy-report" type="button">Copy</button>
+          </div>
         </div>
         <div class="actions"><button id="recheck-report-action" type="button">Recheck comments</button><span class="hint">Judge open comments at the current head.</span></div>
         <h3>Cost and token usage, including rechecks</h3>
@@ -253,7 +259,8 @@
         <table class="spend-table"><thead><tr><th>Model</th><th>Calls</th><th>Input tokens</th><th>Output tokens</th><th>Total tokens</th><th>Cost</th></tr></thead><tbody id="report-model-rows"></tbody></table>
         <h3>By step</h3>
         <table class="spend-table"><thead><tr><th>Step</th><th>Calls</th><th>Input tokens</th><th>Output tokens</th><th>Total tokens</th><th>Cost</th></tr></thead><tbody id="report-step-rows"></tbody></table>
-        <pre id="report"></pre>
+        <div id="report-preview" class="markdown-preview" hidden></div>
+        <pre id="report" hidden></pre>
         <p id="report-empty" class="empty-line">This review has not rendered a report.</p>
       </section>
       <section class="card" id="panel-chat" role="tabpanel" aria-labelledby="tab-chat" hidden>

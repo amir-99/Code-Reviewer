@@ -693,9 +693,81 @@ $('publish-all-comments').onclick = () => runCommentAction('publish_all');
 
 /* ---------- report and recheck ---------- */
 
+// Report content stays text; only locally created formatting nodes become HTML.
+function markdownPreview(source) {
+  const root = el('div');
+  function inline(parent, text) {
+    const pattern = /(`[^`]+`|\*\*[^*]+\*\*|_[^_]+_|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g;
+    let start = 0;
+    for (const match of text.matchAll(pattern)) {
+      parent.append(document.createTextNode(text.slice(start, match.index)));
+      const token = match[0];
+      if (token.startsWith('[')) {
+        const [, label, url] = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+        const link = el('a', label); link.href = url; link.rel = 'noreferrer noopener'; parent.append(link);
+      } else {
+        const width = token.startsWith('**') ? 2 : 1;
+        parent.append(el(token.startsWith('`') ? 'code' : width === 2 ? 'strong' : 'em', token.slice(width, -width)));
+      }
+      start = match.index + token.length;
+    }
+    parent.append(document.createTextNode(text.slice(start)));
+  }
+  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+  const cells = line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(cell => cell.trim().replace(/\\\|/g, '|'));
+  let list = null, paragraph = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) { list = paragraph = null; continue; }
+    const fence = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      const code = [];
+      while (++i < lines.length && !new RegExp(`^\\s*${fence[1][0]}{${fence[1].length},}\\s*$`).test(lines[i])) code.push(lines[i]);
+      const pre = el('pre'); pre.append(el('code', code.join('\n'))); root.append(pre);
+    } else if (line.includes('|') && i + 1 < lines.length && cells(lines[i + 1]).every(cell => /^:?-{3,}:?$/.test(cell))) {
+      const table = el('table'), head = el('thead'), body = el('tbody');
+      const row = (text, tag) => { const tr = el('tr'); for (const cell of cells(text)) { const td = el(tag); inline(td, cell); tr.append(td); } return tr; };
+      head.append(row(line, 'th')); i++;
+      while (i + 1 < lines.length && lines[i + 1].includes('|') && lines[i + 1].trim()) body.append(row(lines[++i], 'td'));
+      table.append(head, body); root.append(table);
+    } else if (/^#{1,6}\s/.test(line)) {
+      const [, hashes, text] = line.match(/^(#{1,6})\s+(.*)$/);
+      const heading = el(`h${hashes.length}`); inline(heading, text); root.append(heading);
+    } else if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) root.append(el('hr'));
+    else if (/^\s*(?:[-+*]|\d+\.)\s+/.test(line)) {
+      const [, marker, text] = line.match(/^\s*([-+*]|\d+\.)\s+(.*)$/);
+      const tag = /\d/.test(marker) ? 'ol' : 'ul';
+      if (!list || list.tagName.toLowerCase() !== tag) { list = el(tag); root.append(list); }
+      const item = el('li'); inline(item, text); list.append(item); paragraph = null; continue;
+    } else if (/^>\s?/.test(line)) {
+      const quote = el('blockquote'); inline(quote, line.replace(/^>\s?/, '')); root.append(quote);
+    } else {
+      if (!paragraph) { paragraph = el('p'); root.append(paragraph); }
+      else paragraph.append(document.createTextNode('\n'));
+      inline(paragraph, line); list = null; continue;
+    }
+    list = paragraph = null;
+  }
+  return root;
+}
+
+let reportMode = 'view';
+function setReportMode(mode) {
+  reportMode = mode;
+  const available = !!$('report').textContent;
+  $('report').hidden = !available || mode !== 'text';
+  $('report-preview').hidden = !available || mode !== 'view';
+  for (const button of all('[data-report-mode]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.reportMode === mode));
+    button.disabled = !available;
+  }
+}
+for (const button of all('[data-report-mode]')) button.onclick = () => setReportMode(button.dataset.reportMode);
+
 function renderReport(report) {
   $('report').textContent = report || '';
-  $('report').hidden = !report;
+  $('report-preview').replaceChildren(markdownPreview(report || ''));
+  setReportMode(reportMode);
   $('report-empty').hidden = !!report;
   $('copy-report').disabled = !report;
   $('tabn-report').hidden = !report;
@@ -1543,7 +1615,7 @@ function clearSession() {
   modelChoice.clear(); reviewModels = {}; modelDefaults = {}; modelCatalog = []; audited = null; streamed = emptySpend();
   $('workspace').hidden = true; $('connect').hidden = false; $('disconnect').hidden = true;
   $('account-identity').hidden = true; $('account-content').replaceChildren(); $('review').hidden = true;
-  $('activity').replaceChildren(); $('report').textContent = ''; $('token').value = '';
+  $('activity').replaceChildren(); renderReport(''); $('token').value = '';
 }
 
 function applyAccount() {
