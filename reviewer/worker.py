@@ -176,6 +176,20 @@ async def _receive_event(ctx, payload):
     trigger = ctx.get("personal_trigger")
     if trigger or (job.overrides and job.overrides.requested_by == "admin"):
         await ctx["store"].provision([job.project_id])
+    if await ctx["store"].internal_project(job.project_id) is not None:
+        path = job.project_path
+        if not path and mr.web_url:
+            from reviewer.api.manual import parse_merge_request_url
+
+            try:
+                path, _ = parse_merge_request_url(
+                    mr.web_url, ctx["settings"].gitlab_base_url
+                )
+            except ValueError:
+                pass
+        await ctx["store"].provision(
+            [job.project_id], name=job.project_name, path_with_namespace=path
+        )
     review = await ctx["store"].accept(
         job.project_id,
         job.iid,
@@ -339,19 +353,22 @@ async def recheck_review(ctx, project_id, iid, review_id=None):
         return {"rechecked": False, "reason": "milestone"}
     logger.info("recheck_requested", project_id=project_id, iid=iid)
     async with ctx["store"].mr_lock(project_id, iid):
-        review = await ctx["store"].get(review_id) if review_id else None
-        if review and review.owner_user_id:
-            from reviewer.accounts.credentials import CredentialUnavailable
-            from reviewer.accounts.execution import personal_machine
+        from reviewer.telemetry.activity import recheck_run
 
-            try:
-                async with personal_machine(ctx, review, recheck=True) as personal:
-                    return await personal.recheck_now(
-                        project_id, iid, review_id=review_id
-                    )
-            except CredentialUnavailable:
-                return {"rechecked": False, "reason": "credentials_unavailable"}
-        return await machine.recheck_now(project_id, iid, review_id=review_id)
+        async with recheck_run(ctx["store"], review_id):
+            review = await ctx["store"].get(review_id) if review_id else None
+            if review and review.owner_user_id:
+                from reviewer.accounts.credentials import CredentialUnavailable
+                from reviewer.accounts.execution import personal_machine
+
+                try:
+                    async with personal_machine(ctx, review, recheck=True) as personal:
+                        return await personal.recheck_now(
+                            project_id, iid, review_id=review_id
+                        )
+                except CredentialUnavailable:
+                    return {"rechecked": False, "reason": "credentials_unavailable"}
+            return await machine.recheck_now(project_id, iid, review_id=review_id)
 
 
 async def replay_review(ctx, project_id, iid, event_id, overrides=None):

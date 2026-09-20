@@ -16,6 +16,8 @@ router = APIRouter()
 
 class ReviewJob(BaseModel):
     project_id: int = Field(gt=0)
+    project_name: str | None = Field(default=None, max_length=1024)
+    project_path: str | None = Field(default=None, max_length=2048)
     iid: int = Field(gt=0)
     head_sha: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     event_id: str = Field(max_length=128)
@@ -38,6 +40,8 @@ def event_job(payload: dict, event_id: str) -> ReviewJob | None:
             return None
         return ReviewJob(
             project_id=payload["project"]["id"],
+            project_name=payload["project"].get("name"),
+            project_path=payload["project"].get("path_with_namespace"),
             iid=mr["iid"],
             head_sha=mr.get("last_commit", {}).get("id") or mr.get("sha") or "0" * 40,
             event_id=event_id,
@@ -53,6 +57,8 @@ def event_job(payload: dict, event_id: str) -> ReviewJob | None:
             return None
         return ReviewJob(
             project_id=payload["project"]["id"],
+            project_name=payload["project"].get("name"),
+            project_path=payload["project"].get("path_with_namespace"),
             iid=payload.get("merge_request", {}).get("iid", 1),
             head_sha=attrs["sha"],
             event_id=event_id,
@@ -74,6 +80,8 @@ def event_job(payload: dict, event_id: str) -> ReviewJob | None:
         return None
     return ReviewJob(
         project_id=payload["project"]["id"],
+        project_name=payload["project"].get("name"),
+        project_path=payload["project"].get("path_with_namespace"),
         iid=attrs["iid"],
         head_sha=sha,
         event_id=event_id,

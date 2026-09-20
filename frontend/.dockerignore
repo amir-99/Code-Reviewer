@@ -2,6 +2,7 @@
 !server.py
 !index.html
 !app.js
+!identity.js
 !sse.js
 !flow.js
 !models.js

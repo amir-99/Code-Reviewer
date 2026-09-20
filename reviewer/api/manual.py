@@ -144,9 +144,10 @@ async def trigger(body: ManualReviewRequest, request: Request):
     forge = factory(settings.gitlab_base_url, context.tokens["gitlab"])
     try:
         principal_id = str(await forge.identity())
-        project_id = await forge.project_id_for_path(project_path)
-        if project_id is None:
+        project = await forge.project_for_path(project_path)
+        if project is None:
             raise HTTPException(404, "Project is not visible to the reviewer")
+        project_id = project.id
         mr = await forge.get_merge_request(project_id, iid)
     except HTTPException:
         raise
@@ -165,6 +166,8 @@ async def trigger(body: ManualReviewRequest, request: Request):
     models = check_models(body.models, settings, project_id)
     job = ReviewJob(
         project_id=project_id,
+        project_name=project.name,
+        project_path=project.path_with_namespace,
         iid=iid,
         head_sha=mr.head_sha,
         # A fresh id every call: a manual re-trigger is a deliberate re-run, not
@@ -219,6 +222,8 @@ async def trigger(body: ManualReviewRequest, request: Request):
     return {
         "accepted": True,
         "project_id": project_id,
+        "project_name": project.name,
+        "project_path": project.path_with_namespace,
         "iid": iid,
         "head_sha": mr.head_sha,
         "event_id": job.event_id,

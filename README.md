@@ -515,6 +515,8 @@ the updated API/worker. See the frontend README for event shapes, configuration,
 tests, and activity retention/capacity considerations.
 
 
+Project names and namespace paths are cached when a review is admitted; GitLab renames appear after the next run. Older projects fall back to their numeric ID until refreshed.
+
 ### Advisory impact
 
 The existing severity enum represents the code-derived disposition and remains

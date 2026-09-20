@@ -113,9 +113,13 @@ async def test_manual_trigger_enqueues_job_with_overrides(client_parts):
     )
     assert response.status_code == 202
     assert response.json()["project_id"] == 7
+    assert response.json()["project_path"] == "group/proj"
+    assert response.json()["project_name"] == "proj"
     (name, args) = queue.jobs[0]
     assert name == "receive_event"
     assert args[0]["project_id"] == 7 and args[0]["iid"] == 2
+    assert args[0]["project_path"] == "group/proj"
+    assert args[0]["project_name"] == "proj"
     overrides = args[0]["overrides"]
     assert overrides["issue_key"] == "ABC-123"
     assert overrides["epic_key"] == "ABC-100"

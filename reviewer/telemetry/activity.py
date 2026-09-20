@@ -1,7 +1,7 @@
 """Metadata-only activity tracing, scoped to one pipeline invocation."""
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from functools import wraps
 from time import monotonic
@@ -170,16 +170,17 @@ CLOSED = {
 }
 
 
-async def _run_event(store, review_id, status):
+async def _run_event(store, review_id, status, *, name="review run"):
     # One durable row per run, opened and closed on the same activity id.
     try:
         await store.append_event(
             review_id,
             RUN,
             dict(
-                name="review run",
+                name=name,
                 status=status,
-                activity_id=f"{RUN}:{review_id}",
+                activity_id=f"{RUN}:{review_id}"
+                + (":recheck" if name == "Standalone recheck run" else ""),
                 parent_id=None,
             ),
         )
@@ -200,3 +201,30 @@ async def close_run(store, review_id):
         return
     state = getattr(review, "state", None)
     await _run_event(store, review_id, CLOSED.get(str(state), "failed"))
+
+
+@asynccontextmanager
+async def recheck_run(store, review_id):
+    """Keep a terminal review live, with a lease that expires if its worker dies."""
+    if review_id is None:
+        yield
+        return
+
+    async def heartbeat():
+        while True:
+            await asyncio.sleep(10)
+            await _run_event(store, review_id, "started", name="Standalone recheck run")
+
+    await _run_event(store, review_id, "started", name="Standalone recheck run")
+    task = asyncio.create_task(heartbeat())
+    status = "completed"
+    try:
+        yield
+    except BaseException as exc:
+        status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+        raise
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        await _run_event(store, review_id, status, name="Standalone recheck run")

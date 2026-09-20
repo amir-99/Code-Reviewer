@@ -4,6 +4,12 @@ import httpx
 from pydantic import BaseModel, Field
 
 
+class ProjectIdentity(BaseModel):
+    id: int
+    name: str | None = None
+    path_with_namespace: str | None = None
+
+
 class MergeRequestContext(BaseModel):
     project_id: int
     iid: int
@@ -60,6 +66,7 @@ class ForgeService(Protocol):
         self, project_id: int, iid: int
     ) -> MergeRequestContext: ...
     async def project_id_for_path(self, path: str) -> int | None: ...
+    async def project_for_path(self, path: str) -> ProjectIdentity | None: ...
     async def set_commit_status(
         self,
         project_id: int,
@@ -104,14 +111,18 @@ class GitLab:
         )
 
     async def project_id_for_path(self, path: str) -> int | None:
-        """Numeric id for a namespace/project path taken from a web URL."""
+        project = await self.project_for_path(path)
+        return project.id if project else None
+
+    async def project_for_path(self, path: str) -> ProjectIdentity | None:
+        """Resolve project identity using this client's credentials."""
         from urllib.parse import quote
 
         response = await self.client.get(f"projects/{quote(path, safe='')}")
         if response.status_code in {403, 404}:
             return None
         response.raise_for_status()
-        return int(response.json()["id"])
+        return ProjectIdentity.model_validate(response.json())
 
     async def set_commit_status(
         self, project_id, sha, state, name, description, target_url
@@ -362,6 +373,16 @@ class FakeForge:
 
     async def project_id_for_path(self, path):
         return self.projects.get(path)
+
+    async def project_for_path(self, path):
+        project_id = await self.project_id_for_path(path)
+        return (
+            ProjectIdentity(
+                id=project_id, name=path.rsplit("/", 1)[-1], path_with_namespace=path
+            )
+            if project_id
+            else None
+        )
 
     async def set_commit_status(
         self, project_id, sha, state, name, description, target_url

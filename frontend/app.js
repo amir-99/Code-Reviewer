@@ -1,3 +1,4 @@
+import {identity, identityNode} from './identity.js';
 import {matchesFinding, commentActions, bulkCommentKeys} from './findings.js';
 import {apiURL} from './paths.js';
 import {events} from './sse.js';
@@ -33,6 +34,7 @@ const KINDS = {llm_attempt: 'llm'};
 const KEEP = 300;
 
 let token = '', account = null, sessionGeneration = 0, sessionAbort = new AbortController(), selected = '', current = null, controller, refreshTimer, lastRecheck = null;
+let pendingRecheck = '';
 let reviews = [], listFilter = 'all', listQuery = '', activityKind = 'all', severity = 'all', tabTouched = false;
 let snapshotSeq = 0;            // the newest event the last snapshot already reflects
 const activities = new Map();   // activity_id -> {row, kind, name, status, depth, at}
@@ -137,7 +139,7 @@ const kept = review => {
   if (listFilter === 'changes' && review.decision !== 'REQUEST_CHANGES') return false;
   if (listFilter === 'failed' && !FAILED.has(review.state) && !HALTED.has(review.state)) return false;
   if (!listQuery) return true;
-  return `${identity(review)} ${review.kind || 'code'} ${review.head_sha} ${labels(review.state)} ${labels(review.decision)}`
+  return `${identity(review)} ${review.project_id ?? ""} ${review.kind || 'code'} ${review.head_sha} ${labels(review.state)} ${labels(review.decision)}`
     .toLowerCase().includes(listQuery);
 };
 
@@ -163,7 +165,9 @@ function reviewRow(review) {
   const button = el('button', '', `s-${tone(review.state)}${review.id === selected ? ' selected' : ''}`);
   button.type = 'button';
   const top = el('div', '', 'top');
-  top.append(el('i', '', 'dot'), el('span', identity(review), 'grow'));
+  const title = identityNode(review, document);
+  title.className = 'grow';
+  top.append(el('i', '', 'dot'), title);
   if (review.kind === 'document') top.append(el('span', 'document', 'badge tone-kind'));
   if (review.decision) top.append(decisionBadge(review.decision));
   const bottom = el('div', '', 'bottom');
@@ -179,15 +183,6 @@ function reviewRow(review) {
   button.append(top, bottom);
   button.onclick = () => select(review.id);
   return button;
-}
-
-// What a review is about, in one line: a merge request or a page.
-function identity(review) {
-  if (review.kind === 'document') {
-    const subject = review.subject || {};
-    return `${subject.space ? `${subject.space} · ` : ''}${subject.title || `Page ${subject.page_id ?? ''}`}`;
-  }
-  return `Project ${review.project_id} · !${review.mr_iid}`;
 }
 
 function decisionBadge(decision) {
@@ -211,9 +206,7 @@ function renderHead(review) {
   renderReviewLinks();
   const overrides = review.overrides || {};
   const isDocument = review.kind === 'document';
-  $('identity').textContent = isDocument
-    ? `Document review · ${identity(review)}`
-    : `Project ${review.project_id} · Merge request !${review.mr_iid}`;
+  $('identity').replaceChildren(...(isDocument ? ['Document review · '] : []), identityNode(review, document));
   $('state').textContent = labels(review.state);
   $('metadata').textContent = [
     isDocument ? `page version ${review.head_sha}` : `head ${short(review.head_sha, 12)}`,
@@ -1286,6 +1279,7 @@ async function follow(id, signal) {
         if (event.event === 'snapshot') render(event.data);
         if (event.event === 'activity' && Number(event.id) > Number(cursor)) { addActivity(event.data); cursor = event.id; }
         if (event.event === 'complete') {
+          if (pendingRecheck === id) break; // The worker may still be queued; reconnect with the cursor.
           live(tone(event.data?.state) === 'bad' ? 'bad' : 'done', 'Finished');
           closeOpenActivities();
           if (!tabTouched && current?.findings?.length) showTab('findings');
@@ -1434,15 +1428,20 @@ $('recheck').onclick = async () => {
   try {
     await request(`/admin/reviews/${encodeURIComponent(id)}/recheck`, {method: 'POST'});
     notice('Recheck queued. Judging the open threads at the current head…');
-    // The review is already terminal, so its event stream reports nothing more:
-    // read the answers back from the review itself.
+    if (selected !== id) return;
+    pendingRecheck = id;
+    select(id);
+    tabTouched = true;
+    showTab('recheck');
+    // Keep following while queued; poll the persisted result for completion.
     for (let attempt = 0; attempt < 40 && selected === id; attempt++) {
       await delay(3000, controller.signal);
       if (selected !== id) return;
       const review = await (await request(`/admin/reviews/${encodeURIComponent(id)}`)).json();
+      if (selected !== id) return;
       if (JSON.stringify(review.recheck ?? null) !== before) {
-        select(id); // Reload the durable activity feed, including standalone recheck actions.
-        render(review);
+        pendingRecheck = '';
+        renderRecheck(review.recheck);
         tabTouched = true;
         showTab('recheck');
         notice(review.recheck?.reason ? `Recheck: ${review.recheck.reason.replaceAll('_', ' ')}.` : 'Recheck answered the open threads.', review.recheck?.reason === 'failed' ? 'error' : 'ok');
@@ -1451,7 +1450,7 @@ $('recheck').onclick = async () => {
     }
     notice('No recheck answers recorded yet. The review may have no open reviewer threads, or recheck may be off for this project.');
   } catch (error) { if (error.name !== 'AbortError') notice(error.message, 'error'); }
-  finally { for (const button of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(button).disabled = false; }
+  finally { pendingRecheck = ''; for (const button of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(button).disabled = false; }
 };
 
 $('recheck-tab-action').onclick = $('recheck-report-action').onclick = () => $('recheck').click();
@@ -1487,12 +1486,13 @@ $('trigger').onsubmit = async event => {
     notice('Review queued. Waiting for worker admission…', 'ok');
     $('empty').hidden = false;
     $('review').hidden = true;
+    const queued = el('p');
+    if (kind === 'document') queued.textContent = `${job.subject?.title || 'Page'} (version ${job.subject?.version ?? '?'}). Waiting for worker admission…`;
+    else queued.append(identityNode({...job, mr_iid: job.iid}, document), '. Waiting for worker admission…');
     $('empty').replaceChildren(
       el('span', '◈', 'symbol'),
       el('h2', 'Review queued'),
-      el('p', kind === 'document'
-        ? `${job.subject?.title || 'Page'} (version ${job.subject?.version ?? '?'}). Waiting for worker admission…`
-        : `Project ${job.project_id} · merge request !${job.iid}. Waiting for worker admission…`, 'muted'),
+      queued,
     );
     controller?.abort();
     controller = new AbortController();

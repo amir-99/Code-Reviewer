@@ -45,6 +45,11 @@ async def test_authenticated_list_and_sse_replay(store):
         listed = (await client.get("/admin/reviews")).json()["reviews"]
         assert listed[0]["id"] == review.id
         assert listed[0]["project_id"] == 7
+        assert listed[0]["project_name"] is None
+        await store.provision([7], name="Project", path_with_namespace="group/project")
+        detail = (await client.get(f"/admin/reviews/{review.id}")).json()
+        assert detail["project_path"] == "group/project"
+        assert detail["project_name"] == "Project"
         assert (await client.get("/admin/reviews?limit=101")).status_code == 422
         assert (await client.get("/admin/reviews?event_id=event")).json()[
             "id"
@@ -330,3 +335,57 @@ async def test_cancellation_records_duration_and_propagates():
         sink.reset(token)
     assert events[-1]["status"] == "cancelled"
     assert events[-1]["duration_ms"] >= 0
+
+
+@pytest.mark.parametrize("failure", [False, True])
+async def test_terminal_recheck_stream_stays_live_and_closes_on_error(store, failure):
+    from reviewer.worker import recheck_review
+
+    review = await store.accept(7, 2, "a" * 40, "recheck-live")
+    await store.transition(review.id, "CANCELLED")
+    async with store.transaction() as session:
+        from reviewer.store.models import Review
+
+        row = await session.get(Review, review.id)
+        row.finished_at = datetime.now(UTC) - timedelta(days=1)
+
+    class Machine:
+        async def recheck_now(self, project, iid, review_id):
+            assert await closing(store, await store.get(review_id))
+            await store.append_event(
+                review_id, "tool", {"name": "Fix recheck", "status": "started"}
+            )
+            if failure:
+                raise RuntimeError("failed")
+            return {"rechecked": True}
+
+    if failure:
+        with pytest.raises(RuntimeError):
+            await recheck_review(
+                {"store": store, "machine": Machine()}, 7, 2, review.id
+            )
+    else:
+        await recheck_review({"store": store, "machine": Machine()}, 7, 2, review.id)
+    assert not await closing(store, await store.get(review.id))
+    runs = [
+        e["data"]["status"] for e in await store.events(review.id) if e["kind"] == "run"
+    ]
+    assert runs == ["started", "failed" if failure else "completed"]
+
+
+async def test_abandoned_recheck_lease_expires(store):
+    from sqlalchemy import update
+
+    from reviewer.store.models import ReviewEvent
+    from reviewer.telemetry.activity import _run_event
+
+    review = await store.accept(7, 2, "a" * 40, "recheck-stale")
+    await store.transition(review.id, "CANCELLED")
+    await _run_event(store, review.id, "started", name="Standalone recheck run")
+    async with store.transaction() as session:
+        await session.execute(
+            update(ReviewEvent)
+            .where(ReviewEvent.review_id == review.id)
+            .values(created_at=datetime.now(UTC) - timedelta(seconds=CLOSING_GRACE + 1))
+        )
+    assert not await closing(store, await store.get(review.id))

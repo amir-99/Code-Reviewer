@@ -264,7 +264,7 @@ class Store:
                     )
                 )
 
-    async def provision(self, ids):
+    async def provision(self, ids, *, name=None, path_with_namespace=None):
         # Concurrent manual requests (or worker startups) may discover the same
         # project. Preserve its existing policy and let the unique key arbitrate.
         if self.engine.dialect.name == "sqlite":
@@ -274,11 +274,27 @@ class Store:
 
         async with self.transaction() as session:
             for project_id in sorted(set(ids)):
-                await session.execute(
-                    insert(Project)
-                    .values(gitlab_project_id=project_id)
-                    .on_conflict_do_nothing(index_elements=[Project.gitlab_project_id])
+                metadata = {
+                    k: v
+                    for k, v in {
+                        "name": name,
+                        "path_with_namespace": path_with_namespace,
+                    }.items()
+                    if v
+                }
+                statement = insert(Project).values(
+                    gitlab_project_id=project_id, **metadata
                 )
+                statement = (
+                    statement.on_conflict_do_update(
+                        index_elements=[Project.gitlab_project_id], set_=metadata
+                    )
+                    if metadata
+                    else statement.on_conflict_do_nothing(
+                        index_elements=[Project.gitlab_project_id]
+                    )
+                )
+                await session.execute(statement)
 
     async def cancel(self, project_id: int, iid: int):
         async with self.sessions() as session:
@@ -323,6 +339,18 @@ class Store:
             return None
         async with self.sessions() as session:
             return (await session.get(Project, review.project_id)).gitlab_project_id
+
+    async def project_identity(self, review):
+        async with self.sessions() as session:
+            project = (
+                await session.get(Project, review.project_id)
+                if review.project_id
+                else None
+            )
+            return {
+                "project_name": project.name if project else None,
+                "project_path": project.path_with_namespace if project else None,
+            }
 
     async def save_snapshot(self, review_id, data):
         from reviewer.store.models import ReviewSnapshot
@@ -652,20 +680,23 @@ class Store:
                     with storage_timing("Activity sequence allocation", review_id):
                         await self._event(session, review_id, kind, data)
 
+    async def run_marker(self, review_id):
+        async with self.sessions() as session:
+            return await session.scalar(
+                select(ReviewEvent)
+                .where(ReviewEvent.review_id == review_id, ReviewEvent.kind == "run")
+                .order_by(ReviewEvent.sequence.desc())
+                .limit(1)
+            )
+
     async def run_state(self, review_id):
         """The status of the newest run marker, or None if no run was recorded.
 
         A stream uses this to tell a review that has reached a terminal state
         from one whose worker has actually finished with it.
         """
-        async with self.sessions() as session:
-            row = await session.scalar(
-                select(ReviewEvent)
-                .where(ReviewEvent.review_id == review_id, ReviewEvent.kind == "run")
-                .order_by(ReviewEvent.sequence.desc())
-                .limit(1)
-            )
-            return (row.data or {}).get("status") if row is not None else None
+        row = await self.run_marker(review_id)
+        return (row.data or {}).get("status") if row is not None else None
 
     async def spend(self, review_id):
         """What one review cost, grouped by the role that spent it.
@@ -940,7 +971,12 @@ class Store:
         async with self.sessions() as session:
             rows = (
                 await session.execute(
-                    select(Review, Project.gitlab_project_id)
+                    select(
+                        Review,
+                        Project.gitlab_project_id,
+                        Project.name,
+                        Project.path_with_namespace,
+                    )
                     .outerjoin(Project)
                     .where(
                         True if all_owners else Review.owner_user_id == owner_user_id
@@ -958,6 +994,8 @@ class Store:
                     kind=r.kind,
                     subject=subject_view(r.subject),
                     project_id=p,
+                    project_name=name,
+                    project_path=path,
                     mr_iid=r.mr_iid,
                     head_sha=r.head_sha,
                     state=r.state,
@@ -965,7 +1003,7 @@ class Store:
                     decision=r.decision,
                     started_at=r.started_at,
                 )
-                for r, p in rows
+                for r, p, name, path in rows
             ]
 
 

@@ -41,9 +41,14 @@ async def closing(store, review):
     the stream on the transition alone reports the review finished while its own
     run is still going, and freezes the snapshot on an undelivered status.
     """
-    if await store.run_state(review.id) != "started":
+    marker = await store.run_marker(review.id)
+    if marker is None or marker.data.get("status") != "started":
         return False
-    finished = getattr(review, "finished_at", None)
+    finished = (
+        marker.created_at
+        if marker and marker.data.get("name") == "Standalone recheck run"
+        else getattr(review, "finished_at", None)
+    )
     if finished is None:
         return True
     if finished.tzinfo is None:

@@ -119,6 +119,7 @@ async def inspect(review_id: str, request: Request):
     )
     body["capabilities"] = {"execute": owner, "chat": owner}
     body["project_id"] = await store.project_number(review)
+    body.update(await store.project_identity(review))
     body["overrides"] = review.overrides
     body["findings"] = [summarise(f) for f in await store.findings_for(review_id)]
     snapshot = await store.snapshot(review_id) or {}
@@ -258,6 +259,14 @@ async def recheck(review_id: str, request: Request):
     project_id = await request.app.state.store.project_number(review)
     await request.app.state.queue.enqueue_job(
         "recheck_review", project_id, review.mr_iid, str(review.id)
+    )
+    await request.app.state.store.append_event(
+        review.id,
+        "request",
+        {
+            "name": f"Recheck requested by {request.state.principal.id}",
+            "status": "completed",
+        },
     )
     return {"accepted": True, "project_id": project_id, "iid": review.mr_iid}
 

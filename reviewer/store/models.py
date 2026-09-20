@@ -31,6 +31,8 @@ class Project(Base):
     __tablename__ = "projects"
     id: Mapped[int] = mapped_column(primary_key=True)
     gitlab_project_id: Mapped[int] = mapped_column(unique=True)
+    name: Mapped[str | None] = mapped_column()
+    path_with_namespace: Mapped[str | None] = mapped_column()
     config_json: Mapped[dict] = mapped_column(json_type, default=dict)
     enforcement: Mapped[str] = mapped_column(default="silent")
     onboarded_at: Mapped[datetime] = mapped_column(
