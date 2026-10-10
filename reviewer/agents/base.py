@@ -57,13 +57,26 @@ class DefectReviewAgent:
     context_tokens: int | None = None
     rounds = 2
 
-    def __init__(self):
+    def __init__(self, document_tokens=6000):
+        self.document_tokens = document_tokens
         self.prompts = {}
+        self.condensed = {}
 
     @property
     def prompt_version(self):
         # The shared contract is versioned independently, so record both.
         return f"{PROMPTS[STAGE][0]}+shared.{PROMPTS[CONTRACT][0]}"
+
+    def requirements(self, bundle):
+        """Condensed once per review: every unit shares the same requirements."""
+        from reviewer.context.digest import condense
+
+        key = id(bundle)
+        if key not in self.condensed:
+            self.condensed[key], omitted = condense(bundle, self.document_tokens)
+            if omitted and "requirements_condensed" not in bundle.degradations:
+                bundle.degradations.append("requirements_condensed")
+        return self.condensed[key]
 
     def build_prompt(self, bundle, unit):
         # Unit identity and the call itself both need the prompt; build it once.
@@ -74,13 +87,7 @@ class DefectReviewAgent:
 
     def compose(self, bundle, unit):
         version, template, digest = PROMPTS[STAGE]
-        requirements = {
-            "issue": bundle.issue.model_dump() if bundle.issue else None,
-            "epic": bundle.epic.model_dump() if bundle.epic else None,
-            "documents": [d.model_dump() for d in bundle.documents],
-            "mr_title": bundle.mr.title,
-            "mr_description": bundle.mr.description,
-        }
+        requirements = self.requirements(bundle)
         system = template + "\n" + PROMPTS[CONTRACT][1] + "\n" + INJECTION_RULE
         static = [s.model_dump() for s in bundle.static]
         meta = {"unit": unit.model_dump(exclude={"omitted", "content"})}

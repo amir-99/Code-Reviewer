@@ -36,7 +36,7 @@ async def execute(
     redactor=None,
     previous=None,
 ):
-    agent = DefectReviewAgent()
+    agent = DefectReviewAgent(config.documents.prompt_tokens)
     spec = getattr(llm, "specs", {}).get(name)
     agent.context_tokens = spec.context_tokens if spec else None
     units, selected = plan(bundle, config, only_paths)

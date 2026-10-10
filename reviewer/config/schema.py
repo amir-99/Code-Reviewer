@@ -114,6 +114,9 @@ class DocumentsConfig(Strict):
     max_pages: int = Field(default=10, ge=1, le=50)
     max_tokens: int = Field(default=30000, ge=100)
     child_depth: int = Field(default=0, ge=0, le=3)
+    # Estimated tokens of linked pages in each Defect Review prompt. Larger
+    # pages keep their openings and the sections most related to the change.
+    prompt_tokens: int = Field(default=6000, ge=0)
 
 
 class ReviewConfig(Strict):
