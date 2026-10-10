@@ -3,20 +3,17 @@
 > calls omit output-token caps for every role; native model limits still apply.
 > Review-wide token accounting, deadlines, redaction, validation and fail-open
 > behavior remain. Secret findings are advisory and never terminate a review.
-> This supersedes the size-triggered triage behavior described below.
+> This supersedes the earlier size-triggered triage behavior.
 
-> September 2026 workflow amendment: the operator default is now `analysis_mode=standard`.
-> Context collection, secret scanning and static analysis are followed by one combined
-> `defect_review` stage over concurrent coherent diff chunks, then mechanical validation,
-> deduplication, independent verification and deterministic reporting. Purpose, Design,
-> the four overlapping analysis stages and System Context remain available through
-> operator-only `analysis_mode=deep`. Standard triage uses the combined defect reviewer.
-> The compact versioned contract caps findings at three per chunk and requires an
-> explicit truncation flag; omissions remain partial. It excludes code-derived anchor
-> metadata and permits one additional context round per attempt. Existing enforcement,
-> redaction, audit, checkpoint, recovery, milestone and publication guarantees remain.
-> Frozen runs without this setting retain the legacy deep workflow. This amendment
-> supersedes the default seven-stage sequence described below.
+> October 2026 workflow amendment: the seven-stage pipeline (Purpose, Design,
+> Correctness, Complexity, Test, Line Review, System Context) and the
+> `analysis_mode` selector are removed. Every code review runs one combined
+> `defect_review` stage over concurrent work units, then mechanical validation,
+> deduplication, independent verification and deterministic reporting. Existing
+> configuration and frozen runs that name `analysis_mode` or the retired roles load
+> with those entries ignored; the retired states remain only for persisted history
+> and recovery. The sections below describe this design; where an older statement
+> conflicts with it, this amendment wins.
 
 # AI Code Review Agent — Implementation PRD
 
@@ -49,7 +46,7 @@ A service that watches the internal GitLab, and for every merge request:
 3. follows their links into the internal Confluence and pulls the specification pages,
 4. **clones the repository** and computes the diff locally (the GitLab API is used only to determine *what changed* and to *publish comments*),
 5. runs static analysis,
-6. runs a fixed multi-stage AI review pipeline over the assembled context,
+6. runs a fixed AI review pipeline over the assembled context: one combined defect review over concurrent work units,
 7. validates every proposed finding against real code,
 8. publishes a bounded set of inline comments plus one summary comment,
 9. re-reviews incrementally on each push.
@@ -100,7 +97,10 @@ reviewer/
 │   ├── machine.py            ReviewStateMachine — the core loop
 │   ├── states.py             ReviewState enum + legal transitions
 │   ├── budget.py             token / wall-clock / cost accounting
-│   └── stages.py             stage registry, gating, fan-out, coverage checks
+│   ├── stages.py             Defect Review unit execution and coverage checks
+│   ├── unit_plan.py          unit identity and breadth-first scheduling
+│   ├── streaming.py          per-file validation and verification as units finish
+│   └── verification.py       bounded independent verification
 ├── services/
 │   ├── forge/gitlab.py       ForgeService protocol + GitLab impl + fake
 │   ├── issues/jira.py        IssueService protocol + Jira impl + fake
@@ -114,12 +114,15 @@ reviewer/
 │   ├── builder.py            ContextBundle assembly
 │   ├── linkage.py            issue-key resolution
 │   ├── partition.py          work units + token budgets
+│   ├── digest.py             requirements condensed once per review
+│   ├── lookup.py             repository-wide symbol/caller/test lookups
+│   ├── code_cache.py         scanned, redacted code for one pinned worktree
 │   ├── redaction.py          secret redaction
 │   └── framing.py            untrusted-input wrapping
 ├── agents/
-│   ├── base.py               StageAgent ABC, envelope contract
-│   ├── purpose.py design.py correctness.py complexity.py
-│   ├── tests_.py line_review.py system_context.py verification.py
+│   ├── base.py               DefectReviewAgent, unit prompt and envelope contract
+│   ├── defects.py            compact Defect Review wire contract
+│   ├── verification.py recheck.py chat.py
 │   └── prompts/              versioned prompt templates (see §9.4)
 ├── findings/
 │   ├── models.py             Finding, Anchor, Evidence, Envelope
@@ -239,7 +242,7 @@ class ContextBundle(BaseModel):
     code: CodeContext
     static: list[StaticAnalysisResult] = []
     budget: Budget
-    degradations: list[str] = []       # "unlinked", "docs_unavailable", "triage_mode", ...
+    degradations: list[str] = []       # "unlinked", "docs_unavailable", "requirements_condensed", ...
 
     def content_hash(self) -> str: ...  # stable hash excluding paths and timestamps
 ```
@@ -329,6 +332,8 @@ class ContextRequest(BaseModel):
     kind: Literal["symbol", "file", "callers", "tests_for"]
     target: str
     reason: str
+    line_start: int | None = None   # file requests: a continuation range
+    line_end: int | None = None
 
 class StageEnvelope(BaseModel):
     findings: list[ProposedFinding]
@@ -336,6 +341,12 @@ class StageEnvelope(BaseModel):
     coverage: Coverage
     notes_for_summary: str = Field(default="", max_length=800)
 ```
+
+Defect Review's wire contract (`agents/defects.py`) is a compact form of this
+envelope: anchors carry only file, lines and symbol; each finding requires a
+`failure_scenario`; findings are capped per unit (three, plus one per further
+8 KB of code, at most eight) with an explicit `findings_truncated` flag; and
+code-derived anchor metadata is never accepted from the model.
 
 ---
 
@@ -516,7 +527,7 @@ class LLMClient(Protocol):
         self,
         *,
         stage: str,
-        tier: str,                       # "strong" | "fast"
+        tier: str,                       # the role, e.g. "defect_review"
         system: str,
         user: str,
         response_model: type[BaseModel],
@@ -546,7 +557,9 @@ webhook → [1] resolve issue key
         → [7] cross-check local diff vs forge changed paths
         → [8] secret scan + redaction
         → [9] static analysis
-        → [10] partition into work units, apply budgets, hash bundle
+        → [10] partition into work units (hunks widened to their enclosing
+               definition, small related files packed), condense requirements,
+               apply budgets, hash bundle
 ```
 
 Steps 2–5 and 6 run concurrently. Steps 2–5 failing is a **degradation**, not a failure. Step 6 failing is `FAILED_CONTEXT`.
@@ -568,7 +581,7 @@ Rules:
 
 - Only keys whose project prefix is in `config.issue_tracker.project_keys` count.
 - Multiple distinct keys: the first in the branch is primary. Others go to `secondary_keys` and are fetched only if `multi_issue` is enabled.
-- **No key found** → unlinked mode: `linkage.issue_key = None`, `degradations += ["unlinked"]`, requirement-dependent checks in Purpose and Test are skipped and reported as *not verifiable*, and a finding of severity `config.issue_tracker.unlinked_severity` (default `SUGGESTION`) is emitted by the deterministic layer.
+- **No key found** → unlinked mode: `linkage.issue_key = None`, `degradations += ["unlinked"]`, the Defect Review receives no requirements and cites none, and a finding of severity `config.issue_tracker.unlinked_severity` (default `SUGGESTION`) is emitted by the deterministic layer.
 - **Key found but issue missing, inaccessible, or in a project not mapped to this repo** → same unlinked mode, plus a warning finding naming the key.
 
 ### 7.3 Untrusted input framing — `context/framing.py`
@@ -595,18 +608,20 @@ Run `gitleaks detect --no-git` over the worktree diff before any prompt is assem
 
 ### 7.5 Partitioning and budgets — `context/partition.py`
 
-| Stage | Work unit |
-|---|---|
-| Purpose, Design, System Context | Whole change: compressed summary, file tree, hunk headers |
-| Correctness, Complexity, Test | One cohesive file group (file + direct collaborators + its tests) |
-| Line Review | One file, or a hunk group when a file exceeds the unit budget |
+Defect Review work units:
+
+- Each hunk is widened to its innermost enclosing definition when that is at most 120 lines; the extra lines are read through the secret-scanned code cache and are never persisted with the bundle or used for anchoring.
+- Whole hunks pack into units of `review.unit_tokens` UTF-8 bytes (default 24000), splitting an oversized hunk only between complete lines and preferring to start a complete definition in a fresh unit. Small files share a unit, each test file beside the source it exercises.
+- A single line exceeding the unit allowance is skipped explicitly and makes coverage partial.
+- Every unit carries per-file metadata: actual file length, supplied line ranges and continuation flags, so a unit boundary is never read as the end of a file.
 
 Rules:
 
-- The builder never emits an over-budget unit; it splits.
 - Excluded paths (generated, vendored, minified, lock files) are dropped from AI stages and reported as one summary line.
-- `total_changed_lines > config.review.max_changed_lines` (default 3000) → **triage mode**: Purpose, Design, Test and System Context only. Add `"triage_mode"` to degradations and say so in the summary.
-- Review-wide wall-clock deadline (default 20 min) and token ceiling. On exhaustion, finalise as `partial`. **A `partial` review never blocks.**
+- There is no changed-line threshold: every unit is scheduled breadth-first (one unit per file before a second, source before other files) until the actual deadline or token budget is spent.
+- Prompts send the requirements and static results shared by every unit first and the unit's numbered code last. Linked pages larger than `documents.prompt_tokens` keep their opening and the sections most related to the change; omitted headings are listed.
+- Prompt sizes are estimated tokens (ASCII bytes / 3 plus one per non-ASCII character), checked against the receiving model's window. Each call reserves its prompt plus the model's output limit (16k when unset) and settles against reported usage.
+- Review-wide wall-clock deadline and token ceiling. On exhaustion, finalise as `partial`. **A `partial` review never blocks.**
 
 ---
 
@@ -619,10 +634,8 @@ class ReviewState(StrEnum):
     INIT = "INIT"
     CONTEXT_COLLECTION = "CONTEXT_COLLECTION"
     STATIC_ANALYSIS = "STATIC_ANALYSIS"
-    PURPOSE_REVIEW = "PURPOSE_REVIEW"
-    DESIGN_REVIEW = "DESIGN_REVIEW"
-    ANALYSIS_FAN_OUT = "ANALYSIS_FAN_OUT"
-    SYSTEM_CONTEXT_REVIEW = "SYSTEM_CONTEXT_REVIEW"
+    DEFECT_REVIEW = "DEFECT_REVIEW"
+    DOCUMENT_REVIEW = "DOCUMENT_REVIEW"     # document reviews only
     EVIDENCE_VALIDATION = "EVIDENCE_VALIDATION"
     FINDING_VERIFICATION = "FINDING_VERIFICATION"
     FINALIZATION = "FINALIZATION"
@@ -635,17 +648,19 @@ class ReviewState(StrEnum):
     SUPERSEDED = "SUPERSEDED"               # terminal
 ```
 
+The removed deep mode's `PURPOSE_REVIEW`, `DESIGN_REVIEW`, `ANALYSIS_FAN_OUT` and `SYSTEM_CONTEXT_REVIEW` remain in the enum for persisted history. No run enters them; a review interrupted in one resumes straight to `EVIDENCE_VALIDATION`.
+
 Legal transitions live in `states.py` as an explicit adjacency map. Any illegal transition raises and lands in `FAILED_INTERNAL`. Every transition is persisted before the next stage begins, so a crashed worker resumes rather than restarts.
 
 ### 8.2 Execution shape
 
-- `PURPOSE_REVIEW` and `DESIGN_REVIEW` are sequential stages and continue after findings. Secret findings and normalized `BLOCKER` findings are advisory `SUGGESTION` warnings; they neither terminate a review nor fail its status. Validation, verification, redaction, and enforcement for other `REQUIRED` findings remain in place. `TERMINATED_EARLY` is retained for historical records.
-- `ANALYSIS_FAN_OUT` runs Correctness, Complexity, Test and Line Review **concurrently** via `asyncio.gather(return_exceptions=True)`. They share the bundle and do not depend on each other.
-- `SYSTEM_CONTEXT_REVIEW` runs after the fan-out and sees the aggregated findings.
+- `DEFECT_REVIEW` runs the combined Defect Review over every unit concurrently (`unit_concurrency` workers), each unit with one additional context round.
+- Findings never end a review. Secret findings and normalized `BLOCKER` findings are advisory `SUGGESTION` warnings; they neither terminate a review nor fail its status. Validation, verification, redaction, and enforcement for other `REQUIRED` findings remain in place. `TERMINATED_EARLY` is retained for historical records.
+- A file's findings are validated, deduplicated and verified as soon as no pending unit includes that file, while other units still run; `EVIDENCE_VALIDATION` and `FINDING_VERIFICATION` mark the remainder. Verifier batches share one `verification_concurrency` bound.
 
 ### 8.3 Coverage enforcement
 
-After each stage, compare `envelope.coverage.units_examined` against the units dispatched. If units are missing and budget remains, re-run the stage on the missing units once. If still missing, set `review.partial = True` and record it. This catches the stage that silently reviewed three of eleven files, which is otherwise invisible.
+After each unit, compare `envelope.coverage.units_examined` against the unit dispatched. If coverage is missing and budget remains, re-run that unit once; a unit the model explicitly skipped is not re-run. If still missing, set `review.partial = True` and record it. This catches the stage that silently reviewed three of eleven files, which is otherwise invisible.
 
 ### 8.4 Failure matrix — implement exactly
 
@@ -671,34 +686,26 @@ After each stage, compare `envelope.coverage.units_examined` against the units d
 ### 9.1 Base contract
 
 ```python
-class StageAgent(ABC):
-    name: str
-    prompt_version: str
-    tier: str                     # "strong" | "fast"
-    unit_kind: Literal["whole_change", "file_group", "file"]
+class DefectReviewAgent:
+    name = "defect_review"
+    tier = "defect_review"            # the model-selection role
 
-    @abstractmethod
     def build_prompt(self, bundle: ContextBundle, unit: WorkUnit) -> tuple[str, str]: ...
 
-    async def run(self, bundle, unit, llm: LLMClient) -> StageEnvelope: ...
+    async def run(self, bundle, unit, llm: LLMClient, context_provider=None) -> StageEnvelope: ...
 ```
 
-`run` is implemented once in the base class: build the prompt, call `llm.complete(response_model=StageEnvelope)`, serve up to two rounds of `context_requests`, return the envelope. Subclasses only supply prompts and unit kind.
+`run` builds the prompt (once per unit), calls `llm.complete` with a response model whose coverage IDs are constrained to the dispatched unit, serves one round of `context_requests`, and returns the envelope. Context requests are answered from the pinned checkout: `symbol` returns a definition's complete range from any file, `callers` the enclosing scope of call sites, `tests_for` matching tests, `file` a numbered range. Lookups use `git grep` with a validated fixed word, never a pattern or option, and read code through the scanned cache.
 
 **Agents never touch Git, the network, or the database.** All context arrives through `ContextBundle` and `ContextRequest`. Enforce this in review; there is no technical barrier, so it is a discipline requirement.
 
 ### 9.2 Stage specifications
 
-| Stage | Tier | Unit | Must produce | Termination |
-|---|---|---|---|---|
-| **Purpose** | strong | whole_change | Per-criterion mapping: `addressed` / `partial` / `not_addressed` / `not_verifiable` | `BLOCKER` terminates |
-| **Design** | strong | whole_change | Findings on responsibility, boundaries, API shape, dependency direction, coupling, state ownership | `BLOCKER` terminates |
-| **Correctness** | strong | file_group | Every finding **must** have `failure_scenario`; enforce in code, discard those that do not | — |
-| **Complexity** | fast | file_group | Findings on unnecessary abstraction, indirection, speculative generality, avoidable state | — |
-| **Test** | strong | file_group | Behaviour → outcome → proving test mapping; flags tests that would not fail if the behaviour broke | — |
-| **Line Review** | fast | file | Changed hunks + `context_lines` window only, never whole files | — |
-| **System Context** | strong | whole_change | Duplication, architectural drift, new coupling, inconsistent patterns | — |
-| **Verification** | strong | one finding | Verdict + reasoning for one `BLOCKER`/`REQUIRED` finding | — |
+| Stage | Role | Unit | Must produce |
+|---|---|---|---|
+| **Defect Review** | `defect_review` | packed diff unit | Concrete defects only (behaviour, security, data integrity, concurrency, error handling, test gaps tied to a failure scenario); every finding **must** have `failure_scenario`, enforced in code |
+| **Verification** | `verification` | one finding | Verdict + counterargument + reasoning for one finding that can be published |
+| **Recheck** | `recheck` | one open thread | Whether a published claim still holds at the new head |
 
 **Static-analysis suppression.** Every stage prompt receives the list of tools that ran and is instructed not to raise findings those tools already report. This is belt-and-braces; `findings/policy.py` also suppresses by category.
 
@@ -706,7 +713,7 @@ class StageAgent(ABC):
 
 This one has a specific design requirement that is easy to get wrong.
 
-The verifier receives: the claim, the anchored code, and the cited evidence. It **does not** receive the proposing agent's reasoning, its confidence, or its severity. It is prompted to argue the negative case — why this finding may be wrong — before reaching a verdict. Where the budget allows, it runs on a different model than the proposer.
+The verifier receives: the claim, the anchored code, the cited evidence and the diff lines near each citation. It **does not** receive the proposing agent's reasoning, failure scenario, confidence, or severity. Evidence is the enclosing definition (or a window) for local and symbol claims, and the complete file only for file-wide claims and short files. When the code shown cannot settle the claim, the verifier may request up to two context items once; a settled verdict never does. It is prompted to argue the negative case — why this finding may be wrong — before reaching a verdict. Where the budget allows, it runs on a different model than the proposer.
 
 Verification that sees the original justification tends to ratify it. Fresh context and an adversarial framing are what make the stage worth its cost.
 
@@ -730,11 +737,12 @@ Prompts are versioned files under `agents/prompts/{stage}/v{major}.{minor}.{patc
 Order is fixed. Do not reorder — each step depends on the previous.
 
 ```text
-raw proposed findings
+raw proposed findings (per file, as soon as its units finish)
   → [1] mechanical evidence validation
   → [2] deduplicate by fingerprint
   → [3] merge related
-  → [4] semantic verification (BLOCKER/REQUIRED only)
+  → [4] semantic verification (findings that can be published; pre-existing
+        findings only for the two that publication can show)
   → [5] severity normalisation
   → [6] introduced vs pre-existing classification
   → [7] rank + noise caps
@@ -766,7 +774,7 @@ Emit `reviewer_findings_discarded_total{agent, prompt_version, reason}`. The fab
 
 ### 10.2 Deduplication — `findings/dedup.py`
 
-Identical fingerprints merge into one finding: highest severity wins, evidence sets union, all contributing stages listed. Findings in the same file and category within `merge_distance` lines (default 10) also merge, rather than being posted as adjacent near-duplicates.
+Identical fingerprints merge into one finding: highest severity wins, evidence sets union, all contributing stages listed. Findings in the same file and category within `merge_distance` lines (default 10) also merge when their anchors overlap or their claims are worded alike; two distinct defects a few lines apart are both kept.
 
 ### 10.3 Severity normalisation — `findings/policy.py`
 
@@ -779,8 +787,8 @@ the sole finding axis used for gating and inline selection.
 `impact_level` is a separate advisory assessment: CRITICAL, HIGH, MEDIUM, LOW,
 or null (unknown/not applicable). Models propose it from the failure scenario,
 not category; it is not independently verified and never changes enforcement.
-All seven proposing stages use the versioned shared contract requiring the
-nullable field in structured output. Historical findings load with null.
+Every proposing stage's versioned contract (compact for Defect Review, document
+for documents) requires the nullable field in structured output. Historical findings load with null.
 Deterministic secret detection leaves impact unknown because credential presence
 alone does not establish scope. The unlinked-story notice has no defect impact.
 Deduplication retains impact with the first retained claim, prose and provenance,
@@ -852,7 +860,7 @@ Comment body template:
 
 Do not restate the code in the comment. The reader is looking at it.
 
-**Summary comment** must contain: decision, resolved issue and epic with links, documentation pages consulted with title and version, acceptance-criteria coverage table, finding counts by severity, static-analysis status, and every entry in `bundle.degradations` stated plainly (unlinked, partial, triage mode, truncated docs, failed stages).
+**Summary comment** must contain: decision, resolved issue and epic with links, documentation pages consulted with title and version, acceptance-criteria coverage table, finding counts by severity, static-analysis status, and every entry in `bundle.degradations` stated plainly (unlinked, partial, truncated or condensed docs, failed stages).
 
 **Commands** (from users with at least Developer role on the project):
 
@@ -902,8 +910,8 @@ Triggered by any push to the source branch.
 1. Load the previous `PUBLISHED` review for `(project, mr_iid)`.
 2. Re-anchor each previous finding: first by `context_hash` (find the lines whose hash matches anywhere in the new file), then by fingerprint. Classify as `fixed`, `partial`, `unchanged`, `moved`, `invalidated`.
 3. **Fixed** → resolve the discussion via the API with a short confirmation reply.
-4. Compute the new-vs-old diff; re-run only the stages whose work units intersect the new hunks.
-5. Re-run System Context if the file set changed materially (any file added or removed from the change).
+4. Compute the new-vs-old diff; re-run the Defect Review only over units built from the files that diff touched. Packing never pulls an unaffected file back in.
+5. A fresh finding at a previously reported location (re-anchored by hash, or followed through the diff since the previous head) with the same file and category keeps the fingerprint it was published under, so a reworded claim is neither reposted nor read as fixed. Carried-forward findings are deduplicated before fresh ones.
 6. Re-fetch requirement context only if the Jira issue's `updated` timestamp moved; otherwise reuse the cached bundle.
 7. Recompute the decision over the union of carried-forward and new findings.
 
@@ -935,15 +943,15 @@ Sandboxed runner, `gitleaks` integration, redaction in the context builder.
 
 *Accept:* a planted credential in a fixture diff never appears in any prompt blob and produces a `BLOCKER` finding with no LLM call made.
 
-### M4 — Agent runtime, two stages
-`LLMClient`, base agent, structured output, prompt versioning, audit rows. Purpose and Design only.
+### M4 — Agent runtime
+`LLMClient`, base agent, structured output, prompt versioning, audit rows. No review stage runs below M5.
 
 *Accept:* a malformed model response fails the stage cleanly rather than crashing the review. Every call writes an `llm_calls` row. Prompt version appears in `Provenance`.
 
 ### M5 — Full pipeline
-Remaining six stages, parallel fan-out, coverage enforcement, work-unit partitioning, budgets, triage mode.
+Combined Defect Review over concurrent units, coverage enforcement, work-unit partitioning, budgets.
 
-*Accept:* a 40-file change is partitioned and fully covered. An artificially truncated stage response triggers exactly one re-run and then marks the review `partial`. Fan-out latency is materially below the sequential baseline.
+*Accept:* a 40-file change is partitioned and fully covered. A unit response with missing coverage triggers exactly one re-run and then marks the review `partial`. Concurrent units finish materially below the sequential baseline.
 
 ### M6 — Validation, verification, policy
 Mechanical validator, dedup, verification agent, severity normalisation, introduced-vs-pre-existing.
@@ -956,9 +964,9 @@ Renderer, idempotent publisher, noise caps, summary comment, commands, decision 
 *Accept:* running the same review twice posts no duplicate comments. Comment caps hold under a synthetic 60-finding review. An unpositionable anchor moves to the summary rather than erroring.
 
 ### M8 — Re-review
-Re-anchoring, classification, auto-resolution, selective stage re-runs.
+Re-anchoring, classification, auto-resolution, selective unit re-runs.
 
-*Accept:* a fixed finding is auto-resolved; a moved finding is re-anchored, not re-posted; an unrelated push does not re-run unaffected stages.
+*Accept:* a fixed finding is auto-resolved; a moved or reworded finding keeps its thread, not re-posted; an unrelated push does not re-review unaffected files.
 
 ### M9 — Metrics and feedback
 Outcome collection (automatic and via `/ai dismiss`), precision dashboards attributed to stage, category, prompt version and model.
@@ -972,16 +980,16 @@ Outcome collection (automatic and via `/ai dismiss`), precision dashboards attri
 - **No network in any test.** All four external services have fakes behind the same Protocol, driven by recorded fixtures in `tests/fixtures/`.
 - **Fixture repositories** are generated by a script that builds real git histories (renames, deletions, merges, force-pushes) so `GitService` is tested against actual git behaviour rather than mocks.
 - **Golden-file tests** for rendered comments and summaries.
-- **Property tests** for fingerprint stability: semantically identical claims with different wording must collide; different claims must not.
+- **Property tests** for fingerprint stability: identical normalized claims collide and different claims do not. Paraphrases need not collide; re-review keeps a reworded claim's identity by location (§11).
 - **The failure matrix in §8.4 is a test checklist.** Every row gets a test that asserts the review neither crashes nor blocks.
-- **Prompt regression set:** a held-out set of at least 50 historical merge requests with human-labelled expected findings. Any prompt or model change is evaluated against it before rollout, and precision must not regress.
+- **Prompt regression set:** a held-out set of at least 50 historical merge requests with human-labelled expected findings. Any prompt or model change is evaluated against it before rollout, and precision must not regress. Reported findings match labels by file, category and overlapping lines, not wording, and recall is reported alongside precision.
 
 ---
 
 ## 14. Open questions — confirm before building the affected module
 
 1. **Jira hierarchy.** Do all target projects use the classic Epic Link custom field, or are some on parent-based hierarchy? *Affects M2; the fallback path may be the primary path.*
-2. **Acceptance criteria template.** Is there a standard story template with a machine-identifiable AC section? *Affects Purpose and Test stage quality more than anything else in the system.*
+2. **Acceptance criteria template.** Is there a standard story template with a machine-identifiable AC section? *Affects requirement-linked findings more than anything else in the system.*
 3. **Confluence version.** Which Data Center version, and is the v2 content API available? *Affects M2 endpoint choice.*
 4. **Language coverage.** Which languages must static analysis and the symbol index support at launch? *Affects M1 and M3 scope.*
 5. **Model availability.** Which models are available through the gateway, at what context length, and what is the approved tiering for source-code payloads? *Affects M4.*
