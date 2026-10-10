@@ -12,6 +12,14 @@ export const ROLE_LABELS = {
   document_review: 'Document review', document_verification: 'Document verification',
 };
 
+// Roles of the removed seven-stage deep mode. No run selects them now, but the
+// spend and models of reviews it ran still name them; "tests_" keeps Python's
+// trailing underscore, which is not something to show an operator.
+const LEGACY_ROLE_LABELS = {
+  purpose: 'Purpose', design: 'Design', correctness: 'Correctness', complexity: 'Complexity',
+  tests_: 'Tests', line_review: 'Line review', system_context: 'System context',
+};
+
 // Which roles a run of each kind selects a model for.
 export const DOCUMENT_ROLES = ['document_review', 'document_verification', 'chat'];
 export const rolesFor = (kind, roles) => roles.filter(role => kind === 'document'
@@ -21,7 +29,7 @@ export const rolesFor = (kind, roles) => roles.filter(role => kind === 'document
 // Tools that call a model of their own rather than inheriting a stage's.
 export const TOOL_ROLES = {'Independent verifier': 'verification', 'Fix recheck': 'recheck'};
 
-export const roleLabel = role => ROLE_LABELS[role] || String(role ?? '');
+export const roleLabel = role => ROLE_LABELS[role] || LEGACY_ROLE_LABELS[role] || String(role ?? '');
 
 /* The role an activity's calls resolve through. A stage is its own role, the
    verifier and the recheck judge have theirs, and anything nested inside one of

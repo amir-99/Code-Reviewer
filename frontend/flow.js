@@ -84,8 +84,13 @@ function fold(state, history, stages, at) {
    `stages` maps an agent name to {status, at, took} as its activity reported it,
    and `at` maps a state to when the pipeline entered it. A step reached but
    never walked was skipped outright — by a milestone short circuit — and is not
-   a step still to come. */
-export function walk(state, history = [], stages = new Map(), at = new Map()) {
+   a step still to come.
+
+   `early` maps a state to when its work first started, which can be before the
+   pipeline enters it: a file's findings are verified as soon as its units
+   finish, while the Defect review step is still running. Such a step runs
+   alongside the current one and its time counts from that first start. */
+export function walk(state, history = [], stages = new Map(), at = new Map(), early = new Map()) {
   ({state, history, stages, at} = fold(state, history, stages, at));
   const walked = history.length ? history : [state];
   const seen = new Set(walked);
@@ -105,14 +110,24 @@ export function walk(state, history = [], stages = new Map(), at = new Map()) {
       : !terminal ? 'active'
       : state === 'PUBLISHED' ? 'done'
       : FAILED.has(state) ? 'failed' : 'stopped';
+    const ahead = early.get(spec.state);
+    const overlap = Number.isFinite(ahead) && !(at.get(spec.state) <= ahead);
+    if (status === 'pending' && overlap && !terminal) status = 'active';
     const reported = spec.stage ? stages.get(spec.stage) : null;
     const tone = stageTone(reported?.status);
     if (status === 'done' && tone && tone !== 'active') status = tone;
     const note = status === 'skipped' ? 'not run'
       : reported && reported.status !== 'started' && reported.status !== 'completed' ? label(reported.status)
       : status === 'stopped' || (status === 'failed' && !reported) ? label(state)
+      : overlap && index > reached ? 'started early, per file'
       : spec.note;
-    return {...spec, status, note, took: took.get(spec.state) ?? null, at: at.get(spec.state) ?? null};
+    const entered = at.get(spec.state);
+    const own = took.get(spec.state);
+    return {
+      ...spec, status, note,
+      took: overlap && Number.isFinite(own) && Number.isFinite(entered) ? own + entered - ahead : own ?? null,
+      at: overlap ? ahead : entered ?? null,
+    };
   });
 
   return {

@@ -68,6 +68,9 @@ test('roles are labelled for people, not for Python', () => {
   assert.equal(roleLabel('defect_review'), 'Defect review');
   assert.equal(roleLabel('document_verification'), 'Document verification');
   assert.equal(roleLabel('unknown_role'), 'unknown_role');
+  // Spend and models recorded by the removed deep mode still read as words.
+  assert.equal(roleLabel('tests_'), 'Tests');
+  assert.equal(roleLabel('system_context'), 'System context');
 });
 
 test('each review kind selects models for its own roles', async () => {

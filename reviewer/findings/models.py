@@ -127,6 +127,18 @@ class Finding(ProposedFinding):
         "resolved",
     ] = "proposed"
     resolution: Literal["actioned", "dismissed", "ignored"] | None = None
+    # Why a finding carries no verdict when that was decided rather than failed:
+    # verification is spent only where its result can reach the merge request.
+    unverified_reason: (
+        Literal[
+            "static_tool",
+            "outside_change",
+            "existing_limit",
+            "evidence_invalid",
+            "not_required",
+        ]
+        | None
+    ) = None
 
     @property
     def verified(self):

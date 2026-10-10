@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {matchesFinding} from './findings.js';
+import {matchesFinding, verificationBadge} from './findings.js';
 
 const findings = [
   {severity: 'REQUIRED', impact_level: 'HIGH'},
@@ -32,3 +32,13 @@ const comments = [
 ];
 assert.deepEqual(bulkCommentKeys(comments, 'resolve_all'), ['open']);
 assert.deepEqual(bulkCommentKeys(comments, 'publish_all'), ['draft', 'summary']);
+
+// A deliberate skip is not a verifier that failed to answer.
+assert.equal(verificationBadge({verdict: 'confirmed'}).tone, 'tone-good');
+assert.equal(verificationBadge({verdict: 'uncertain'}).tone, 'tone-warn');
+assert.deepEqual(
+  {...verificationBadge({unverified_reason: 'static_tool'}), title: undefined},
+  {text: 'not verified: static tool', tone: '', title: undefined});
+assert.equal(verificationBadge({unverified_reason: 'existing_limit'}).tone, '');
+assert.equal(verificationBadge({}).text, 'unverified');
+assert.equal(verificationBadge({unverified_reason: 'unknown_future_reason'}).tone, 'tone-warn');

@@ -16,7 +16,7 @@ from reviewer.context.framing import INJECTION_RULE
 from reviewer.decision.engine import decide, status
 from reviewer.findings.dedup import deduplicate, fingerprint
 from reviewer.findings.models import Finding, ProposedFinding, Provenance
-from reviewer.findings.policy import normalize
+from reviewer.findings.policy import needs_verification, normalize
 from reviewer.findings.validator import change_commits, validate
 from reviewer.orchestrator.budget import BudgetTracker
 from reviewer.orchestrator.stages import execute
@@ -401,6 +401,20 @@ class Pipeline:
                         not f.anchor.in_diff and f.anchor.file not in touched
                     )
 
+                def skipped(f, beyond):
+                    """Why `f` has no verdict, when no verifier was meant to run."""
+                    if f.category in categories:
+                        return "static_tool"
+                    if not f.anchor.in_diff and f.anchor.file not in touched:
+                        return "outside_change"
+                    if beyond:
+                        return "existing_limit"
+                    if f.validation and not f.validation.evidence_valid:
+                        return "evidence_invalid"
+                    if not needs_verification(f):
+                        return "not_required"
+                    return None
+
                 async def verify(values):
                     if level >= 6 and values:
                         await verify_findings(
@@ -477,6 +491,8 @@ class Pipeline:
                     for f in values:
                         if id(f) in beyond:
                             f.status = "suppressed"
+                        if f.verification is None:
+                            f.unverified_reason = skipped(f, id(f) in beyond)
                         normalize(f, touched, categories)
                     if any(
                         f.evidence_scope != "local"

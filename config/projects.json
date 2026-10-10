@@ -25,25 +25,7 @@
     },
     "models": {
       "roles": {
-        "complexity": {
-          "model": "google/gemini-3.8-flash"
-        },
-        "tests_": {
-          "model": "google/gemini-3.8-flash"
-        },
         "defect_review": {
-          "model": "google/gemini-3.8-flash"
-        },
-        "purpose": {
-          "model": "google/gemini-3.8-flash"
-        },
-        "design": {
-          "model": "google/gemini-3.8-flash"
-        },
-        "correctness": {
-          "model": "google/gemini-3.8-flash"
-        },
-        "system_context": {
           "model": "google/gemini-3.8-flash"
         },
         "verification": {

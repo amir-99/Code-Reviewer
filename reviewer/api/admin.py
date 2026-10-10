@@ -183,6 +183,7 @@ def summarise(finding):
         "related": finding.get("related") or [],
         "evidence": finding.get("evidence") or [],
         "verdict": verification.get("verdict"),
+        "unverified_reason": finding.get("unverified_reason"),
         "resolution": finding.get("resolution"),
     }
 

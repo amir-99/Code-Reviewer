@@ -306,6 +306,9 @@ class Finding(ProposedFinding):
     status: Literal["proposed","discarded","downgraded","verified",
                     "suppressed","published","resolved"] = "proposed"
     resolution: Literal["actioned","dismissed","ignored"] | None = None
+    # Set when no verifier was meant to run, never when one failed.
+    unverified_reason: Literal["static_tool","outside_change","existing_limit",
+                               "evidence_invalid","not_required"] | None = None
 ```
 
 **Fingerprint definition** (implement exactly; it is the dedup and re-review key):

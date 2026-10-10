@@ -1,5 +1,5 @@
 import {identity, identityNode} from './identity.js';
-import {matchesFinding, commentActions, bulkCommentKeys} from './findings.js';
+import {matchesFinding, commentActions, bulkCommentKeys, verificationBadge} from './findings.js';
 import {apiURL} from './paths.js';
 import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk, UnitProgress} from './flow.js';
@@ -42,6 +42,7 @@ const running = new Set();
 const unitProgress = new UnitProgress();
 const stages = new Map();       // agent name -> {status, at, took}
 const stateAt = new Map();      // review state -> when the pipeline entered it
+const earlyAt = new Map();      // review state -> when its work started ahead of the state
 const nodes = new Map();        // review state -> the flow node's elements
 let modelDefaults = {};         // role -> the model a run uses when none is chosen
 let modelCatalog = [];          // model IDs this deployment allows an operator to pick
@@ -351,7 +352,7 @@ function paint(target, step) {
 }
 
 function renderPipeline(state = current?.state ?? 'INIT', history = current?.history ?? []) {
-  const flow = walk(state, history, stages, stateAt);
+  const flow = walk(state, history, stages, stateAt, earlyAt);
   if (flow.steps.length !== nodes.size || flow.steps.some(step => !nodes.has(step.state))) buildFlow(flow.steps);
   $('track-fill').style.setProperty('--progress', flow.percent);
   $('track').className = `track${flow.terminal ? '' : ' running'}${flow.tone ? ` ${flow.tone}` : ''}`;
@@ -480,11 +481,10 @@ function findingCard(finding) {
     top.append(el('span', finding.introduced_by_this_change ? 'this change' : 'pre-existing',
       `badge ${finding.introduced_by_this_change ? 'tone-info' : ''}`.trim()));
   }
-  if (finding.verdict) {
-    top.append(el('span', finding.verdict, `badge ${finding.verdict === 'confirmed' ? 'tone-good' : 'tone-warn'}`));
-  } else {
-    top.append(el('span', 'unverified', 'badge tone-warn'));
-  }
+  const verification = verificationBadge(finding);
+  const badge = el('span', verification.text, `badge ${verification.tone}`.trim());
+  if (verification.title) badge.title = verification.title;
+  top.append(badge);
   article.append(top, el('h3', finding.claim || 'Untitled finding'));
 
   if (finding.quote) {
@@ -1037,6 +1037,12 @@ function addActivity(item) {
     else renderPipeline();
   }
   if (kind === 'agent') markStage(item);
+  // Verifiers start per file while the Defect review step is still running.
+  if (kind === 'tool' && data.name === 'Independent verifier' && data.status === 'started'
+    && !earlyAt.has('FINDING_VERIFICATION')) {
+    earlyAt.set('FINDING_VERIFICATION', Date.parse(item.at));
+    renderPipeline();
+  }
   // The run announces the model it resolved for every role before the first
   // stage starts; it is the record of what produced this review.
   if (kind === 'models') { reviewModels = {...reviewModels, ...data}; paintModels(); }
@@ -1090,9 +1096,9 @@ function addActivity(item) {
 }
 
 // The feed is bounded; every retained event stays available through the API.
-// Rows for activities still in flight are kept whatever their age: stages fan
-// out in parallel, so the oldest rows are the ones still waiting on a completion
-// that has to land on the row its start opened.
+// Rows for activities still in flight are kept whatever their age: work units
+// and verifiers run in parallel, so the oldest rows are the ones still waiting
+// on a completion that has to land on the row its start opened.
 function prune() {
   const list = $('activity');
   let node = list.lastChild;
@@ -1383,6 +1389,7 @@ function select(id) {
   unitProgress.clear();
   stages.clear();
   stateAt.clear();
+  earlyAt.clear();
   buildFlow();
   renderPipeline('INIT', []);
   tally();
@@ -1593,7 +1600,7 @@ function clearSession() {
   sessionGeneration++; sessionAbort.abort(); sessionAbort = new AbortController();
   controller?.abort(); clearInterval(refreshTimer); token = ''; account = null;
   commentState = {comments: [], can_manage: false}; commentResults = []; commentsLoadedFor = ''; commentsLoadingFor = '';
-  selected = ''; current = null; reviews = []; activities.clear(); unitProgress.clear(); stages.clear(); stateAt.clear();
+  selected = ''; current = null; reviews = []; activities.clear(); unitProgress.clear(); stages.clear(); stateAt.clear(); earlyAt.clear();
   modelChoice.clear(); reviewModels = {}; modelDefaults = {}; modelCatalog = []; audited = null; streamed = emptySpend();
   $('workspace').hidden = true; $('connect').hidden = false; $('disconnect').hidden = true;
   $('account-identity').hidden = true; $('account-content').replaceChildren(); $('review').hidden = true;

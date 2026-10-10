@@ -152,3 +152,35 @@ test('a document review walks the page flow without the code stages', () => {
   assert.ok(!walk('DEFECT_REVIEW', ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'DEFECT_REVIEW'])
     .steps.some(s => s.state === 'DOCUMENT_REVIEW'));
 });
+
+test('verification that starts per file runs alongside the defect review step', () => {
+  const history = ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'DEFECT_REVIEW'];
+  const early = at(['FINDING_VERIFICATION', 5000]);
+  const running = walk('DEFECT_REVIEW', history, new Map(), at(['DEFECT_REVIEW', 1000]), early);
+  const verification = running.steps.find(s => s.state === 'FINDING_VERIFICATION');
+  assert.equal(status(running, 'DEFECT_REVIEW'), 'active');
+  assert.equal(status(running, 'EVIDENCE_VALIDATION'), 'pending');
+  assert.equal(verification.status, 'active');
+  assert.equal(verification.note, 'started early, per file');
+  assert.equal(verification.at, 5000);
+  // The track still reads where the pipeline is, not where its early work is.
+  assert.equal(running.reached, walk('DEFECT_REVIEW', history).reached);
+
+  // Once walked, the step's time counts from the first verifier, not the state.
+  const walked = [...history, 'EVIDENCE_VALIDATION', 'FINDING_VERIFICATION', 'FINALIZATION'];
+  const times = at(['DEFECT_REVIEW', 1000], ['EVIDENCE_VALIDATION', 9000],
+    ['FINDING_VERIFICATION', 9000], ['FINALIZATION', 12000]);
+  const done = walk('FINALIZATION', walked, new Map(), times, early);
+  const step = done.steps.find(s => s.state === 'FINDING_VERIFICATION');
+  assert.equal(step.status, 'done');
+  assert.equal(step.took, 7000);
+  assert.equal(step.note, 'independent');
+
+  // A verifier that starts after the state was entered changes nothing.
+  const late = walk('FINALIZATION', walked, new Map(), times, at(['FINDING_VERIFICATION', 10000]));
+  assert.equal(late.steps.find(s => s.state === 'FINDING_VERIFICATION').took, 3000);
+
+  // A review that stops in defect review does not show verification running.
+  const cancelled = walk('CANCELLED', [...history, 'CANCELLED'], new Map(), at(), early);
+  assert.equal(status(cancelled, 'FINDING_VERIFICATION'), 'skipped');
+});

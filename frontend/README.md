@@ -65,7 +65,10 @@ partial review or a recorded error is called out above them.
 The flow is the pipeline drawn as it runs: sequential steps joined by links,
 with the Defect review step showing its unit counts. Each step lights up as the
 review reaches it — walked steps carry the time the pipeline spent in them and
-the running one counts up. A review run by the removed seven-stage deep mode is
+the running one counts up. Verification is the exception: a file's findings
+are verified as soon as its units finish, so the Verification step lights up
+alongside Defect review when the first verifier starts ("started early, per
+file") and its time counts from that start rather than from the state. A review run by the removed seven-stage deep mode is
 drawn the same way: its legacy states and stage reports fold into the Defect
 review step. A step reached but never walked, by a milestone short circuit, is
 drawn as not run rather than as still to come, and a stage that came back partial, failed or without a completion keeps
@@ -80,11 +83,15 @@ left spinning. State and run rows read as phase headings over the work they
 started, rows are indented under the activity that started them, and a partial
 or failed row is marked down its edge. Filters carry a count each, and the
 running badge names the stages still in flight rather than only counting them.
-The feed is bounded, and stages fan out in parallel, so the bound drops the
+The feed is bounded, and work units and verifiers run in parallel, so the bound drops the
 oldest finished row: a row still waiting on its completion is kept however old
 it is. Findings are
 grouped by severity with a proportion bar, severity filters, evidence, and the
-model's confidence. Dark is the default palette; the header toggle switches to
+model's confidence. A finding without a verdict says why: a verifier that
+never answered reads "unverified", while one the pipeline chose not to verify
+(a static-tool category, code outside the change, a pre-existing finding past
+the two shown, invalid evidence, or a category that needs no verification)
+names that reason. Dark is the default palette; the header toggle switches to
 light and the choice is remembered per browser. `/` focuses the review filter
 and `r` refreshes the list.
 
@@ -152,8 +159,9 @@ State payloads contain `state`; a gateway attempt carries its stage, attempt
 numbers and outcome, and is filtered with the tool it was made for. Other payloads contain a fixed operational `name`, `status`, unique
 `activity_id`, and optional `parent_id` linking nested calls. Status is
 `started`, `completed`, `partial`, `failed`, or `cancelled`. A completed tool
-invocation is not proof the analyzer found no defects. Parallel stage agents
-inherit separate activity parents. These are the existing deterministic stage
+invocation is not proof the analyzer found no defects. Concurrent work units
+and verifiers inherit separate activity parents; a verifier started while
+units still run is nested under the Defect review agent. These are the existing deterministic stage
 agents and their work units, not an additional agent framework.
 
 Events contain no prompts, code, credentials, arguments, outputs, exception

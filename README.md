@@ -301,7 +301,10 @@ claim, code, cited evidence and nearby diff, excluding the proposer's severity,
 confidence, rationale and failure scenario; it may request context once when the
 code shown cannot settle the claim. Findings in static-tool categories or outside
 the change are not verified, nor are pre-existing findings beyond the two that
-publication can show.
+publication can show. Such a finding records why in `unverified_reason`
+(`static_tool`, `outside_change`, `existing_limit`, `evidence_invalid` or
+`not_required`), so a deliberate skip is not mistaken for a verifier that
+never answered.
 
 Finding severities are `BLOCKER`, `REQUIRED`, `SUGGESTION`, `NIT`, `QUESTION`,
 `FYI`, and `PRAISE`, assigned by deterministic category policy and caps.

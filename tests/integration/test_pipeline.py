@@ -1015,8 +1015,11 @@ async def test_only_publishable_pre_existing_findings_are_verified(
     }
     assert findings["correctness"]["status"] == "suppressed"
     assert findings["correctness"]["verification"] is None
+    assert findings["correctness"]["unverified_reason"] == "existing_limit"
     assert all(
-        findings[c]["severity_final"] == "FYI" and findings[c]["verification"]
+        findings[c]["severity_final"] == "FYI"
+        and findings[c]["verification"]
+        and findings[c]["unverified_reason"] is None
         for c in ("concurrency", "error_handling")
     )
 
