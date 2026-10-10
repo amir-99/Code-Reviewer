@@ -22,8 +22,18 @@ def unavailable(finding, bundle, error):
 
 
 async def verify_findings(
-    findings, bundle, llm, redactor, context_provider, concurrency, config=None
+    findings,
+    bundle,
+    llm,
+    redactor,
+    context_provider,
+    concurrency,
+    config=None,
+    slots=None,
 ):
+    """Verify findings in place. `slots`, when shared between calls, bounds the
+    verifiers of every concurrent batch together instead of each batch alone."""
+
     def remaining():
         if config is None:
             return None
@@ -65,10 +75,10 @@ async def verify_findings(
         else:
             ready.append(finding)
 
-    pending = iter(ready)
+    slots = slots or asyncio.Semaphore(concurrency)
 
-    async def worker():
-        for finding in pending:
+    async def one(finding):
+        async with slots:
             try:
                 async with asyncio.timeout(remaining()):
                     await verify(finding, bundle, llm, redactor, context_provider)
@@ -78,5 +88,5 @@ async def verify_findings(
     # Mutate the original findings in place: completion order never reorders them.
     # TaskGroup drains cancellation before the caller cleans up the worktree.
     async with asyncio.TaskGroup() as group:
-        for _ in range(min(concurrency, len(ready))):
-            group.create_task(worker())
+        for finding in ready:
+            group.create_task(one(finding))

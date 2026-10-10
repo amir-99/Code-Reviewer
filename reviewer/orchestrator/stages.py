@@ -35,7 +35,15 @@ async def execute(
     store=None,
     redactor=None,
     previous=None,
+    observer=None,
 ):
+    """Run the Defect Review over every planned unit.
+
+    `observer`, when given, is told the planned units (`planned(units)`) and
+    each unit's result as it completes (`finished(unit, result)`), so findings
+    can be processed while other units still run. A stage reused whole from a
+    previous run reports nothing; its caller works from the returned result.
+    """
     agent = DefectReviewAgent(config.documents.prompt_tokens)
     spec = getattr(llm, "specs", {}).get(name)
     agent.context_tokens = spec.context_tokens if spec else None
@@ -63,6 +71,13 @@ async def execute(
         await report_progress()
         return previous
     cached = await store.unit_results(bundle.review_id, name) if store else {}
+    if observer is not None:
+        observer.planned(units)
+
+    def done(unit, result):
+        if observer is not None:
+            observer.finished(unit, result)
+
     await record(
         "stage_dispatch",
         dict(
@@ -89,6 +104,7 @@ async def execute(
                 progress["idle"] -= 1
                 progress["completed" if completed[index].examined else "stopped"] += 1
                 await report_progress()
+                done(unit, completed[index])
                 continue
             result = StageResult(stage=name)
             completed[index] = result
@@ -107,6 +123,7 @@ async def execute(
                 progress["idle"] -= 1
                 progress["stopped"] += 1
                 await report_progress()
+                done(unit, result)
                 continue
             progress["idle"] -= 1
             progress["running"] += 1
@@ -171,6 +188,7 @@ async def execute(
                 if redactor is not None:
                     data = redactor.object(data)
                 await store.save_unit(bundle.review_id, name, key, data)
+            done(unit, result)
 
     async with asyncio.TaskGroup() as group:
         for _ in range(min(config.unit_concurrency, len(units))):

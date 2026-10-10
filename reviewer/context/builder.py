@@ -171,7 +171,8 @@ async def build(
     try:
         await attach_scopes(bundle, symbols, code_cache)
     except Exception:
-        # Scope is optional context; the diff with its context lines remains.
+        # Scope is optional context; the diff with its context lines remains,
+        # and evidence is still scanned before each verifier batch.
         bundle.degradations.append("scope_unavailable")
 
     @activity("tool", "Read requested code context")
@@ -203,11 +204,19 @@ SCOPE_LINES = 120
 
 
 async def attach_scopes(bundle, symbols, code_cache):
-    """Widen each change to its enclosing definition with scanned head lines."""
+    """Widen each change to its enclosing definition with scanned head lines.
+
+    Every reviewed file is read through the scanned cache in one batch, not only
+    those that need scope: findings are verified while other units still run,
+    and the code a verifier cites is then already scanned before any verifier
+    prompt is built, as it was when verification waited for every unit.
+    """
     wanted = {}
+    reviewed = []
     for file in bundle.code.files:
         if file.is_excluded or file.change_type == "deleted":
             continue
+        reviewed.append(file.path)
         present = {line.new_line for line in file.lines if line.new_line is not None}
         changed, following = set(), None
         for line in reversed(file.lines):
@@ -225,9 +234,9 @@ async def attach_scopes(bundle, symbols, code_cache):
                 lines.update(range(scope["start"], scope["end"] + 1))
         if lines - present:
             wanted[file.path] = (file, lines - present)
-    if not wanted:
+    if not reviewed:
         return
-    sources = await code_cache.read_many(list(wanted))
+    sources = await code_cache.read_many(reviewed)
     for path, (file, lines) in wanted.items():
         if path not in sources:
             continue

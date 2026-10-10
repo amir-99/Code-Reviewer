@@ -15,12 +15,13 @@ from reviewer.context.builder import build
 from reviewer.context.framing import INJECTION_RULE
 from reviewer.decision.engine import decide, status
 from reviewer.findings.dedup import deduplicate, fingerprint
-from reviewer.findings.models import Finding, Provenance
+from reviewer.findings.models import Finding, ProposedFinding, Provenance
 from reviewer.findings.policy import normalize
 from reviewer.findings.validator import change_commits, validate
 from reviewer.orchestrator.budget import BudgetTracker
 from reviewer.orchestrator.stages import execute
 from reviewer.orchestrator.states import ORDER, TERMINAL
+from reviewer.orchestrator.streaming import FileStream
 from reviewer.orchestrator.verification import verify_findings
 from reviewer.publish.publisher import Publisher
 from reviewer.publish.rereview import adopt_identities, full_review, reanchor
@@ -352,7 +353,7 @@ class Pipeline:
                     llm = None
                     bundle.degradations.append("gateway_unconfigured")
 
-                async def stage(name):
+                async def stage(name, observer=None):
                     results[name] = await execute(
                         name,
                         bundle,
@@ -363,6 +364,7 @@ class Pipeline:
                         self.store,
                         redactor,
                         results.get(name),
+                        observer,
                     )
                     from reviewer.orchestrator.stages import StageResult
 
@@ -372,17 +374,54 @@ class Pipeline:
                     await self.store.save_stage(review.id, results[name])
                     return results[name]
 
-                async def process(raw):
-                    values = []
-                    commits = None
-                    if raw:
-                        try:
-                            commits = await change_commits(self.git, wt, bundle)
-                        except Exception:
-                            # Unknown attribution is non-blocking: validate()
-                            # retries per finding and falls back to not-introduced.
-                            commits = None
-                    for name, proposed in raw:
+                categories = {
+                    c
+                    for tool in config.static_tools
+                    if any(
+                        s.name == tool.name and s.status in {"passed", "failed"}
+                        for s in bundle.static
+                    )
+                    for c in tool.categories
+                }
+                touched = {file.path for file in bundle.code.files}
+                verifiers = asyncio.Semaphore(config.verification_concurrency)
+                commits = None
+                if level >= 5:
+                    try:
+                        commits = await change_commits(self.git, wt, bundle)
+                    except Exception:
+                        # Unknown attribution is non-blocking: validate()
+                        # retries per finding and falls back to not-introduced.
+                        commits = None
+
+                def unpublishable(f):
+                    # Verification is the costliest call per finding: spend it
+                    # only where the result can reach the merge request.
+                    return f.category in categories or (
+                        not f.anchor.in_diff and f.anchor.file not in touched
+                    )
+
+                async def verify(values):
+                    if level >= 6 and values:
+                        await verify_findings(
+                            values,
+                            bundle,
+                            llm,
+                            redactor,
+                            context_provider,
+                            config.verification_concurrency,
+                            config=config,
+                            slots=verifiers,
+                        )
+
+                async def prepare(proposals):
+                    """Validate, deduplicate and verify one file's proposals.
+
+                    Pre-existing findings wait for `settle`: which two of them
+                    publication shows is decided across every file.
+                    """
+                    values, discarded = [], []
+                    for proposed in proposals:
                         f = Finding(
                             **proposed.model_dump(),
                             id=str(uuid4()),
@@ -393,11 +432,13 @@ class Pipeline:
                                 proposed.claim,
                                 proposed.anchor.symbol,
                             ),
-                            stage=name,
+                            stage="defect_review",
                             provenance=Provenance(
-                                agent=name,
-                                prompt_version=PROMPTS[name][0],
-                                model=getattr(llm, "models", {}).get(name, "fake"),
+                                agent="defect_review",
+                                prompt_version=PROMPTS["defect_review"][0],
+                                model=getattr(llm, "models", {}).get(
+                                    "defect_review", "fake"
+                                ),
                                 run_id=review.id,
                                 context_bundle_hash=bundle.content_hash(),
                             ),
@@ -405,34 +446,24 @@ class Pipeline:
                         await validate(
                             f, bundle, symbols, self.git, wt, commits=commits
                         )
-                        if f.status != "discarded":
-                            values.append(f)
-                        else:
-                            await self.store.save_findings(review, [f])
+                        (discarded if f.status == "discarded" else values).append(f)
                     values = deduplicate(values, config.review.merge_distance)
-                    categories = {
-                        c
-                        for tool in config.static_tools
-                        if any(
-                            s.name == tool.name and s.status in {"passed", "failed"}
-                            for s in bundle.static
-                        )
-                        for c in tool.categories
-                    }
-                    touched = {file.path for file in bundle.code.files}
-                    # Verification is the costliest call per finding: spend it
-                    # only where the result can reach the merge request.
-                    unpublishable = {
-                        id(f)
-                        for f in values
-                        if f.category in categories
-                        or (not f.anchor.in_diff and f.anchor.file not in touched)
-                    }
+                    await verify(
+                        [
+                            f
+                            for f in values
+                            if not unpublishable(f)
+                            and f.anchor.introduced_by_this_change
+                        ]
+                    )
+                    return values, discarded
+
+                async def settle(values):
                     existing = sorted(
                         (
                             f
                             for f in values
-                            if id(f) not in unpublishable
+                            if not unpublishable(f)
                             and not f.anchor.introduced_by_this_change
                         ),
                         key=lambda f: (
@@ -441,17 +472,8 @@ class Pipeline:
                         ),
                     )
                     # Pre-existing code is reported as at most two FYIs.
+                    await verify(existing[:EXISTING_FINDINGS])
                     beyond = {id(f) for f in existing[EXISTING_FINDINGS:]}
-                    if level >= 6:
-                        await verify_findings(
-                            [f for f in values if id(f) not in unpublishable | beyond],
-                            bundle,
-                            llm,
-                            redactor,
-                            context_provider,
-                            config.verification_concurrency,
-                            config=config,
-                        )
                     for f in values:
                         if id(f) in beyond:
                             f.status = "suppressed"
@@ -460,21 +482,33 @@ class Pipeline:
                         f.evidence_scope != "local"
                         and not f.verified
                         and f.status == "suppressed"
-                        and id(f) not in unpublishable | beyond
+                        and id(f) not in beyond
+                        and not unpublishable(f)
                         for f in values
                     ):
                         bundle.degradations.append("unverified_scope_claims")
                     return values
 
-                raw = []
+                findings = secrets
                 if level >= 5:
                     await self.advance(review, "DEFECT_REVIEW")
-                    result = await stage("defect_review")
-                    raw.extend(("defect_review", f) for f in result.findings)
-                if level >= 5:
-                    await self.advance(review, "EVIDENCE_VALIDATION")
-                    await self.advance(review, "FINDING_VERIFICATION")
-                    fresh = await process(raw)
+                    # Validation and verification of a file start as soon as
+                    # its units are done; the states below mark the remainder.
+                    async with asyncio.TaskGroup() as group:
+                        stream = FileStream(
+                            group,
+                            prepare,
+                            lambda proposal: ProposedFinding.model_validate(
+                                redactor.object(proposal.model_dump(mode="json"))
+                            ),
+                        )
+                        result = await stage("defect_review", stream)
+                        await self.advance(review, "EVIDENCE_VALIDATION")
+                        await self.advance(review, "FINDING_VERIFICATION")
+                        fresh, discarded = await stream.finish(result.findings)
+                    if discarded:
+                        await self.store.save_findings(review, discarded)
+                    fresh = await settle(fresh)
                     if previous_findings:
                         if delta is None and previous_head:
                             try:
@@ -492,8 +526,6 @@ class Pipeline:
                         secrets + carried + fresh,
                         config.review.merge_distance,
                     )
-                if level < 5:
-                    findings = secrets + await process(raw)
                 for r in results.values():
                     if r.failed:
                         bundle.degradations.append("failed_stage:" + r.stage)

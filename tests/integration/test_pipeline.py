@@ -1070,3 +1070,74 @@ async def test_review_interrupted_in_a_removed_deep_stage_finishes_as_standard(
     )
     assert {c["stage"] for c in llm.calls} == {"defect_review"}
     assert set(await store.stages(review.id)) == {"defect_review"}
+
+
+async def test_a_file_is_verified_while_other_units_still_run(store, history, tmp_path):
+    import asyncio
+
+    repo, base, _ = history
+    (repo / "fast.py").write_text("value = compute()  # " + "f" * 150 + "\n")
+    (repo / "slow.py").write_text("other = compute()  # " + "s" * 150 + "\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "two separately reviewed files")
+    head = git(repo, "rev-parse", "HEAD")
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {"defaults": {"review": {"unit_tokens": 256}, "unit_concurrency": 4}}
+        )
+    )
+    order = []
+    verifying = asyncio.Event()
+
+    class Overlapping(Echo):
+        async def complete(self, **kwargs):
+            if issubclass(kwargs["response_model"], VerificationResult):
+                order.append("verify fast.py")
+                verifying.set()
+                return VerificationResult(
+                    counterargument="c", reasoning="r", verdict="confirmed"
+                )
+            result = await super().complete(**kwargs)
+            if "=== slow.py ===" in kwargs["user"]:
+                # Finishes only once fast.py's finding is being verified.
+                await asyncio.wait_for(verifying.wait(), 5)
+                order.append("slow.py unit done")
+            if "=== fast.py ===" in kwargs["user"]:
+                result.findings = [
+                    ProposedFinding(
+                        anchor=Anchor(file="fast.py", line_start=1, line_end=1),
+                        category="correctness",
+                        severity_proposed="REQUIRED",
+                        claim="compute() result is never checked",
+                        reason="r",
+                        impact="i",
+                        failure_scenario="compute() fails",
+                        evidence=[
+                            Evidence(file="fast.py", line_start=1, line_end=1, note="")
+                        ],
+                        suggested_direction="d",
+                        confidence="high",
+                    )
+                ]
+            return wire(result, kwargs["response_model"])
+
+    review = await store.accept(7, 2, head, "overlap")
+    assert await pipeline(store, forge, tmp_path, llm=Overlapping()).run(review.id) == (
+        "PUBLISHED"
+    )
+    assert order == ["verify fast.py", "slow.py unit done"]
+    snapshot = await store.snapshot(review.id)
+    (verified,) = [f for f in snapshot["findings"] if f["anchor"]["file"] == "fast.py"]
+    assert verified["verification"]["verdict"] == "confirmed"
