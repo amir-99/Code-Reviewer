@@ -1024,3 +1024,32 @@ active-MR constraint, reject cross-owner manual supersession, and retain system 
 for actual head changes and close/merge events. Account sessions and CSRF protect every
 interactive route, including event polling and revocation-aware streams. Rollback must
 not re-expose owned reviews through a legacy shared-token build.
+
+## Cheap decision roles and build amendment
+
+Three roles run on a cheap model (shipped default `anthropic/claude-haiku-5.5`)
+around the single Defect Review; none adds a review stage or state, and each is
+skipped when its role does not resolve.
+
+- `context_planner` — one call per review, after partitioning and before unit
+  identities. From code-built menus (Markdown sections of `review.spec_paths`,
+  changed definitions of other units) it picks up to four of each per unit;
+  code reads the excerpts through the scanned lookup, enforces
+  `review.planned_context_bytes`, frames them as `planned-context`, and persists
+  the plan for resumption. The compact contract (v1.3.0) treats them as
+  evidence, never as anchors.
+- `severity_triage` — after normalization, it may lower a defect or build
+  finding's code-derived severity, never raise it; it skips secrets and, in
+  gating mode, any verified finding that would fail the check. Judgements are
+  recorded on `finding.triage`.
+- `build_agent` — with `build.enabled` and STATIC_ENABLED, the reviewed head is
+  copied to a temporary workspace deleted after the review, dependencies are
+  fetched by a fixed script-free command on the operator's proxy-only network,
+  code runs a baseline build, and the agent chooses further allowed commands,
+  all with no network. Exit status decides each check; compiler diagnostics are
+  confirmed findings, agent attributions are verified. Required checks gate
+  only a complete review in gating mode.
+
+A unit whose context round is cut by the unit deadline keeps the earlier
+envelope that examined it. Tests pair with same-named sources in their own
+directory before falling back to a unique name match.

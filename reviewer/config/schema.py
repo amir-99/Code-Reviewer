@@ -28,6 +28,12 @@ ROLES = (
     # Document reviews: the section reviewer and its independent verifier.
     "document_review",
     "document_verification",
+    # Cheap decisions around the Defect Review: which related code and spec
+    # sections each unit is shown, whether a finding's severity may be lowered,
+    # and which build and test commands the sandboxed build agent runs.
+    "context_planner",
+    "severity_triage",
+    "build_agent",
 )
 
 # Roles of the removed seven-stage deep mode. Operator files, MODEL_ROLES and
@@ -61,6 +67,9 @@ DEFAULT_ROLE_MODELS = {
     "chat": "google/gemini-3.8-flash",
     "document_review": "google/gemini-3.8-flash",
     "document_verification": "anthropic/claude-sonnet-5",
+    "context_planner": "anthropic/claude-haiku-5.5",
+    "severity_triage": "anthropic/claude-haiku-5.5",
+    "build_agent": "anthropic/claude-haiku-5.5",
 }
 
 MODEL_ID = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$"
@@ -136,6 +145,16 @@ class ReviewConfig(Strict):
     # report that they could not be verified rather than guessing.
     recheck: bool = True
     recheck_max_judgements: int = Field(default=15, ge=0, le=50)
+    # The context planner attaches related code and specification sections to
+    # each unit. `spec_paths` are fnmatch patterns over repository paths at the
+    # reviewed head (`*` crosses directories); matching Markdown is split by
+    # heading into the planner's menu.
+    context_planner: bool = True
+    spec_paths: list[str] = ["*.md"]
+    spec_files: int = Field(default=120, ge=0, le=500)
+    planned_context_bytes: int = Field(default=12000, ge=0, le=60000)
+    # Severity triage may only lower a finding's code-derived severity.
+    severity_triage: bool = True
     exclude: list[str] = [
         "**/node_modules/**",
         "**/vendor/**",
@@ -206,6 +225,54 @@ class StaticTool(Strict):
         return self
 
 
+Ecosystem = Literal["go", "node", "python"]
+
+
+class BuildConfig(Strict):
+    """Build and test the reviewed head in the sandbox. Operator-only.
+
+    Off unless enabled here and STATIC_ENABLED points at the sandbox daemon.
+    Images are chosen by the ecosystem code detects, never by the agent. The
+    fetch phase is the only step with a network: a fixed, script-free download
+    command per ecosystem on `fetch_network`, which the operator limits to the
+    internal dependency proxy. Every agent command runs with no network.
+    """
+
+    enabled: bool = False
+    images: dict[Ecosystem, str] = {}
+    fetch_network: str = ""
+    fetch_env: dict[str, str] = {}
+    programs: list[str] = [
+        "go",
+        "make",
+        "npm",
+        "npx",
+        "pnpm",
+        "node",
+        "python",
+        "python3",
+        "pytest",
+        "uv",
+    ]
+    max_steps: int = Field(default=12, ge=1, le=40)
+    max_runs: int = Field(default=6, ge=1, le=20)
+    command_timeout_s: int = Field(default=300, ge=10, le=1800)
+    timeout_s: int = Field(default=900, ge=30, le=2400)
+    memory: str = Field(default="2g", pattern=r"^[0-9]+[kmg]$")
+    cpus: str = Field(default="2", pattern=r"^[0-9]+(\.[0-9]+)?$")
+    # A failed build or test check fails the deterministic decision only when
+    # required, and only on a complete review in gating mode.
+    required: bool = False
+
+    @model_validator(mode="after")
+    def pinned(self):
+        if any("@sha256:" not in image for image in self.images.values()):
+            raise ValueError("Build images must be digest-pinned")
+        if any(not p or "/" in p for p in self.programs):
+            raise ValueError("Build programs are bare executable names")
+        return self
+
+
 class ProjectConfig(Strict):
     @model_validator(mode="before")
     @classmethod
@@ -239,6 +306,7 @@ class ProjectConfig(Strict):
     chat: ChatConfig = Field(default_factory=ChatConfig)
     document_review: DocumentReviewConfig = Field(default_factory=DocumentReviewConfig)
     static_tools: list[StaticTool] = []
+    build: BuildConfig = Field(default_factory=BuildConfig)
     languages: list[Literal["python", "typescript", "go"]] = [
         "python",
         "typescript",

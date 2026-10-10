@@ -1144,3 +1144,102 @@ async def test_a_file_is_verified_while_other_units_still_run(store, history, tm
     snapshot = await store.snapshot(review.id)
     (verified,) = [f for f in snapshot["findings"] if f["anchor"]["file"] == "fast.py"]
     assert verified["verification"]["verdict"] == "confirmed"
+
+
+async def test_sandboxed_build_failure_is_a_confirmed_finding(
+    store, history, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from reviewer.agents.build_agent import BuildStep
+    from reviewer.services.build.sandbox import BuildSandbox, RunResult
+
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
+    image = "python@sha256:" + "a" * 64
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "defaults": {
+                    "enforcement": "gating",
+                    "build": {"enabled": True, "images": {"python": image}},
+                }
+            }
+        )
+    )
+    workspaces = []
+
+    async def run(self, ecosystem, command, timeout_s, network=""):
+        workspaces.append(self.root)
+        assert (self.src / "new0.py").is_file()
+        output = "new0.py:1:5: SyntaxError: invalid syntax\n"
+        return RunResult(list(command), ecosystem, 1, output, 0.1, "failed")
+
+    monkeypatch.setattr(BuildSandbox, "run", run)
+    # The fixture repository has no lockfile; detection is code's own choice.
+    import reviewer.agents.build_agent as build_agent
+
+    monkeypatch.setattr(build_agent, "detect", lambda src: ["python"])
+
+    class Builder(Echo):
+        specs = {"build_agent": SimpleNamespace(context_tokens=100000)}
+
+        async def complete(self, **kwargs):
+            if kwargs["stage"] == "build_agent":
+                self.calls.append(kwargs)
+                return BuildStep(
+                    thought="",
+                    action="finish",
+                    path=None,
+                    line_start=None,
+                    line_end=None,
+                    ecosystem=None,
+                    argv=[],
+                    purpose=None,
+                    failures=[],
+                    summary="",
+                )
+            return await super().complete(**kwargs)
+
+    settings = Settings(
+        milestone="M9",
+        config_path=tmp_path / "config.json",
+        static_enabled=True,
+        static_workspace_root=tmp_path / "ws",
+    )
+    llm = Builder()
+    machine = Pipeline(
+        store,
+        forge,
+        settings,
+        GitService(tmp_path / "cache", allow_local=True),
+        FakeIssueService(),
+        FakeDocumentService(),
+        FakeSecretScanner(),
+        StaticRunner(),
+        lambda *args: llm,
+    )
+    review = await store.accept(7, 2, head, "build")
+    assert await machine.run(review.id) == "PUBLISHED"
+    snapshot = await store.snapshot(review.id)
+    (built,) = [f for f in snapshot["findings"] if f["stage"] == "build_agent"]
+    assert built["anchor"]["file"] == "new0.py"
+    assert built["verification"]["verdict"] == "confirmed"
+    assert built["severity_final"] == "REQUIRED"
+    assert [(s["name"], s["status"]) for s in snapshot["bundle"]["static"]] == [
+        ("build: python -m compileall -q .", "failed")
+    ]
+    assert (await store.get(review.id)).decision == "REQUEST_CHANGES"
+    # The sandbox copy was deleted when the build finished.
+    assert workspaces and not workspaces[0].exists()

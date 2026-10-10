@@ -80,7 +80,12 @@ class DefectReviewAgent:
 
     def build_prompt(self, bundle, unit):
         # Unit identity and the call itself both need the prompt; build it once.
-        key = (id(bundle), unit.id, unit.content)
+        key = (
+            id(bundle),
+            unit.id,
+            unit.content,
+            json.dumps(unit.planned, sort_keys=True),
+        )
         if key not in self.prompts:
             self.prompts[key] = self.compose(bundle, unit)
         return self.prompts[key]
@@ -90,7 +95,7 @@ class DefectReviewAgent:
         requirements = self.requirements(bundle)
         system = template + "\n" + PROMPTS[CONTRACT][1] + "\n" + INJECTION_RULE
         static = [s.model_dump() for s in bundle.static]
-        meta = {"unit": unit.model_dump(exclude={"omitted", "content"})}
+        meta = {"unit": unit.model_dump(exclude={"omitted", "content", "planned"})}
 
         def render(requirements):
             # What every unit of the review shares comes first, so a gateway's
@@ -106,6 +111,16 @@ class DefectReviewAgent:
                         "review-context",
                     ),
                     frame(json.dumps(meta, ensure_ascii=False), "review-unit"),
+                    *(
+                        [
+                            frame(
+                                json.dumps(unit.planned, ensure_ascii=False),
+                                "planned-context",
+                            )
+                        ]
+                        if unit.planned
+                        else []
+                    ),
                     frame(unit.content, "review-diff"),
                 ]
             )
@@ -141,7 +156,18 @@ class DefectReviewAgent:
         return system, user
 
     @activity("unit", lambda self, *args, **kwargs: self.name)
-    async def run(self, bundle, unit, llm, context_provider=None, coverage_retry=False):
+    async def run(
+        self,
+        bundle,
+        unit,
+        llm,
+        context_provider=None,
+        coverage_retry=False,
+        observed=None,
+    ):
+        """Review one unit. `observed`, when given, receives each round's
+        envelope as it arrives, so a caller whose deadline cancels a later
+        context round still holds the earlier, complete answer."""
         system, user = self.build_prompt(bundle, unit)
         if coverage_retry:
             user += "\n" + frame(
@@ -171,6 +197,8 @@ class DefectReviewAgent:
             )
             if hasattr(result, "expand"):
                 result = result.expand()
+            if observed is not None:
+                observed.append(result)
             if unit.id not in result.coverage.units_examined:
                 await record(
                     "coverage_mismatch",

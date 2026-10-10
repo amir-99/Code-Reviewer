@@ -295,3 +295,52 @@ async def test_progress_coverage_retry_does_not_inflate_total(tmp_path, monkeypa
     assert events[-1]["total"] == 1
     assert events[-1]["completed"] == events[-1]["running"] == 0
     assert events[-1]["stopped"] == 1
+
+
+async def test_a_context_round_cut_by_the_deadline_keeps_the_earlier_answer(tmp_path):
+    from reviewer.findings.models import ContextRequest
+
+    calls = 0
+
+    class SlowSecondRound:
+        async def complete(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                await asyncio.Event().wait()
+            return StageEnvelope(
+                findings=[],
+                coverage=Coverage(
+                    units_examined=["f0.py:unit-0"], units_skipped=[], skip_reason=None
+                ),
+                context_requests=[
+                    ContextRequest(kind="symbol", target="helper", reason="check")
+                ],
+                notes_for_summary="No defects in the first pass.",
+            )
+
+    async def provider(requests):
+        return {"helper.py": {"code": "1: def helper(): ..."}}
+
+    result = await execute(
+        "defect_review",
+        bundle(tmp_path, 1),
+        SlowSecondRound(),
+        ProjectConfig(unit_timeout_s=0.2),
+        provider,
+    )
+    assert calls == 2
+    assert result.examined == ["f0.py:unit-0"] and not result.partial
+    assert "No defects in the first pass." in result.notes
+    assert any("earlier answer was kept" in note for note in result.notes)
+
+
+async def test_a_deadline_before_any_examined_answer_stays_partial(tmp_path):
+    class Hangs:
+        async def complete(self, **kwargs):
+            await asyncio.Event().wait()
+
+    result = await execute(
+        "defect_review", bundle(tmp_path, 1), Hangs(), ProjectConfig(unit_timeout_s=0.1)
+    )
+    assert result.partial and result.skipped == ["f0.py:unit-0"]

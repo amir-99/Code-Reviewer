@@ -57,7 +57,10 @@ projects. No provider SDK or public-provider fallback is used for LLM calls.
 
 Every model-selecting call site is a *role*, and each role is selected
 independently: `defect_review`, `verification`, `recheck`, `chat`,
-`document_review` and `document_verification`. The stage that finds bugs and the
+`document_review`, `document_verification`, and three cheap decision roles —
+`context_planner`, `severity_triage` and `build_agent` — that ship on
+`anthropic/claude-haiku-5.5`. A decision role with no resolvable model is
+skipped, and the review runs as it did before. The stage that finds bugs and the
 verifier need not run on the same model, and the verifier should not be the model
 whose own claim it is checking. Roles of the removed deep mode (`purpose`,
 `design`, `correctness`, `complexity`, `tests_`, `line_review`,
@@ -280,9 +283,12 @@ flowchart LR
   Queue --> Context[SHA-pinned Git + Jira + Confluence]
   Context --> Secrets[Secret scan and redaction]
   Secrets --> Static[Sandboxed static checks]
-  Static --> Defects[Combined defect review / concurrent units]
+  Static --> Plan[Context planner: specs and related code per unit]
+  Plan --> Defects[Combined defect review / concurrent units]
+  Static --> Build[Sandboxed build and test agent]
   Defects --> Validate[Per-file evidence validation and independent verification]
-  Validate --> Policy[Severity, deduplication, noise caps]
+  Build --> Validate
+  Validate --> Policy[Severity, deduplication, noise caps, lower-only triage]
   Policy --> Publish[Comments and deterministic status]
 ```
 
@@ -306,8 +312,22 @@ publication can show. Such a finding records why in `unverified_reason`
 `not_required`), so a deliberate skip is not mistaken for a verifier that
 never answered.
 
+Before units are dispatched, the context planner chooses for each unit up to
+four sections of the repository's own specifications (Markdown matching
+`review.spec_paths`, split by heading) and up to four changed definitions from
+other units — the contract a cache key must follow, the embedder whose version a
+search compares against. It picks IDs from menus code builds; code reads every
+excerpt through the secret-scanned lookup and caps it at
+`review.planned_context_bytes`. A unit whose requested context cannot arrive
+before the unit deadline keeps its earlier answer instead of becoming a gap.
+
 Finding severities are `BLOCKER`, `REQUIRED`, `SUGGESTION`, `NIT`, `QUESTION`,
 `FYI`, and `PRAISE`, assigned by deterministic category policy and caps.
+Severity triage then lets the `severity_triage` model lower a defect or build
+finding (to `SUGGESTION`, `NIT` or `FYI`) when its failure is minor; it can never
+raise one, never touches secrets, and in gating mode never lowers a verified
+finding that would fail the check. Each judgement is kept in `finding.triage`.
+Disable it with `review.severity_triage: false`.
 At most 15 inline comments and five per file are permitted. Lower-severity and
 unpositionable findings appear in the summary. Comments include hidden
 fingerprints; existing bot-authored discussions prevent duplicate publication.
@@ -389,6 +409,45 @@ docker compose -f compose.yml -f compose.static.yml up -d --build
 
 The default stack does not mount the host Docker socket. The sandbox daemon
 must be reachable only over your controlled internal Docker transport.
+
+### Build and test agent
+
+`build` (operator-only, off by default) builds and tests the reviewed head in
+the same sandbox daemon, alongside the Defect Review:
+
+```json
+{"defaults": {"build": {
+  "enabled": true,
+  "images": {"go": "internal-registry/go-toolchain@sha256:<digest>"},
+  "fetch_network": "review-deps",
+  "fetch_env": {"GOPROXY": "https://goproxy.internal", "GOSUMDB": "off"},
+  "required": false
+}}}
+```
+
+1. The pinned checkout is copied without `.git` to a fresh directory under
+   `STATIC_WORKSPACE_ROOT/builds`, which must be on the path shared with the
+   sandbox daemon. It is deleted when the build finishes, fails or is cancelled.
+2. Ecosystems are detected by root lockfile (`go.mod`, `package-lock.json`,
+   `uv.lock`); only those with a configured image run.
+3. If `fetch_network` is set, a fixed download command runs on that Docker
+   network (`go mod download`, `npm ci --ignore-scripts`,
+   `uv sync --frozen --no-install-project --no-build`). Create that network so
+   it reaches only your dependency proxy. Every other command runs with
+   `--network none`.
+4. Code always runs the baseline build (`go build ./...`,
+   `python -m compileall -q .`).
+5. The `build_agent` model may list and read files and run up to `max_runs`
+   further commands whose program is in `programs` (`go vet`, the changed
+   packages' unit tests, `tsc --noEmit`, …). It cannot choose the image,
+   network, mounts or environment.
+
+Every command is a check in the summary, passing or failing by exit status.
+Compiler and vet diagnostics in failed output become findings confirmed by that
+output; test failures the agent attributes to a line are verified like any
+other finding. With `required: true`, a failed build or test check requests
+changes on a complete review in gating mode. Sandbox faults and timeouts are
+`errored` and fail open.
 
 ## Hooks and commands
 

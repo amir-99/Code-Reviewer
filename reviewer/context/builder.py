@@ -195,6 +195,9 @@ async def build(
                 output[request.target] = {"unavailable": True}
         return output
 
+    # The context planner and the build agent read through the same scanned
+    # lookup: whatever they show a model has passed secret scanning first.
+    context_provider.lookup = lookup
     return bundle, redactor, symbols, secret_findings, context_provider
 
 

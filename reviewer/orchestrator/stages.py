@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel
 
 from reviewer.agents.base import DefectReviewAgent
+from reviewer.agents.context_planner import ContextPlanner
 from reviewer.findings.models import ProposedFinding
 from reviewer.orchestrator.budget import BudgetExhausted
 from reviewer.orchestrator.deadlines import cutoff
@@ -48,6 +49,9 @@ async def execute(
     spec = getattr(llm, "specs", {}).get(name)
     agent.context_tokens = spec.context_tokens if spec else None
     units, selected = plan(bundle, config, only_paths)
+    # Planned context is part of each unit's prompt, so it is attached before
+    # unit identities are computed; a resumed run reloads the persisted plan.
+    await ContextPlanner().plan(bundle, units, llm, config, context_provider, store)
     hashes = {u.id: identity(agent, bundle, u, llm, config) for u in units}
     stage_hash = hashlib.sha256("".join(hashes.values()).encode()).hexdigest()
     progress = dict(
@@ -128,14 +132,17 @@ async def execute(
             progress["idle"] -= 1
             progress["running"] += 1
             await report_progress()
+            # Envelopes of the attempt in flight, round by round.
+            observed = []
             try:
                 # One wall-clock allowance covers context rounds, transport retries,
                 # and the single coverage retry. External cancellation still propagates.
                 async with asyncio.timeout(min(config.unit_timeout_s, remaining)):
                     for attempt in range(2):
                         result.attempts += 1
+                        observed.clear()
                         envelope = await agent.run(
-                            bundle, unit, llm, context_provider, bool(attempt)
+                            bundle, unit, llm, context_provider, bool(attempt), observed
                         )
                         result.findings.extend(
                             f for f in envelope.findings if f.failure_scenario
@@ -166,10 +173,42 @@ async def execute(
                 exhausted = True
                 result.notes.append(f"{unit.id}: Review token or time budget exhausted")
             except TimeoutError:
-                result.notes.append(
-                    f"{unit.id}: Unit deadline reached; remaining coverage is unknown"
+                # A context round that cannot finish does not undo the answer
+                # before it: an envelope that examined the unit stands, with
+                # its findings, exactly as if no context had been requested.
+                kept = next(
+                    (
+                        e
+                        for e in reversed(observed)
+                        if unit.id in e.coverage.units_examined
+                        and unit.id not in e.coverage.units_skipped
+                    ),
+                    None,
                 )
-                await record("unit_deadline", dict(name=name, attempts=result.attempts))
+                if kept is not None:
+                    result.findings.extend(
+                        f for f in kept.findings if f.failure_scenario
+                    )
+                    if getattr(kept, "findings_truncated", False):
+                        result.partial = True
+                        result.notes.append(
+                            "Additional findings omitted by the per-unit limit"
+                        )
+                    if kept.notes_for_summary:
+                        result.notes.append(kept.notes_for_summary)
+                    result.examined.append(unit.id)
+                    result.notes.append(
+                        f"{unit.id}: Requested context did not arrive before the "
+                        "unit deadline; the earlier answer was kept"
+                    )
+                else:
+                    result.notes.append(
+                        f"{unit.id}: Unit deadline reached; remaining coverage is unknown"
+                    )
+                await record(
+                    "unit_deadline",
+                    dict(name=name, attempts=result.attempts, kept=kept is not None),
+                )
             except Exception:
                 result.failed = True
                 # Never expose raw upstream errors or reviewed code in diagnostics.

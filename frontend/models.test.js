@@ -67,6 +67,9 @@ test('a run sends only the roles the operator moved', () => {
 test('roles are labelled for people, not for Python', () => {
   assert.equal(roleLabel('defect_review'), 'Defect review');
   assert.equal(roleLabel('document_verification'), 'Document verification');
+  assert.equal(roleLabel('build_agent'), 'Build agent');
+  // The planner runs inside the Defect Review but bills its own role.
+  assert.equal(roleFor('phase', {name: 'Plan unit context'}, {role: 'defect_review'}), 'context_planner');
   assert.equal(roleLabel('unknown_role'), 'unknown_role');
   // Spend and models recorded by the removed deep mode still read as words.
   assert.equal(roleLabel('tests_'), 'Tests');

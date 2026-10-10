@@ -8,6 +8,8 @@ from uuid import uuid4
 import structlog
 
 from reviewer.agents.base import PROMPTS
+from reviewer.agents.build_agent import BuildAgent
+from reviewer.agents.severity_triage import SeverityTriageAgent
 from reviewer.config.loader import load_project
 from reviewer.config.models import ResolvedModel, assignment, resolve
 from reviewer.config.schema import ProjectConfig
@@ -15,7 +17,12 @@ from reviewer.context.builder import build
 from reviewer.context.framing import INJECTION_RULE
 from reviewer.decision.engine import decide, status
 from reviewer.findings.dedup import deduplicate, fingerprint
-from reviewer.findings.models import Finding, ProposedFinding, Provenance
+from reviewer.findings.models import (
+    Finding,
+    ProposedFinding,
+    Provenance,
+    VerificationResult,
+)
 from reviewer.findings.policy import needs_verification, normalize
 from reviewer.findings.validator import change_commits, validate
 from reviewer.orchestrator.budget import BudgetTracker
@@ -428,7 +435,28 @@ class Pipeline:
                             slots=verifiers,
                         )
 
-                async def prepare(proposals):
+                def make(proposed, stage):
+                    return Finding(
+                        **proposed.model_dump(),
+                        id=str(uuid4()),
+                        fingerprint=fingerprint(
+                            project,
+                            proposed.anchor.file,
+                            proposed.category,
+                            proposed.claim,
+                            proposed.anchor.symbol,
+                        ),
+                        stage=stage,
+                        provenance=Provenance(
+                            agent=stage,
+                            prompt_version=PROMPTS[stage][0],
+                            model=getattr(llm, "models", {}).get(stage, "fake"),
+                            run_id=review.id,
+                            context_bundle_hash=bundle.content_hash(),
+                        ),
+                    )
+
+                async def prepare(proposals, stage="defect_review"):
                     """Validate, deduplicate and verify one file's proposals.
 
                     Pre-existing findings wait for `settle`: which two of them
@@ -436,27 +464,7 @@ class Pipeline:
                     """
                     values, discarded = [], []
                     for proposed in proposals:
-                        f = Finding(
-                            **proposed.model_dump(),
-                            id=str(uuid4()),
-                            fingerprint=fingerprint(
-                                project,
-                                proposed.anchor.file,
-                                proposed.category,
-                                proposed.claim,
-                                proposed.anchor.symbol,
-                            ),
-                            stage="defect_review",
-                            provenance=Provenance(
-                                agent="defect_review",
-                                prompt_version=PROMPTS["defect_review"][0],
-                                model=getattr(llm, "models", {}).get(
-                                    "defect_review", "fake"
-                                ),
-                                run_id=review.id,
-                                context_bundle_hash=bundle.content_hash(),
-                            ),
-                        )
+                        f = make(proposed, stage)
                         await validate(
                             f, bundle, symbols, self.git, wt, commits=commits
                         )
@@ -485,8 +493,15 @@ class Pipeline:
                             -len(f.evidence),
                         ),
                     )
-                    # Pre-existing code is reported as at most two FYIs.
-                    await verify(existing[:EXISTING_FINDINGS])
+                    # Pre-existing code is reported as at most two FYIs. A
+                    # verdict a build's own output established is not re-judged.
+                    await verify(
+                        [
+                            f
+                            for f in existing[:EXISTING_FINDINGS]
+                            if f.verification is None
+                        ]
+                    )
                     beyond = {id(f) for f in existing[EXISTING_FINDINGS:]}
                     for f in values:
                         if id(f) in beyond:
@@ -505,26 +520,84 @@ class Pipeline:
                         bundle.degradations.append("unverified_scope_claims")
                     return values
 
+                async def established(proposals):
+                    """Findings a sandboxed command's own diagnostics establish.
+
+                    Validated like any proposal, then confirmed by that output
+                    rather than by a model: deterministic evidence from the run
+                    outranks a judge.
+                    """
+                    values, discarded = [], []
+                    for proposed in proposals:
+                        f = make(proposed, "build_agent")
+                        await validate(
+                            f, bundle, symbols, self.git, wt, commits=commits
+                        )
+                        if f.status == "discarded":
+                            discarded.append(f)
+                            continue
+                        f.verification = VerificationResult(
+                            counterargument="",
+                            reasoning="Reported by the sandboxed build's own "
+                            "diagnostic output; no model judged it.",
+                            verdict="confirmed",
+                        )
+                        values.append(f)
+                    return (
+                        deduplicate(values, config.review.merge_distance),
+                        discarded,
+                    )
+
                 findings = secrets
                 if level >= 5:
                     await self.advance(review, "DEFECT_REVIEW")
-                    # Validation and verification of a file start as soon as
-                    # its units are done; the states below mark the remainder.
-                    async with asyncio.TaskGroup() as group:
-                        stream = FileStream(
-                            group,
-                            prepare,
-                            lambda proposal: ProposedFinding.model_validate(
-                                redactor.object(proposal.model_dump(mode="json"))
-                            ),
-                        )
-                        result = await stage("defect_review", stream)
-                        await self.advance(review, "EVIDENCE_VALIDATION")
-                        await self.advance(review, "FINDING_VERIFICATION")
-                        fresh, discarded = await stream.finish(result.findings)
+                    # The build needs nothing from the Defect Review, so it runs
+                    # alongside it; its results join before findings settle.
+                    building = asyncio.create_task(
+                        BuildAgent(
+                            self.settings, config, redactor, context_provider
+                        ).run(bundle, wt, llm)
+                    )
+                    try:
+                        # Validation and verification of a file start as soon as
+                        # its units are done; the states below mark the remainder.
+                        async with asyncio.TaskGroup() as group:
+                            stream = FileStream(
+                                group,
+                                prepare,
+                                lambda proposal: ProposedFinding.model_validate(
+                                    redactor.object(proposal.model_dump(mode="json"))
+                                ),
+                            )
+                            result = await stage("defect_review", stream)
+                            await self.advance(review, "EVIDENCE_VALIDATION")
+                            await self.advance(review, "FINDING_VERIFICATION")
+                            fresh, discarded = await stream.finish(result.findings)
+                        built = await building
+                    finally:
+                        if not building.done():
+                            building.cancel()
+                            await asyncio.gather(building, return_exceptions=True)
+                    bundle.static.extend(built.static)
+                    confirmed, rejected = await established(built.diagnostics)
+                    proposed, dropped = await prepare(
+                        [
+                            ProposedFinding.model_validate(
+                                redactor.object(p.model_dump(mode="json"))
+                            )
+                            for p in built.proposals
+                        ],
+                        "build_agent",
+                    )
+                    fresh += confirmed + proposed
+                    discarded += rejected + dropped
                     if discarded:
                         await self.store.save_findings(review, discarded)
                     fresh = await settle(fresh)
+                    # A cheap model may lower, never raise, what code decided.
+                    await SeverityTriageAgent().triage(
+                        fresh, bundle, llm, config, context_provider
+                    )
                     if previous_findings:
                         if delta is None and previous_head:
                             try:

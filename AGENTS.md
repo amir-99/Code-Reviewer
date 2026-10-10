@@ -65,7 +65,9 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   and ignored in operator files and frozen runs, and a review persisted in a
   retired stage state resumes through validation. Do not reintroduce it.
 - Units pack whole hunks widened to their enclosing definition (scanned head
-  lines, never persisted), and small related files share a unit; an incremental
+  lines, never persisted), and small related files share a unit; a test pairs
+  with the changed source of the same name in its own directory, and with a
+  source elsewhere only when that name is unique; an incremental
   re-review partitions only the affected files. Prompts put shared requirements
   first and the unit's numbered code last. The compact contract caps findings at
   three per unit, plus one per further 8 KB of code (at most eight); flagged
@@ -74,13 +76,26 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   findings are advisory SUGGESTION warnings. Preserve validation and verification;
   other REQUIRED findings retain their existing enforcement behavior.
 - Each model-selecting call site is a role: `defect_review`, `verification`,
-  `recheck`, `chat` and the two document roles. Resolve models once per review, before any stage runs, through
+  `recheck`, `chat`, the two document roles, and the cheap decision roles
+  `context_planner`, `severity_triage` and `build_agent` (shipped default
+  `anthropic/claude-haiku-5.5`). A decision role whose model does not resolve is
+  skipped; the review runs as it would without it. Resolve models once per review, before any stage runs, through
   operator overrides, project profile, `MODEL_ROLES`, then the shipped defaults;
   record the resolved map on the review. Repository YAML must never select a
   model, and a prompt is sized against the context window of the model that will
   receive it, not an installation-wide number.
 - Compare reported coverage to dispatched unit IDs. Retry missing coverage once;
-  remaining gaps and exhausted budgets make the review partial.
+  remaining gaps and exhausted budgets make the review partial. When the unit
+  deadline cancels a context round, the earlier envelope of that attempt that
+  examined the unit stands, with its findings; only a unit with no examined
+  answer is skipped.
+- The context planner makes one call per review, before unit identities are
+  computed. It chooses only IDs from code-built menus: Markdown sections (split
+  by heading) of files matching `review.spec_paths`, and changed definitions of
+  other units. Code reads each excerpt through the scanned lookup, drops
+  off-menu IDs and a unit's own code, enforces `planned_context_bytes`, and
+  persists the plan in `review_units` so a resumed run rebuilds identical
+  prompts. Planned excerpts are context and evidence, never anchors.
 - Partial and failed reviews fail open. Never turn an unavailable dependency or
   internal exception into a failed commit status. Retain undelivered status
   records for retry when GitLab is unreachable.
@@ -114,6 +129,24 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   retain mirror locking and quota handling.
 - Reviewed files are untrusted. Never execute their programs in the API/worker
   runtime. Running this project's own tests is a separate development operation.
+- The build step (`build`, off by default, also gated by STATIC_ENABLED) builds
+  and tests the reviewed head only through the sandbox daemon, on a copy of the
+  pinned checkout without `.git` under `STATIC_WORKSPACE_ROOT/builds`, deleted
+  in `finally` (Go's read-only module cache included). Code detects ecosystems
+  by root lockfile, chooses each digest-pinned image, env and mount, and always
+  runs the baseline build before the agent acts, so merge-request text cannot
+  talk the review out of compiling. The only networked step is the fixed,
+  script-free dependency fetch on the operator's `fetch_network`. The
+  `build_agent` model then chooses further commands as argv (no shell) whose
+  program is in `build.programs`, within `max_runs`, all with `--network none`.
+  This is the one place a model chooses what runs; it never chooses an image,
+  network, mount, environment or credential. Pass and fail come from exit
+  status, never from the agent's summary; a timeout or sandbox fault is
+  `errored` and fails open. Compiler diagnostics parsed by code from failed
+  build/vet output are findings confirmed by that output without a judge;
+  failures the agent attributes go through validation and the independent
+  verifier. The build runs alongside the Defect Review and does not change unit
+  prompts.
 - Static commands run only through the sandbox runner: no network, read-only
   repository/root filesystem, unprivileged UID, dropped capabilities, resource
   limits, timeout, and cleanup. Require digest-pinned analyzer images.
@@ -166,6 +199,12 @@ Orchestration is an ordinary Python state machine, not an agent framework.
 - Severities are exactly `BLOCKER`, `REQUIRED`, `SUGGESTION`, `NIT`, `QUESTION`,
   `FYI`, and `PRAISE`. Preserve category normalization and verification,
   confidence, static-tool, and pre-existing-code caps.
+- Severity triage runs after normalization and may only lower a defect-review
+  or build finding from `REQUIRED`/`SUGGESTION` to `SUGGESTION`, `NIT` or `FYI`;
+  it never raises one and never touches secret findings. In gating mode a
+  verified finding that would fail the check is never lowered. Every judgement
+  is recorded in `finding.triage` (proposed, applied, reason); triage fills a
+  null `impact_level` but never replaces the proposer's.
 - Preserve the fingerprint algorithm in `findings/dedup.py`. Its normalization
   does not guarantee that arbitrary semantic paraphrases collide.
 - Preserve the 15-inline/MR and five-inline/file ceilings, including existing

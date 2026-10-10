@@ -146,3 +146,28 @@ async def test_attach_scopes_reads_only_needed_lines_through_the_scanned_cache(
     assert reads == [["svc.py"]]
     assert sorted(file.scope) == [3, 4, 6]
     assert file.scope[4] == "    a = [REDACTED:test]"
+
+
+def test_tests_pair_with_the_source_in_their_own_directory(tmp_path):
+    from reviewer.context.partition import ordered
+
+    # One change touching two `search.go` files must not pair both tests with
+    # whichever source sorts last.
+    paths = [
+        "internal/service/search_test.go",
+        "internal/repository/qdrant/search.go",
+        "test/gates/vector/upsert_test.go",
+        "internal/service/search.go",
+        "internal/repository/qdrant/search_test.go",
+        "internal/repository/qdrant/upsert.go",
+    ]
+    files = [changed(path, [1]) for path in paths]
+    assert [f.path for f in ordered(files)] == [
+        "internal/repository/qdrant/search.go",
+        "internal/repository/qdrant/search_test.go",
+        "internal/repository/qdrant/upsert.go",
+        # A test elsewhere pairs by name only when the name is unambiguous.
+        "test/gates/vector/upsert_test.go",
+        "internal/service/search.go",
+        "internal/service/search_test.go",
+    ]

@@ -19,6 +19,9 @@ class WorkUnit(BaseModel):
     omitted: bool = False
     file_context: dict[str, dict] = {}
     max_findings: int = 3
+    # Excerpts the context planner chose for this unit: specification sections
+    # and changed definitions from other units, keyed `spec:`/`code:`.
+    planned: dict[str, dict] = {}
 
 
 def render(line):
@@ -158,13 +161,30 @@ def is_test(path):
     )
 
 
+def source_of(test, sources):
+    """The changed source a test exercises, or None when that is ambiguous.
+
+    A name alone is not an identity: one change can touch several `search.go`
+    files, and a test pairs with the one in its own directory (Go, colocated
+    TypeScript). Elsewhere only a unique name match is trusted (Python's
+    mirrored `tests/` tree); an ambiguous test keeps its own place.
+    """
+    stem = subject(test)
+    candidates = [s for s in sources if subject(s) == stem]
+    directory = str(PurePosixPath(test).parent)
+    local = [s for s in candidates if str(PurePosixPath(s).parent) == directory]
+    if len(local) == 1:
+        return local[0]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def ordered(files):
     """Files with each test file placed directly after the source it exercises."""
-    sources = {subject(f.path): f.path for f in files if not is_test(f.path)}
+    sources = [f.path for f in files if not is_test(f.path)]
     return sorted(
         files,
         key=lambda f: (
-            sources.get(subject(f.path), f.path) if is_test(f.path) else f.path,
+            (source_of(f.path, sources) or f.path) if is_test(f.path) else f.path,
             is_test(f.path),
             f.path,
         ),

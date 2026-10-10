@@ -5,6 +5,8 @@ services:
   worker:
     environment:
       STATIC_ENABLED: 'true'
+      # Build workspaces must be visible to the sandbox daemon at this path.
+      STATIC_WORKSPACE_ROOT: ${REPO_CACHE}
       DOCKER_HOST: ${SANDBOX_DOCKER_HOST:?Set an internal sandbox Docker endpoint}
     volumes:
       - ${REPO_CACHE:?Set absolute shared repository path}:${REPO_CACHE}

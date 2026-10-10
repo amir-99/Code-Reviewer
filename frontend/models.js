@@ -10,6 +10,7 @@
 export const ROLE_LABELS = {
   defect_review: 'Defect review', verification: 'Verification', recheck: 'Recheck', chat: 'Chat',
   document_review: 'Document review', document_verification: 'Document verification',
+  context_planner: 'Context planner', severity_triage: 'Severity triage', build_agent: 'Build agent',
 };
 
 // Roles of the removed seven-stage deep mode. No run selects them now, but the
@@ -27,7 +28,11 @@ export const rolesFor = (kind, roles) => roles.filter(role => kind === 'document
   : !DOCUMENT_ROLES.includes(role) || role === 'chat');
 
 // Tools that call a model of their own rather than inheriting a stage's.
-export const TOOL_ROLES = {'Independent verifier': 'verification', 'Fix recheck': 'recheck'};
+export const TOOL_ROLES = {
+  'Independent verifier': 'verification', 'Fix recheck': 'recheck',
+  'Plan unit context': 'context_planner', 'Triage severity': 'severity_triage',
+  'Build and test': 'build_agent',
+};
 
 export const roleLabel = role => ROLE_LABELS[role] || LEGACY_ROLE_LABELS[role] || String(role ?? '');
 

@@ -109,6 +109,21 @@ class RecheckResult(Schema):
 RECHECK_RESOLVING = {"fixed", "obsolete"}
 
 
+class SeverityTriage(Schema):
+    """A cheap model's judgement of a finding's severity, which may only lower it.
+
+    `proposed` is what the model said; `to_severity` is what code applied. They
+    differ when the proposal was not lower, or when lowering would have changed
+    a gating decision.
+    """
+
+    from_severity: Severity
+    to_severity: Severity
+    proposed: Severity
+    reason: str = Field(default="", max_length=200)
+    applied: bool = False
+
+
 class Finding(ProposedFinding):
     id: str
     fingerprint: str
@@ -127,6 +142,8 @@ class Finding(ProposedFinding):
         "resolved",
     ] = "proposed"
     resolution: Literal["actioned", "dismissed", "ignored"] | None = None
+    # Historical findings load with no triage.
+    triage: SeverityTriage | None = None
     # Why a finding carries no verdict when that was decided rather than failed:
     # verification is spent only where its result can reach the merge request.
     unverified_reason: (
