@@ -12,6 +12,7 @@ from reviewer.config.loader import load_project
 from reviewer.config.models import ResolvedModel, assignment, resolve
 from reviewer.config.schema import ProjectConfig
 from reviewer.context.builder import build
+from reviewer.context.framing import INJECTION_RULE
 from reviewer.decision.engine import decide, status
 from reviewer.findings.dedup import deduplicate, fingerprint
 from reviewer.findings.models import Finding, Provenance
@@ -219,8 +220,10 @@ class Pipeline:
                 config_hash = hashlib.sha256(
                     config.model_dump_json().encode()
                 ).hexdigest()
+                # The injection rule joins every system prompt, so it is part of
+                # what a prompt change means for re-review.
                 prompt_hash = hashlib.sha256(
-                    json.dumps(PROMPTS, sort_keys=True).encode()
+                    json.dumps([PROMPTS, INJECTION_RULE], sort_keys=True).encode()
                 ).hexdigest()
                 only_paths = None
                 carried = []
