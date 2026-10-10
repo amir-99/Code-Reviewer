@@ -42,7 +42,7 @@ Required deployment settings:
 | `CONFLUENCE_BASE_URL`, `CONFLUENCE_TOKEN` | Confluence Data Center REST content API, PAT |
 | `GATEWAY_BASE_URL`, `GATEWAY_KEY` | Internal OpenAI-compatible gateway, including `/v1` if applicable |
 | `MODEL_ROLES` | Optional JSON object of role → approved gateway model ID |
-| `MODEL_LIMITS` | Optional JSON object of model ID → `context_tokens`; legacy output caps are ignored |
+| `MODEL_LIMITS` | Optional JSON object of model ID → `context_tokens` and `max_output_tokens`; the output limit only sizes budget reservations and is never sent as a cap |
 | `MODEL_CATALOG` | Optional JSON array of model IDs an operator may select for a manual run |
 | `MODEL_STRONG`, `MODEL_FAST`, `MODEL_VERIFIER` | Legacy tier model IDs, still honoured |
 | `MODEL_CONTEXT_TOKENS` | Approved context-window limit, used for models `MODEL_LIMITS` does not name |
@@ -80,8 +80,7 @@ run would use today, and the catalogue an operator may select from.
 
 A role may also carry limits and effort, which is where per-model differences
 belong — a prompt is sized against the context window of the model that will
-actually receive it, and a stage never asks for more output than its model
-returns:
+actually receive it:
 
 ```json
 {"defaults": {"models": {
@@ -124,17 +123,22 @@ branch. It can override review, issue-tracker, document and language options;
 operator-only enforcement, executable commands, model endpoints and credentials
 cannot be selected by repository content.
 
-Operator-only scheduling controls also live in project defaults or overrides:
-every review runs one combined `defect_review` stage over behavior, security,
-data integrity, concurrency and concrete test gaps. The seven-stage deep mode was
-removed; `analysis_mode` is accepted in existing configuration and ignored.
-Milestones below M5 run no model stage; they do not imply a complete review.
-`unit_concurrency` defaults to 2 concurrent units. Set it to 1 for sequential
-units.
-`verification_concurrency` defaults to 2 workers (range 1–16). Evidence validation
-and deduplication precede verification; cited context is scanned before verifier
-calls start. Verification completion order never changes finding order. Set it
-to 1 to restore sequential verification.
+Every review runs one combined `defect_review` stage over behavior, security,
+data integrity, concurrency and concrete test gaps, followed by independent
+verification. The seven-stage deep mode was removed: `analysis_mode` and the
+retired roles in existing configuration are accepted and ignored. Milestones
+below M5 run no model stage; they do not imply a complete review.
+
+Operator-only scheduling controls live in project defaults or overrides.
+`unit_concurrency` defaults to 2 concurrent units; set it to 1 for sequential
+units. `verification_concurrency` defaults to 2 (range 1–16) and bounds every
+verifier call of a review together. A file's findings are validated,
+deduplicated and verified as soon as every unit containing that file has
+finished, while other units still run; which two pre-existing findings to verify
+and show is decided once all units are done. Every reviewed file is
+secret-scanned while context is collected, and cited context is scanned again
+before each verifier batch. Verification completion order never changes finding
+order.
 
 `GATEWAY_CONCURRENCY` defaults to 8 (range 1–64), shared by all reviews and
 rechecks in one worker process. It caps concurrent logical gateway calls,
@@ -172,12 +176,19 @@ unit allowance is explicitly skipped. Each attempt permits one additional contex
 round; `symbol`, `callers` and `tests_for` requests search the whole checkout,
 not only changed files. The compact contract allows three concrete findings per
 unit, plus one per further 8 KB of code (at most eight), with up to two evidence
-ranges;
-models must flag omitted findings, making the review partial. Anchor hashes and
-other derived fields are populated in code. Impact remains nullable and advisory.
+ranges; models must flag omitted findings, making the review partial. Anchor
+hashes and other derived fields are populated in code. Impact remains nullable
+and advisory.
 
-Code chunks carry actual file lengths (unknown when unreadable), supplied line
-ranges and continuation flags. Units preserve intact lines and prefer
+Requirements are condensed once per review and shared by every unit. The issue,
+its acceptance criteria, the epic and merge request text are sent whole. Linked
+Confluence pages larger than `documents.prompt_tokens` (default 6000 estimated
+tokens) keep their opening and the sections whose words best match the change,
+with omitted section headings listed; such a run records `requirements_condensed`,
+which does not make it partial.
+
+Units carry actual file lengths (unknown when unreadable), supplied line ranges
+and continuation flags. Units preserve intact lines and prefer
 complete symbols when they fit. Requested context uses scanned, numbered
 file ranges or symbol bodies; it never silently presents a fixed file prefix as
 the whole file. Context rounds and verification are sized for the receiving model.
@@ -191,20 +202,20 @@ scope claims remain suppressed in the audit snapshot and mark the review partial
 with `unverified_scope_claims`; they are not published as suggestions. Historical
 findings default to `local` and retain their existing behavior.
 
-There is no changed-line threshold or fixed triage selection. Every eligible chunk
-enters a breadth-first queue, visiting one chunk per file before additional chunks
-and prioritizing source changes. Workers keep taking chunks while the actual
+There is no changed-line threshold or fixed triage selection. Every eligible unit
+enters a breadth-first queue, visiting one unit per file before additional units
+and prioritizing source changes. Workers keep taking units while the actual
 analysis deadline and review token budget permit. A fast response frees capacity
 for more work. Legacy `max_changed_lines`, `triage_max_units` and
 `triage_unit_tokens` settings remain readable but do not restrict coverage.
 
 Gateway requests omit output-token caps for every role, including verification
-and recheck. Legacy `stage_output_tokens` and model `max_output_tokens` settings
-are accepted but ignored. The gateway and model still have their own native
-limits. The review-wide token budget and deadlines remain active: calls reserve
+and recheck. Legacy `stage_output_tokens` is accepted but ignored; a model's
+`max_output_tokens` only sizes its budget reservation. The gateway and model
+still have their own native limits. The review-wide token budget and deadlines remain active: calls reserve
 their estimated prompt plus the model's output limit (16k tokens when unset),
-limited by the remaining review allowance, and settle against reported usage. An uncapped in-flight response can exceed the
-remaining allowance; no further calls are admitted after it is spent. Missing
+limited by the remaining review allowance, and settle against reported usage.
+An uncapped in-flight response can exceed the remaining allowance; no further calls are admitted after it is spent. Missing
 usage is conservatively charged against the full context window. Concurrent calls
 wait for reservations to settle instead of treating temporary contention as
 exhaustion. Prompts are still checked against the receiving model's context window,
@@ -214,8 +225,8 @@ cutoff, reserving a quarter of the window as output headroom. Truncation that is
 still needed remains explicit and makes coverage partial. Default exclusions
 match lockfiles specifically, so source names such as `clock_test.go` are reviewed.
 
-Failed and timed-out chunks retain explicit coverage gaps and safe diagnostic
-notes; they do not stop other chunks. Secret findings are redacted advisory
+Failed and timed-out units retain explicit coverage gaps and safe diagnostic
+notes; they do not stop other units. Secret findings are redacted advisory
 warnings and never stop analysis, validation or reporting.
 
 Completed unit results are redacted and checkpointed in `review_units` before
@@ -224,9 +235,13 @@ configuration, SHA, and initial-context hashes. It retains already completed
 coverage even after the deadline expires. A killed in-flight unit can be repeated;
 completed units are preserved. Apply Alembic revision `0006` before starting the
 updated worker. Models and project settings are frozen on each review at its
-first execution; changes apply to new reviews. Frozen configurations predating
-`analysis_mode` retain the deep workflow on recovery. The shipped Complexity and Test
-roles now both use `google/gemini-3.8-flash`.
+first execution; changes apply to new reviews. A frozen configuration that names
+`analysis_mode` or a retired role loads with those entries ignored, and a review
+interrupted in a retired deep-mode state resumes through evidence validation.
+The shipped defaults run `defect_review`, `recheck`, `chat` and
+`document_review` on `google/gemini-3.8-flash`, and `verification` and
+`document_verification` on `anthropic/claude-sonnet-5`; `config/projects.json`
+or `MODEL_ROLES` moves any role.
 
 `final_stage_token_reserve` defaults to 0. Set an explicit token allowance to
 protect independent verification from earlier stages. It must be smaller
@@ -265,8 +280,8 @@ flowchart LR
   Queue --> Context[SHA-pinned Git + Jira + Confluence]
   Context --> Secrets[Secret scan and redaction]
   Secrets --> Static[Sandboxed static checks]
-  Static --> Defects[Combined defect review / concurrent chunks]
-  Defects --> Validate[Evidence validation and independent verification]
+  Static --> Defects[Combined defect review / concurrent units]
+  Defects --> Validate[Per-file evidence validation and independent verification]
   Validate --> Policy[Severity, deduplication, noise caps]
   Policy --> Publish[Comments and deterministic status]
 ```
@@ -277,9 +292,8 @@ by GitService. A changed head or inconsistent diff inventory supersedes the run.
 Gitleaks scans before prompt creation, and matches produce deterministic secret
 findings without a model call. Prompt and response persistence is redacted.
 
-Secret findings
-and security, data-integrity, and prompt-injection blockers are non-blocking
-`SUGGESTION` warnings; they do not terminate the review or fail its status.
+Secret findings and security, data-integrity, and prompt-injection blockers are
+non-blocking `SUGGESTION` warnings; they do not terminate the review or fail its status.
 Each unit is reviewed once. Coverage is checked against dispatched unit IDs;
 each unit with missing coverage gets one retry, and an explicit skip is not
 retried. Truncated or failed units mark the review partial. A verifier sees the
@@ -299,9 +313,8 @@ On another push, changed files are re-reviewed, unchanged/moved findings are
 carried forward, and every comment still open on the merge request is rechecked.
 A re-reported finding at a previously published location keeps that identity
 even when worded differently, so it is neither reposted nor treated as fixed.
-Configuration changes,
-prompt changes, a partial previous review, or a large merge-base movement force
-a full review. Jira's update timestamp controls reuse of requirement context.
+Configuration changes, prompt changes (including the shared injection rule), a
+partial previous review, or a large merge-base movement force a full review. Jira's update timestamp controls reuse of requirement context.
 No operation pushes or rewrites Git history.
 
 ## Recheck
@@ -330,6 +343,22 @@ answers and resolves the threads exactly as an applied run would have. A drafted
 answer counts as an answer, so a repeat neither re-drafts nor re-spends tokens.
 `review.recheck` disables it; `review.recheck_max_judgements` caps the model
 calls per run.
+
+## Review chat
+
+`POST /admin/reviews/{id}/chat` asks a question about a finished review and
+`GET /admin/reviews/{id}/chat` reads the conversation (the dashboard's Ask tab).
+Only the review's owner asks, with their freshly pinned personal credentials and
+no installation fallback; admins can read. The worker answers from the stored
+review record in at most `1 + chat.context_rounds` calls on the `chat` role. The
+model may ask for a file or symbol at the reviewed head (read through a scanned,
+redacted worktree), the linked issue or pages, the review's events or its
+comments; code checks that every citation names something it was given. Chat is
+never a review stage: it changes no state, publishes nothing and proposes no
+findings. Its calls are audited as `stage="chat"`, excluded from the review's
+spend and token budget, and capped by `chat.token_ceiling` per review
+(`chat.enabled`, `chat.timeout_s`, `chat.messages_per_hour` and
+`chat.history_turns` are the other operator keys).
 
 ## Static-analysis sandbox
 
@@ -537,8 +566,8 @@ the sole finding axis used for gating and inline selection.
 `impact_level` is a separate advisory assessment: CRITICAL, HIGH, MEDIUM, LOW,
 or null (unknown/not applicable). Models propose it from the failure scenario,
 not category; it is not independently verified and never changes enforcement.
-All seven proposing stages use the versioned shared contract requiring the
-nullable field in structured output. Historical findings load with null.
+Every proposing stage's versioned contract (compact for Defect Review, document
+for document reviews) requires the nullable field in structured output. Historical findings load with null.
 Deterministic secret detection leaves impact unknown because credential presence
 alone does not establish scope. The unlinked-story notice has no defect impact.
 Deduplication retains impact with the first retained claim, prose and provenance,
