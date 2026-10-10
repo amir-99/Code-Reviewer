@@ -2,8 +2,9 @@ import asyncio
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from sqlalchemy import case, func, select, text
+from sqlalchemy import and_, case, exists, func, or_, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import aliased
 
 from reviewer.orchestrator.states import TERMINAL, check_transition
 from reviewer.store.models import (
@@ -966,6 +967,39 @@ class Store:
                 )
                 for r in rows
             ]
+
+    async def overtaken(self, review_ids):
+        """The reviews among `review_ids` whose merge request or page has a later run.
+
+        A retry repeats one failed attempt; once anything has run after it, the
+        later run is the one to act on.
+        """
+        if not review_ids:
+            return set()
+        later = aliased(Review)
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(Review.id).where(
+                    Review.id.in_(list(review_ids)),
+                    exists().where(
+                        later.id != Review.id,
+                        later.started_at > Review.started_at,
+                        or_(
+                            and_(
+                                Review.kind == "document",
+                                later.subject_key == Review.subject_key,
+                            ),
+                            and_(
+                                Review.kind != "document",
+                                later.kind != "document",
+                                later.project_id == Review.project_id,
+                                later.mr_iid == Review.mr_iid,
+                            ),
+                        ),
+                    ),
+                )
+            )
+            return set(rows)
 
     async def recent(self, limit=50, offset=0, *, owner_user_id=None, all_owners=True):
         async with self.sessions() as session:

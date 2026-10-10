@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from reviewer.accounts.policy import review_access
+from reviewer.accounts.policy import review_access, run_controls
 from reviewer.api.accounts import authenticate
 from reviewer.config.loader import load_project
 from reviewer.config.models import assignment, catalog, resolve
@@ -57,8 +57,15 @@ async def lookup(
             else account.id,
             all_owners=account.role == "admin" and owner is None,
         )
+        overtaken = await request.app.state.store.overtaken([r["id"] for r in rows])
         for row in rows:
             row["spend"] = await request.app.state.store.spend(row["id"])
+            row["controls"] = run_controls(
+                account,
+                row["owner_user_id"],
+                row["state"],
+                overtaken=row["id"] in overtaken,
+            )
         return {"reviews": rows}
     from reviewer.store.models import ReviewTrigger
 
@@ -118,6 +125,14 @@ async def inspect(review_id: str, request: Request):
         and review.owner_user_id == request.state.principal.id
     )
     body["capabilities"] = {"execute": owner, "chat": owner}
+    # Rerun and retry, each with whether the API would accept it now and why
+    # not. The dashboard draws its buttons from this rather than its own rules.
+    body["controls"] = run_controls(
+        request.state.principal,
+        review.owner_user_id,
+        review.state,
+        overtaken=review.id in await store.overtaken([review.id]),
+    )
     body["project_id"] = await store.project_number(review)
     body.update(await store.project_identity(review))
     body["overrides"] = review.overrides
@@ -188,13 +203,57 @@ def summarise(finding):
     }
 
 
-@router.post("/reviews/{review_id}/replay")
-async def replay(review_id: str, request: Request):
+@router.post("/reviews/{review_id}/rerun")
+@router.post("/reviews/{review_id}/replay")  # The original name, kept for clients.
+async def rerun(review_id: str, request: Request):
+    """A fresh review at the current head, with the context this one was given."""
+    return await run_again(review_id, request, retry=False)
+
+
+@router.post("/reviews/{review_id}/retry")
+async def retry(review_id: str, request: Request):
+    """Repeat a failed review on the head it failed on, with the same context.
+
+    Refused once the merge request has new commits (or the page a new version):
+    what is there now is a rerun, not the failed attempt.
+    """
+    return await run_again(review_id, request, retry=True)
+
+
+async def run_again(review_id, request, *, retry):
     review = await review_access(request, review_id, execute=True)
+    store = request.app.state.store
+    control = run_controls(
+        request.state.principal,
+        review.owner_user_id,
+        review.state,
+        overtaken=review.id in await store.overtaken([review.id]),
+    )["retry" if retry else "rerun"]
+    if not control["allowed"]:
+        raise HTTPException(409, control["reason"])
     if review.kind == "document":
         from reviewer.api.document_reviews import replay_document
 
-        return await replay_document(review, request)
+        result = await replay_document(review, request, retry=retry)
+    else:
+        result = await replay_code(review, request, retry=retry)
+    mode = "retry" if retry else "rerun"
+    await store.append_event(
+        review.id,
+        "request",
+        {
+            "name": f"{mode.capitalize()} requested by {request.state.principal.id}",
+            "status": "completed",
+            "event_id": result["event_id"],
+        },
+    )
+    return result | {
+        "mode": mode,
+        "poll": f"/admin/reviews?event_id={result['event_id']}",
+    }
+
+
+async def replay_code(review, request, *, retry):
     project_id = await request.app.state.store.project_number(review)
     from reviewer.accounts.credentials import Credentials, CredentialUnavailable
     from reviewer.api.webhooks import ReviewJob
@@ -222,6 +281,11 @@ async def replay(review_id: str, request: Request):
         raise HTTPException(502, "GitLab lookup is unavailable") from None
     finally:
         await forge.close()
+    if retry and mr.head_sha != review.head_sha:
+        raise HTTPException(
+            409,
+            "The merge request has new commits since this review; rerun it instead",
+        )
     job = ReviewJob(
         project_id=project_id,
         iid=review.mr_iid,

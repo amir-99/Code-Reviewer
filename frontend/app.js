@@ -5,6 +5,7 @@ import {events} from './sse.js';
 import {FAILED, HALTED, TERMINAL, label as labels, walk, UnitProgress} from './flow.js';
 import {chosenModels, modelFor, roleFor, roleLabel, rolesFor} from './models.js';
 import {addAttempt, breakdown, cost as money, emptySpend, mergeSpend, tokens as count, usage} from './spend.js';
+import {runControls} from './controls.js';
 
 const $ = id => document.getElementById(id);
 const el = (tag, text, cls) => {
@@ -35,6 +36,7 @@ const KEEP = 300;
 
 let token = '', account = null, sessionGeneration = 0, sessionAbort = new AbortController(), selected = '', current = null, controller, refreshTimer, lastRecheck = null;
 let pendingRecheck = '';
+let runningAgain = false;      // a rerun or retry request is in flight
 let reviews = [], listFilter = 'all', listQuery = '', activityKind = 'all', severity = 'all', tabTouched = false;
 let snapshotSeq = 0;            // the newest event the last snapshot already reflects
 const activities = new Map();   // activity_id -> {row, kind, name, status, depth, at}
@@ -175,6 +177,7 @@ function reviewRow(review) {
   bottom.append(el('span', labels(review.state)),
     el('span', review.kind === 'document' ? `v${review.head_sha}` : short(review.head_sha), 'sha'));
   if (review.partial) bottom.append(el('span', 'partial', 'badge tone-warn'));
+  if (review.controls?.retry?.allowed) bottom.append(el('span', 'can retry', 'badge tone-info'));
   const when = el('time', ago(review.started_at));
   when.dateTime = review.started_at ?? '';
   when.dataset.ago = review.started_at ?? '';
@@ -1301,7 +1304,8 @@ const delay = (ms, signal) => new Promise(resolve => {
 });
 
 function render(review) {
-  for (const id of ['replay', 'recheck', 'recheck-tab-action', 'recheck-report-action']) $(id).hidden = !review.capabilities?.execute;
+  for (const id of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(id).hidden = !review.capabilities?.execute;
+  renderRunControls(review);
   // A page has no threads to recheck.
   const isDocument = review.kind === 'document';
   for (const id of ['recheck', 'recheck-tab-action', 'recheck-report-action']) if (isDocument) $(id).hidden = true;
@@ -1792,21 +1796,53 @@ $('nav-users').onclick = async () => {
   search.oninput = listUsers; showRemoved.onchange = listUsers; await listUsers();
 };
 
-$('replay').onclick = async () => {
-  if (!selected || !current?.capabilities?.execute) return;
-  $('replay').disabled = true;
+function renderRunControls(review) {
+  const view = runControls(review);
+  for (const mode of ['rerun', 'retry']) {
+    const button = $(mode), control = view[mode];
+    button.hidden = !control.show;
+    button.disabled = runningAgain || !control.enabled;
+    button.title = control.reason || (mode === 'retry'
+      ? 'Run this failed review again on the same head, with the same context and options'
+      : 'Start a fresh review at the current head, with the context this one was given');
+  }
+  // Why a failed review cannot be retried is worth reading without hovering.
+  $('run-hint').hidden = !(view.retry.show && !view.retry.enabled && view.retry.reason);
+  $('run-hint').textContent = view.retry.reason;
+}
+
+// Both ask the API for a new run, then follow it from worker admission.
+async function runAgain(mode) {
+  const view = runControls(current)[mode];
+  if (!selected || !view.enabled || runningAgain) return;
+  if (mode === 'rerun' && view.confirm && !await confirmDialog('Rerun this review?',
+    'It is still running. A rerun supersedes it and starts again at the current head.', 'Rerun')) return;
+  const noun = mode === 'retry' ? 'Retry' : 'Rerun';
+  runningAgain = true; renderRunControls(current);
   try {
-    const job = await (await request(`/admin/reviews/${encodeURIComponent(selected)}/replay`, {method:'POST'})).json();
-    notice('Replay queued. Waiting for worker admission…');
+    const job = await (await request(`/admin/reviews/${encodeURIComponent(selected)}/${mode}`, {method:'POST'})).json();
+    notice(`${noun} queued. Waiting for worker admission…`);
     const signal = controller.signal;
     while (!signal.aborted) {
-      const review = await (await request(`/admin/reviews?event_id=${encodeURIComponent(job.event_id)}`, {signal})).json();
-      if (review.id) { select(review.id); break; }
-      if (['CONFLICT','REJECTED'].includes(review.state)) throw new Error('Replay was not admitted. Check credentials and retry after any active review finishes.');
+      const review = await (await request(job.poll, {signal})).json();
+      if (review.id) { select(review.id); refresh().catch(() => {}); break; }
+      if (['CONFLICT','REJECTED'].includes(review.state)) throw new Error(`${noun} was not admitted. Check credentials and try again after any active review finishes.`);
       await delay(2000, signal);
     }
-  } catch (error) { if (error.name !== 'AbortError') notice(error.message,'error'); }
-  finally { $('replay').disabled = false; }
-};
+  } catch (error) {
+    if (error.name !== 'AbortError') notice(error.message, 'error');
+    // A refusal means the review's controls moved on (a newer run, a new head).
+    // A finished review's stream is closed, so read them back directly.
+    if (error.status === 409) await reloadControls(selected).catch(() => {});
+  } finally { runningAgain = false; if (current) renderRunControls(current); }
+}
+async function reloadControls(id) {
+  const review = await (await request(`/admin/reviews/${encodeURIComponent(id)}`)).json();
+  if (id !== selected || !current) return;
+  current = {...current, controls: review.controls};
+  refresh().catch(() => {});
+}
+$('rerun').onclick = () => runAgain('rerun');
+$('retry').onclick = () => runAgain('retry');
 
 void restoreSession();

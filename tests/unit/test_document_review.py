@@ -911,3 +911,33 @@ async def test_document_chat_reads_sections_and_validates_citations(store, tmp_p
     assert "section:100|Security" in used and "search:retries" in used
     assert "not available for a document review" in llm.calls[1]["user"]
     assert "plain text in the database" in llm.calls[1]["user"]
+
+
+async def test_retry_repeats_a_failed_document_review_at_its_version(app, store):
+    docs = fake_docs()
+    app.state.personal_docs_factory = lambda *_: docs
+    async with await client_for(app) as client:
+        account = app.state.test_account
+        await Credentials(store, app.state.settings).save(
+            account.id, "confluence", "conf-token"
+        )
+        review = await admitted(store, account.id, instruction="Check retries")
+        await store.transition(review.id, "FAILED_INTERNAL", partial=True)
+        detail = await client.get(f"/admin/reviews/{review.id}")
+        assert detail.json()["controls"]["retry"]["allowed"] is True
+        response = await client.post(f"/admin/reviews/{review.id}/retry")
+        assert response.status_code == 200, response.text
+        assert response.json()["mode"] == "retry"
+        name, args = app.state.queue.jobs[-1]
+        assert name == "receive_event" and args[0]["kind"] == "document"
+        assert args[0]["subject"]["version"] == 4
+        assert args[0]["overrides"]["instruction"] == "Check retries"
+        # A new page version is a rerun, not the failed attempt.
+        docs.pages[PAGE_URL] = page(
+            "100", "Payment API design", SUBJECT_TEXT, version=5
+        )
+        queued = len(app.state.queue.jobs)
+        moved = await client.post(f"/admin/reviews/{review.id}/retry")
+        assert moved.status_code == 409
+        assert "new version" in moved.json()["detail"]
+        assert len(app.state.queue.jobs) == queued

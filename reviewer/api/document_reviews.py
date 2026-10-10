@@ -167,8 +167,11 @@ async def trigger(body: DocumentReviewRequest, request: Request):
     }
 
 
-async def replay_document(review, request):
-    """Re-run a document review at the page's current version with its overrides."""
+async def replay_document(review, request, *, retry=False):
+    """Re-run a document review at the page's current version with its overrides.
+
+    A retry repeats the failed run, so it is refused once the page has moved on.
+    """
     from reviewer.accounts.credentials import Credentials, CredentialUnavailable
     from reviewer.services.docs.confluence import Confluence, DocumentRef
     from reviewer.store.models import ReviewTrigger
@@ -196,6 +199,10 @@ async def replay_document(review, request):
         await docs.close()
     if page is None:
         raise HTTPException(404, "Page is not visible to the reviewer")
+    if retry and str(page.version) != review.head_sha:
+        raise HTTPException(
+            409, "The page has a new version since this review; rerun it instead"
+        )
     job = DocumentJob(
         event_id=str(uuid4()),
         subject=DocumentSubject(

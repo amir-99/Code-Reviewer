@@ -13,6 +13,7 @@ ASSETS = {"/identity.js": ("identity.js", "text/javascript"), "/": ("index.html"
           "/sse.js": ("sse.js", "text/javascript"), "/flow.js": ("flow.js", "text/javascript"),
           "/models.js": ("models.js", "text/javascript"),
           "/paths.js": ("paths.js", "text/javascript"),
+          "/controls.js": ("controls.js", "text/javascript"),
           "/findings.js": ("findings.js", "text/javascript"),
           "/spend.js": ("spend.js", "text/javascript"),
           "/style.css": ("style.css", "text/css"),
@@ -21,7 +22,7 @@ ASSETS = {"/identity.js": ("identity.js", "text/javascript"), "/": ("index.html"
 
 ROUTES = {
     "GET": r"/(?:admin/(?:models|quality|reviews(?:/[A-Za-z0-9-]+(?:/(?:events|audit|comments|chat))?)?)|auth/(?:me|users)|profile/integrations)",
-    "POST": r"/(?:auth/(?:login|logout|activate|password|users(?:/[A-Za-z0-9-]+)?)|admin/reviews(?:/[A-Za-z0-9-]+/(?:replay|recheck|comments|chat))?|profile/integrations/(?:gateway|gitlab|jira|confluence)/check)",
+    "POST": r"/(?:auth/(?:login|logout|activate|password|users(?:/[A-Za-z0-9-]+)?)|admin/reviews(?:/[A-Za-z0-9-]+/(?:replay|rerun|retry|recheck|comments|chat))?|profile/integrations/(?:gateway|gitlab|jira|confluence)/check)",
     "PUT": r"/profile/integrations/(?:gateway|gitlab|jira|confluence)",
     "DELETE": r"/profile/integrations/(?:gateway|gitlab|jira|confluence)",
 }

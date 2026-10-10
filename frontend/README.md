@@ -95,6 +95,15 @@ names that reason. Dark is the default palette; the header toggle switches to
 light and the choice is remembered per browser. `/` focuses the review filter
 and `r` refreshes the list.
 
+**Retry review** and **Rerun review** are drawn from the `controls` the API
+sends with each review, so they appear only for the review's owner and only when
+the API would accept them. Retry is offered on a failed review and repeats it on
+the same head with the same context and options; when it is refused (a later
+run exists, or the head moved) the reason is shown beside the buttons. Rerun
+starts a fresh review at the current head and asks for confirmation when the
+review is still running, because the rerun supersedes it. Both follow the new
+run from worker admission, as a manual trigger does.
+
 **Recheck comments** re-judges the threads a review published, at the merge
 request's current head. It calls `POST /admin/reviews/{id}/recheck`, which runs
 no stages and publishes no report. The review is already terminal, so its event

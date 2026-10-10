@@ -101,3 +101,12 @@ class RouteTests(unittest.TestCase):
             self.assertTrue(server.allowed(method, path))
         for method, path in [("GET", "/api/profile/integrations/gitlab"), ("DELETE", "/api/auth/users/abc"), ("POST", "/api/admin/anything"), ("POST", "/api/../outside"), ("GET", "https://evil.invalid/api/auth/me")]:
             self.assertFalse(server.allowed(method, path))
+
+    def test_run_again_route_allowlist(self):
+        for action in ("rerun", "retry", "replay"):
+            self.assertTrue(server.allowed("POST", f"/api/admin/reviews/abc-123/{action}"))
+            self.assertFalse(server.allowed("GET", f"/api/admin/reviews/abc-123/{action}"))
+        self.assertFalse(server.allowed("POST", "/api/admin/reviews/abc/retry/again"))
+
+    def test_controls_module_is_served(self):
+        self.assertEqual(server.ASSETS["/controls.js"], ("controls.js", "text/javascript"))

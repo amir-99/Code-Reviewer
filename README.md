@@ -479,7 +479,7 @@ Users with at least Developer access may issue:
 
 ## Audit and observability
 
-Dashboard routes require an account session. Writes also require the configured Origin and `X-CSRF-Token` from login or authenticated `GET /auth/me` session restoration. Admins can read every review but cannot trigger, replay or recheck one. Users can read and execute only their own reviews. `ADMIN_TOKEN` no longer authorizes these routes or metrics.
+Dashboard routes require an account session. Writes also require the configured Origin and `X-CSRF-Token` from login or authenticated `GET /auth/me` session restoration. Admins can read every review but cannot trigger, rerun, retry or recheck one. Users can read and execute only their own reviews. `ADMIN_TOKEN` no longer authorizes these routes or metrics.
 
 - `POST /admin/reviews`: trigger a review from a merge request link, with no
   hook involved. The body takes `merge_request_url` plus optional `issue_key`,
@@ -512,8 +512,17 @@ Dashboard routes require an account session. Writes also require the configured 
   `spend`: calls, tokens in and out, and cost per role, against the token
   ceiling the run announced. It is read from the audited calls, so it answers
   while the review is still running.
-- `POST /admin/reviews/{id}/replay`: fresh review at the current head, keeping
-  any context the review was manually triggered with.
+- `POST /admin/reviews/{id}/rerun` (also `/replay`): fresh review at the
+  current head, keeping any context the review was manually triggered with. On a
+  review still in flight it supersedes that run.
+- `POST /admin/reviews/{id}/retry`: repeat a failed review (`FAILED_INTERNAL`
+  or `FAILED_CONTEXT`) on the head it failed on, with the same context and
+  options. Refused with 409 once a later review of the merge request or page has
+  run, or once the head (page version) has moved: rerun instead.
+- Every review the API returns — `GET /admin/reviews`, `GET /admin/reviews/{id}`
+  and the event stream's snapshots — carries `controls`: for `rerun` and
+  `retry`, whether the caller may use it now and, if not, the `reason`. Both
+  are owner-only; admins see them refused.
 - `POST /admin/reviews/{id}/recheck`: re-judge the comments that review
   published, at the merge request's current head. Runs no stages and publishes
   no report.

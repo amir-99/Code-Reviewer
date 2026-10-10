@@ -557,6 +557,8 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
 
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
 .actions .hint { flex: 1; min-width: 220px; }
+.actions .primary { width: auto; padding: 8px 14px; }
+.actions #run-hint { color: var(--amber); }
 
 .trail { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 12px; }
 .trail span { font-size: 10px; color: var(--muted); text-transform: lowercase; letter-spacing: .02em; }
