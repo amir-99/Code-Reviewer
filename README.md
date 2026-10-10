@@ -56,12 +56,12 @@ projects. No provider SDK or public-provider fallback is used for LLM calls.
 ## Model selection
 
 Every model-selecting call site is a *role*, and each role is selected
-independently: `defect_review` (standard mode), `purpose`, `design`, `correctness`, `complexity`, `tests_`,
-`line_review`, `system_context`, `verification` and `recheck`. Cost and quality
-are not uniform across a review — one stage runs once over the whole change,
-another runs per file — so the stage that finds bugs and the stage that reads
-lines need not run on the same model, and the verifier should not be the model
-whose own claim it is checking.
+independently: `defect_review`, `verification`, `recheck`, `chat`,
+`document_review` and `document_verification`. The stage that finds bugs and the
+verifier need not run on the same model, and the verifier should not be the model
+whose own claim it is checking. Roles of the removed deep mode (`purpose`,
+`design`, `correctness`, `complexity`, `tests_`, `line_review`,
+`system_context`) are accepted in existing configuration and ignored.
 
 Selection is layered, most specific first:
 
@@ -88,7 +88,7 @@ returns:
   "default": {"model": "vendor/general"},
   "roles": {
     "defect_review": {"model": "vendor/strong", "reasoning_effort": "high"},
-    "line_review": {"model": "vendor/cheap", "context_tokens": 32000}
+    "recheck": {"model": "vendor/cheap", "context_tokens": 32000}
   }
 }}}
 ```
@@ -125,15 +125,12 @@ operator-only enforcement, executable commands, model endpoints and credentials
 cannot be selected by repository content.
 
 Operator-only scheduling controls also live in project defaults or overrides:
-`analysis_mode` defaults to `standard`: one combined `defect_review` stage
-reviews behavior, security, data integrity, concurrency and concrete test gaps.
-Set `analysis_mode: "deep"` in operator project configuration to retain the seven
-stages, including design and maintainability analysis. Repository YAML cannot
-select this setting. Milestones below M5 retain their limited legacy stages;
-they do not imply a complete review.
-`unit_concurrency` defaults to 2 concurrent chunks in standard mode. Deep mode
-uses two workers per analysis stage, up to eight concurrent units per review.
-Set it to 1 for sequential units within each stage.
+every review runs one combined `defect_review` stage over behavior, security,
+data integrity, concurrency and concrete test gaps. The seven-stage deep mode was
+removed; `analysis_mode` is accepted in existing configuration and ignored.
+Milestones below M5 run no model stage; they do not imply a complete review.
+`unit_concurrency` defaults to 2 concurrent units. Set it to 1 for sequential
+units.
 `verification_concurrency` defaults to 2 workers (range 1–16). Evidence validation
 and deduplication precede verification; cited context is scanned before verifier
 calls start. Verification completion order never changes finding order. Set it
@@ -154,8 +151,8 @@ and unit deadlines. Persisted runs retain their recorded configuration and deadl
 
 Phase time controls are operator-only project settings. `finalization_reserve_s`
 defaults to 360 seconds: analysis stops that long before the review deadline.
-In standard mode the remaining model-work allowance is available to verification.
-In deep mode System Context receives its first half, followed by verification. `publication_reserve_s` defaults to 60 seconds
+The remaining model-work allowance is available to verification.
+`publication_reserve_s` defaults to 60 seconds
 and stops model work before reporting and cleanup. For short reviews, these
 reserves are capped at one quarter and one tenth of the total deadline.
 `unit_timeout_s` defaults to 240 seconds for all context rounds, transport retries,
@@ -164,24 +161,32 @@ dispatched unit in the gateway schema, and the retry explicitly supplies that
 expected ID; empty or conflicting coverage remains partial. Reaching a cutoff records skipped units
 and a partial review; recovery never renews the original deadline.
 
-Standard mode packs intact diff hunks and their surrounding context into chunks,
-splitting oversized hunks only between lines. Related changed tests/imports are
-attached when they fit. A single line exceeding the unit allowance is explicitly
-skipped. Each attempt permits one additional context round. The compact contract
-allows at most three concrete findings per chunk with up to two evidence ranges;
+Units pack intact diff hunks, widened to their enclosing function or class (up
+to 120 lines, read through the secret-scanned code cache), into units of
+`review.unit_tokens` UTF-8 bytes (default 24000), splitting oversized hunks only
+between lines. Small files share a unit, each test file beside the source it
+exercises; an incremental re-review packs only the affected files. Prompts send
+the requirements shared by every unit first, so gateway prefix caching can reuse
+them, then the unit's numbered code (`   12 + text`). A single line exceeding the
+unit allowance is explicitly skipped. Each attempt permits one additional context
+round; `symbol`, `callers` and `tests_for` requests search the whole checkout,
+not only changed files. The compact contract allows three concrete findings per
+unit, plus one per further 8 KB of code (at most eight), with up to two evidence
+ranges;
 models must flag omitted findings, making the review partial. Anchor hashes and
 other derived fields are populated in code. Impact remains nullable and advisory.
 
 Code chunks carry actual file lengths (unknown when unreadable), supplied line
-ranges and continuation flags. Both analysis modes preserve intact lines and
-prefer complete symbols when they fit. Requested context uses scanned, numbered
+ranges and continuation flags. Units preserve intact lines and prefer
+complete symbols when they fit. Requested context uses scanned, numbered
 file ranges or symbol bodies; it never silently presents a fixed file prefix as
 the whole file. Context rounds and verification are sized for the receiving model.
 
 Proposals declare `evidence_scope`: `local`, `symbol` for absence within a
 function, or `file` for file-wide absence such as unused imports. Verification
-independently expands cited code to full files or enclosing symbols within its
-budget. Incomplete required scope cannot confirm an absence claim. Unverified
+independently expands cited code to the enclosing symbol, or to the full file for
+file-wide claims and short files, within its budget, and shows the diff lines
+near each citation. Incomplete required scope cannot confirm an absence claim. Unverified
 scope claims remain suppressed in the audit snapshot and mark the review partial
 with `unverified_scope_claims`; they are not published as suggestions. Historical
 findings default to `local` and retain their existing behavior.
@@ -197,12 +202,13 @@ Gateway requests omit output-token caps for every role, including verification
 and recheck. Legacy `stage_output_tokens` and model `max_output_tokens` settings
 are accepted but ignored. The gateway and model still have their own native
 limits. The review-wide token budget and deadlines remain active: calls reserve
-up to their configured context window, limited by the remaining review allowance,
-and settle against reported usage. An uncapped in-flight response can exceed the
+their estimated prompt plus the model's output limit (16k tokens when unset),
+limited by the remaining review allowance, and settle against reported usage. An uncapped in-flight response can exceed the
 remaining allowance; no further calls are admitted after it is spent. Missing
 usage is conservatively charged against the full context window. Concurrent calls
 wait for reservations to settle instead of treating temporary contention as
-exhaustion. Prompts are still checked against the receiving model's context window.
+exhaustion. Prompts are still checked against the receiving model's context window,
+in estimated tokens (ASCII bytes / 3 plus one per non-ASCII character).
 Requirements use that model's available input space instead of a fixed 12 KB
 cutoff, reserving a quarter of the window as output headroom. Truncation that is
 still needed remains explicit and makes coverage partial. Default exclusions
@@ -223,10 +229,9 @@ first execution; changes apply to new reviews. Frozen configurations predating
 roles now both use `google/gemini-3.8-flash`.
 
 `final_stage_token_reserve` defaults to 0. Set an explicit token allowance to
-protect System Context and independent verification from earlier stages. It
-must be smaller than `review.token_ceiling` and is shared by those final stages;
-it does not increase the total budget or guarantee complete coverage. Allow
-for conservative prompt-byte plus maximum-output reservations when sizing it.
+protect independent verification from earlier stages. It must be smaller
+than `review.token_ceiling`; it does not increase the total budget or guarantee
+complete coverage. Allow for prompt plus output reservations when sizing it.
 Calls wait for temporary reservations to settle, bounded by the review deadline.
 True exhaustion still produces a partial, fail-open review.
 
@@ -272,13 +277,17 @@ by GitService. A changed head or inconsistent diff inventory supersedes the run.
 Gitleaks scans before prompt creation, and matches produce deterministic secret
 findings without a model call. Prompt and response persistence is redacted.
 
-In optional deep mode, Purpose and Design run sequentially and continue after findings. Secret findings
+Secret findings
 and security, data-integrity, and prompt-injection blockers are non-blocking
 `SUGGESTION` warnings; they do not terminate the review or fail its status.
-Deep mode fans out four analysis stages; standard mode reviews each chunk once. Coverage is checked
-against dispatched unit IDs; each missing unit gets one retry. Truncated or
-failed stages mark the review partial. A verifier sees the claim, code and cited
-evidence, excluding the proposer's severity, confidence and rationale.
+Each unit is reviewed once. Coverage is checked against dispatched unit IDs;
+each unit with missing coverage gets one retry, and an explicit skip is not
+retried. Truncated or failed units mark the review partial. A verifier sees the
+claim, code, cited evidence and nearby diff, excluding the proposer's severity,
+confidence, rationale and failure scenario; it may request context once when the
+code shown cannot settle the claim. Findings in static-tool categories or outside
+the change are not verified, nor are pre-existing findings beyond the two that
+publication can show.
 
 Finding severities are `BLOCKER`, `REQUIRED`, `SUGGESTION`, `NIT`, `QUESTION`,
 `FYI`, and `PRAISE`, assigned by deterministic category policy and caps.
@@ -288,7 +297,9 @@ fingerprints; existing bot-authored discussions prevent duplicate publication.
 
 On another push, changed files are re-reviewed, unchanged/moved findings are
 carried forward, and every comment still open on the merge request is rechecked.
-System Context reruns when the changed-file set changes. Configuration changes,
+A re-reported finding at a previously published location keeps that identity
+even when worded differently, so it is neither reposted nor treated as fixed.
+Configuration changes,
 prompt changes, a partial previous review, or a large merge-base movement force
 a full review. Jira's update timestamp controls reuse of requirement context.
 No operation pushes or rewrites Git history.
@@ -479,8 +490,10 @@ health are separate deployment smoke checks.
 Production quality gates require your held-out human-labelled historical MRs
 and pilot projects. They cannot be established with synthetic fixtures. Run
 `scripts/evaluate_regression.py results.json --baseline baseline.json` with at
-least 50 distinct held-out MRs; it checks precision, fabrication, p95 latency
-and precision regression. The input format is documented in that script.
+least 50 distinct held-out MRs; it reports precision and recall, matching
+findings by file, category and overlapping lines rather than wording, and checks
+fabrication, p95 latency and precision regression. The input format is
+documented in that script.
 Internal production egress and model quality still need validation in your
 network with your approved models. No pilot precision or latency claim is made.
 

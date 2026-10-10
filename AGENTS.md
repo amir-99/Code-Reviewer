@@ -59,20 +59,22 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   manual run supersedes an in-flight review for its merge request exactly as a
   new push does. Operator overrides are persisted on the review, so the pipeline
   and a later replay both see the context the run was triggered with.
-- Standard mode runs one combined Defect Review over concurrent coherent diff
-  chunks, then evidence validation, independent verification and reporting.
-  Operator-only `analysis_mode=deep` retains sequential Purpose and Design,
-  concurrent Correctness/Complexity/Test/Line Review and final System Context.
-  Frozen runs without analysis_mode retain deep mode; lower milestones retain
-  their limited stage behavior. Standard triage uses the combined defect review.
-  The compact contract caps findings at three per unit, plus one per further 8 KB
-  of code (at most eight); flagged omissions and
-  oversized unexamined lines make coverage partial.
+- Every code review runs one combined Defect Review over concurrent units, then
+  evidence validation, independent verification and reporting. The seven-stage
+  deep mode was removed: `analysis_mode` and the retired stage roles are accepted
+  and ignored in operator files and frozen runs, and a review persisted in a
+  retired stage state resumes through validation. Do not reintroduce it.
+- Units pack whole hunks widened to their enclosing definition (scanned head
+  lines, never persisted), and small related files share a unit; an incremental
+  re-review partitions only the affected files. Prompts put shared requirements
+  first and the unit's numbered code last. The compact contract caps findings at
+  three per unit, plus one per further 8 KB of code (at most eight); flagged
+  omissions and oversized unexamined lines make coverage partial.
 - Findings never terminate a review early. Secret findings and normalized BLOCKER
   findings are advisory SUGGESTION warnings. Preserve validation and verification;
   other REQUIRED findings retain their existing enforcement behavior.
-- Each model-selecting call site is a role: `defect_review`, the seven deep stages,
-  `verification` and `recheck`. Resolve models once per review, before any stage runs, through
+- Each model-selecting call site is a role: `defect_review`, `verification`,
+  `recheck`, `chat` and the two document roles. Resolve models once per review, before any stage runs, through
   operator overrides, project profile, `MODEL_ROLES`, then the shipped defaults;
   record the resolved map on the review. Repository YAML must never select a
   model, and a prompt is sized against the context window of the model that will
@@ -151,12 +153,16 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   Agent context requests cannot choose arbitrary network destinations.
 - Prompts live under `agents/prompts/{stage}/vX.Y.Z.md`. Changes require a new
   version. Preserve recorded prompt hashes, model IDs, run IDs, and bundle hashes.
-- Keep Line Review limited to changed hunks and configured context windows.
+- Context requests (`symbol`, `callers`, `tests_for`, `file`) search the pinned
+  checkout with `git grep` on a validated fixed word and return excerpts read
+  through the scanned code cache; never pass model text as a pattern or option.
 - Validate actual files, line ranges, evidence, and symbols before verification.
   Compute anchor SHA, context hash, diff membership, and attribution in code;
   never trust model-supplied values for those fields.
-- The independent verifier receives the claim and code evidence, excluding the
-  proposer's rationale, confidence, severity, and evidence-note persuasion.
+- The independent verifier receives the claim, code evidence and the nearby diff
+  (and may request context once when it would otherwise be uncertain), excluding
+  the proposer's rationale, failure scenario, confidence, severity, and
+  evidence-note persuasion.
 - Severities are exactly `BLOCKER`, `REQUIRED`, `SUGGESTION`, `NIT`, `QUESTION`,
   `FYI`, and `PRAISE`. Preserve category normalization and verification,
   confidence, static-tool, and pre-existing-code caps.
@@ -238,8 +244,8 @@ the sole finding axis used for gating and inline selection.
 `impact_level` is a separate advisory assessment: CRITICAL, HIGH, MEDIUM, LOW,
 or null (unknown/not applicable). Models propose it from the failure scenario,
 not category; it is not independently verified and never changes enforcement.
-All proposing stages require the nullable field in structured output through
-their versioned contracts (compact for Defect Review, shared for deep stages).
+Every proposing stage requires the nullable field in structured output through
+its versioned contract (compact for Defect Review, document for documents).
 Historical findings load with null.
 Deterministic secret detection leaves impact unknown because credential presence
 alone does not establish scope. The unlinked-story notice has no defect impact.
