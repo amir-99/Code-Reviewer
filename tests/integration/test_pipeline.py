@@ -54,7 +54,7 @@ class Reviewing:
         from html import unescape
 
         model = kwargs["response_model"]
-        if model is VerificationResult:
+        if issubclass(model, VerificationResult):
             return VerificationResult(
                 counterargument="The value could be checked elsewhere",
                 reasoning="The cited line assigns without a check",
@@ -719,7 +719,7 @@ async def test_pipeline_verifies_independent_findings_concurrently(
             self.both = asyncio.Event()
 
         async def complete(self, **kwargs):
-            if kwargs["response_model"] is VerificationResult:
+            if issubclass(kwargs["response_model"], VerificationResult):
                 self.active += 1
                 self.peak = max(self.peak, self.active)
                 if self.active == 2:
@@ -898,7 +898,7 @@ async def test_unverified_absence_is_a_coverage_gap_not_a_published_suggestion(
 
     class MissingScope(Reviewing):
         async def complete(self, **kwargs):
-            if kwargs["response_model"] is VerificationResult:
+            if issubclass(kwargs["response_model"], VerificationResult):
                 if verdict == "unavailable":
                     from reviewer.orchestrator.budget import BudgetExhausted
 
@@ -983,3 +983,72 @@ async def test_reworded_claim_on_a_later_push_stays_in_its_open_thread(
     assert not threads[0].resolved
     verdicts = (await store.snapshot(second.id))["recheck"]["verdicts"]
     assert [v["verdict"] for v in verdicts] == ["not_fixed"]
+
+
+async def test_only_publishable_pre_existing_findings_are_verified(
+    store, history, tmp_path
+):
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
+
+    class PreExisting(WireReview):
+        verified = 0
+
+        async def complete(self, **kwargs):
+            if issubclass(kwargs["response_model"], VerificationResult):
+                self.verified += 1
+                return await super().complete(**kwargs)
+            result = await Reviewing.complete(self, **kwargs)
+            if kwargs["stage"] == "defect_review" and "renamed.py" in kwargs["user"]:
+                result.findings = [
+                    ProposedFinding(
+                        anchor=Anchor(file="renamed.py", line_start=1, line_end=1),
+                        category=category,
+                        severity_proposed="REQUIRED",
+                        claim=f"Existing {category} defect",
+                        reason="r",
+                        impact="i",
+                        failure_scenario="s",
+                        evidence=[
+                            Evidence(
+                                file="renamed.py", line_start=1, line_end=1, note=""
+                            )
+                        ],
+                        suggested_direction="d",
+                        confidence=confidence,
+                    )
+                    for category, confidence in [
+                        ("correctness", "low"),
+                        ("concurrency", "high"),
+                        ("error_handling", "medium"),
+                    ]
+                ]
+            return wire(result, kwargs["response_model"])
+
+    llm = PreExisting()
+    review = await store.accept(7, 2, head, "pre-existing")
+    machine = pipeline(store, forge, tmp_path, llm=llm, mode="standard")
+    assert await machine.run(review.id) == "PUBLISHED"
+    assert llm.verified == 2
+    findings = {
+        f["category"]: f
+        for f in (await store.snapshot(review.id))["findings"]
+        if f["anchor"]["file"] == "renamed.py"
+    }
+    assert findings["correctness"]["status"] == "suppressed"
+    assert findings["correctness"]["verification"] is None
+    assert all(
+        findings[c]["severity_final"] == "FYI" and findings[c]["verification"]
+        for c in ("concurrency", "error_handling")
+    )

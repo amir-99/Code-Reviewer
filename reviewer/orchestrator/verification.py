@@ -71,7 +71,7 @@ async def verify_findings(
         for finding in pending:
             try:
                 async with asyncio.timeout(remaining()):
-                    await verify(finding, bundle, llm, redactor)
+                    await verify(finding, bundle, llm, redactor, context_provider)
             except Exception as error:
                 unavailable(finding, bundle, error)
 

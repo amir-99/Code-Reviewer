@@ -30,6 +30,9 @@ from reviewer.telemetry.activity import activity, sink, traced_review
 
 logger = structlog.get_logger()
 
+# Findings on pre-existing code that publication can show (as FYIs).
+EXISTING_FINDINGS = 2
+
 
 def frozen_config(data):
     # Runs frozen before the combined reviewer shipped retain their stage graph.
@@ -391,9 +394,41 @@ class Pipeline:
                         else:
                             await self.store.save_findings(review, [f])
                     values = deduplicate(values, config.review.merge_distance)
+                    categories = {
+                        c
+                        for tool in config.static_tools
+                        if any(
+                            s.name == tool.name and s.status in {"passed", "failed"}
+                            for s in bundle.static
+                        )
+                        for c in tool.categories
+                    }
+                    touched = {file.path for file in bundle.code.files}
+                    # Verification is the costliest call per finding: spend it
+                    # only where the result can reach the merge request.
+                    unpublishable = {
+                        id(f)
+                        for f in values
+                        if f.category in categories
+                        or (not f.anchor.in_diff and f.anchor.file not in touched)
+                    }
+                    existing = sorted(
+                        (
+                            f
+                            for f in values
+                            if id(f) not in unpublishable
+                            and not f.anchor.introduced_by_this_change
+                        ),
+                        key=lambda f: (
+                            {"high": 0, "medium": 1, "low": 2}[f.confidence],
+                            -len(f.evidence),
+                        ),
+                    )
+                    # Pre-existing code is reported as at most two FYIs.
+                    beyond = {id(f) for f in existing[EXISTING_FINDINGS:]}
                     if level >= 6:
                         await verify_findings(
-                            values,
+                            [f for f in values if id(f) not in unpublishable | beyond],
                             bundle,
                             llm,
                             redactor,
@@ -402,22 +437,14 @@ class Pipeline:
                             config=config,
                         )
                     for f in values:
-                        categories = {
-                            c
-                            for tool in config.static_tools
-                            if any(
-                                s.name == tool.name and s.status in {"passed", "failed"}
-                                for s in bundle.static
-                            )
-                            for c in tool.categories
-                        }
-                        normalize(
-                            f, {file.path for file in bundle.code.files}, categories
-                        )
+                        if id(f) in beyond:
+                            f.status = "suppressed"
+                        normalize(f, touched, categories)
                     if any(
                         f.evidence_scope != "local"
                         and not f.verified
                         and f.status == "suppressed"
+                        and id(f) not in unpublishable | beyond
                         for f in values
                     ):
                         bundle.degradations.append("unverified_scope_claims")
