@@ -198,7 +198,8 @@ async def test_concurrent_gateway_calls_wait_for_budget_and_keep_audits(
 
     budget = BudgetTracker(
         Budget(
-            token_ceiling=40000,
+            # Two calls reserve prompt plus answer allowance (~16k each): one waits.
+            token_ceiling=30000,
             deadline_at=datetime.now(UTC) + timedelta(minutes=1),
             model_tier={},
         )

@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from reviewer.orchestrator.budget import BudgetExhausted
+from reviewer.services.llm.tokens import OUTPUT_RESERVE, estimate
 from reviewer.telemetry.activity import activity, llm_attempt, log, record, sink
 
 
@@ -166,7 +167,7 @@ class GatewayClient:
         model = spec.model
         # Legacy max_tokens arguments and model output caps are accepted for
         # compatibility, but never constrain generation. The gateway/model owns
-        # its output capacity. Reserve the context window where affordable and
+        # its output capacity. Reserve the prompt and a bounded answer and
         # account actual usage afterwards. Near the review ceiling, reserve the
         # remaining allowance; an uncapped in-flight response can exceed it, but
         # settlement prevents any further calls once the budget is spent.
@@ -178,7 +179,7 @@ class GatewayClient:
         ]
         for parse_attempt in range(2):
             prompt = json.dumps(messages, ensure_ascii=False)
-            prompt_tokens = len(prompt.encode())
+            prompt_tokens = estimate(prompt)
             if prompt_tokens >= spec.context_tokens:
                 raise StageFailed("Prompt exceeds configured context window")
             for attempt in range(3):
@@ -188,8 +189,14 @@ class GatewayClient:
                         "budget_wait_started", review_id=str(review_id), stage=stage
                     )
                 try:
+                    # Reserve the prompt plus a bounded answer, not the whole
+                    # window: whole-window reservations let only a few calls
+                    # overlap and serialized the end of every large review.
                     reserve = await self.budget.reserve(
-                        spec.context_tokens,
+                        min(
+                            spec.context_tokens,
+                            prompt_tokens + (spec.max_output_tokens or OUTPUT_RESERVE),
+                        ),
                         stage=stage,
                         minimum_tokens=prompt_tokens + 1,
                     )

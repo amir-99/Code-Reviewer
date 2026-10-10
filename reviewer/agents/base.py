@@ -8,6 +8,7 @@ from pydantic import Field, create_model
 
 from reviewer.context.framing import INJECTION_RULE, frame
 from reviewer.findings.models import Coverage, StageEnvelope
+from reviewer.services.llm import tokens
 from reviewer.telemetry.activity import activity, record
 
 PROMPTS = {}
@@ -133,19 +134,8 @@ class StageAgent(ABC):
             # Trim intact numbered excerpts, never silently slice source text.
             from reviewer.context.excerpts import shorten
 
-            limit = self.context_tokens * 3 // 4 if self.context_tokens else 64000
-            while (
-                len(
-                    json.dumps(
-                        [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": user},
-                        ],
-                        ensure_ascii=False,
-                    ).encode()
-                )
-                > limit
-            ):
+            limit = self.context_tokens * 3 // 4 if self.context_tokens else 21000
+            while tokens.messages(system, user) > limit:
                 candidates = [
                     path
                     for path, value in context.items()
@@ -225,18 +215,7 @@ class TemplateAgent(StageAgent):
         def fits(user, size):
             if input_limit is None:
                 return size <= 12000
-            return (
-                len(
-                    json.dumps(
-                        [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": user},
-                        ],
-                        ensure_ascii=False,
-                    ).encode()
-                )
-                <= input_limit
-            )
+            return tokens.messages(system, user) <= input_limit
 
         raw = encoded.encode()
         if not fits(user, len(raw)):

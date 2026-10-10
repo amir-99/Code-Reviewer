@@ -15,6 +15,7 @@ from reviewer.findings.models import Evidence, VerificationResult
 from reviewer.findings.noise import select
 from reviewer.findings.policy import normalize
 from reviewer.orchestrator.verification import verify_findings
+from reviewer.services.llm import tokens
 
 
 def payload(user):
@@ -337,16 +338,7 @@ async def test_requested_context_is_sized_for_receiving_model_with_truthful_meta
         provider,
     )
     final = calls[-1]
-    size = len(
-        json.dumps(
-            [
-                {"role": "system", "content": final["system"]},
-                {"role": "user", "content": final["user"]},
-            ],
-            ensure_ascii=False,
-        ).encode()
-    )
-    assert size <= 13500
+    assert tokens.messages(final["system"], final["user"]) <= 13500
     context = payload(
         final["user"].split('<untrusted_data source="requested-code-context"', 1)[1]
     )

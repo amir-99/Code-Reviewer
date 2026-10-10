@@ -12,6 +12,7 @@ from reviewer.context.redaction import Redactor
 from reviewer.findings.models import Coverage, StageEnvelope
 from reviewer.orchestrator.deadlines import cutoff
 from reviewer.orchestrator.stages import execute
+from reviewer.services.llm import tokens
 
 
 def envelope(unit):
@@ -206,7 +207,7 @@ async def test_requirements_use_receiving_model_context_window(
     from reviewer.config.models import ResolvedModel
 
     b = bundle(tmp_path, 1)
-    b.mr.description = "Requirement detail. " * 1000
+    b.mr.description = "Requirement detail. " * 3000
     prompts = []
 
     class Capture(Echo):
@@ -224,7 +225,7 @@ async def test_requirements_use_receiving_model_context_window(
         {"role": "user", "content": call["user"]},
     ]
     assert (
-        len(json.dumps(messages, ensure_ascii=False).encode())
+        tokens.messages(messages[0]["content"], messages[1]["content"])
         <= context_tokens * 3 // 4
     )
     assert ("prompt_requirements_truncated" in b.degradations) == (

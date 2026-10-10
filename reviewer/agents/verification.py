@@ -8,6 +8,7 @@ from reviewer.context.partition import render
 from reviewer.context.redaction import redact_source
 from reviewer.findings.models import ContextRequest, VerificationResult
 from reviewer.findings.validator import read_lines
+from reviewer.services.llm import tokens
 from reviewer.telemetry.activity import activity
 
 # A file this short is sent whole: cheaper than being wrong about its scope.
@@ -77,7 +78,7 @@ async def verify(finding, bundle, llm, redactor, context_provider=None):
 
     version, prompt, digest = PROMPTS["verification"]
     spec = getattr(llm, "specs", {}).get("verification")
-    limit = spec.context_tokens * 3 // 4 if spec else 64000
+    limit = spec.context_tokens * 3 // 4 if spec else 21000
     locations = [(a.file, a.line_start, a.line_end)] + [
         (e.file, e.line_start, e.line_end) for e in finding.evidence
     ]
@@ -88,7 +89,10 @@ async def verify(finding, bundle, llm, redactor, context_provider=None):
         if lines is None:
             evidence.append({"file": path, "unavailable": True})
             continue
-        allowance = max(0, (limit - 4000) // max(1, len(locations)))
+        # Excerpts are sized in bytes; leave room for the prompt and framing.
+        allowance = max(
+            0, (limit - 1500) * tokens.BYTES_PER_TOKEN // max(1, len(locations))
+        )
         enclosing = [
             s
             for s in definitions(path, "\n".join(lines))
@@ -123,15 +127,7 @@ async def verify(finding, bundle, llm, redactor, context_provider=None):
         return user
 
     def size(user):
-        return len(
-            json.dumps(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                ensure_ascii=False,
-            ).encode()
-        )
+        return tokens.messages(system, user)
 
     def fit():
         user = render_user()
