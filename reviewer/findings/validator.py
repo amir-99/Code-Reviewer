@@ -25,7 +25,30 @@ def valid_range(lines, start, end):
     return lines is not None and 1 <= start <= end <= len(lines)
 
 
-async def validate(finding, bundle, symbols, git=None, wt=None, open_fingerprints=()):
+async def change_commits(git, wt, bundle):
+    """Commits this change introduced: reachable from head, not from the base."""
+    data = await git.command(
+        "rev-list",
+        f"{bundle.code.merge_base_sha}..{bundle.code.head_sha}",
+        cwd=wt.mirror,
+    )
+    return frozenset(data.decode().split())
+
+
+async def validate(
+    finding,
+    bundle,
+    symbols,
+    git=None,
+    wt=None,
+    open_fingerprints=(),
+    commits=None,
+):
+    """Check a proposal against the reviewed code and set code-owned fields.
+
+    `commits` is the change's commit set from change_commits(); computed here
+    when not supplied, so a caller validating many findings computes it once.
+    """
     a = finding.anchor
     # Reset every code-owned field even when the model supplied values.
     a.commit_sha = bundle.code.head_sha
@@ -47,13 +70,13 @@ async def validate(finding, bundle, symbols, git=None, wt=None, open_fingerprint
     a.context_hash = sha256(
         "\n".join(lines[a.line_start - 1 : a.line_end]).encode()
     ).hexdigest()
+    sources = {a.file: lines}
+    for e in finding.evidence:
+        if e.file not in sources:
+            sources[e.file] = read_lines(bundle.code.worktree_path, e.file)
     evidence_valid = all(
-        valid_range(
-            read_lines(bundle.code.worktree_path, e.file), e.line_start, e.line_end
-        )
-        and any(
-            read_lines(bundle.code.worktree_path, e.file)[e.line_start - 1 : e.line_end]
-        )
+        valid_range(sources[e.file], e.line_start, e.line_end)
+        and any(sources[e.file][e.line_start - 1 : e.line_end])
         for e in finding.evidence
     )
     finding.validation = ValidationResult(
@@ -76,23 +99,12 @@ async def validate(finding, bundle, symbols, git=None, wt=None, open_fingerprint
         a.introduced_by_this_change = any(line.kind == "added" for line in anchor_lines)
         if a.introduced_by_this_change and git and wt:
             try:
+                if commits is None:
+                    commits = await change_commits(git, wt, bundle)
                 blamed = await git.blame_lines(wt, a.file, a.line_start, a.line_end)
-                introduced = False
-                for line in blamed:
-                    ancestor = (
-                        (
-                            await git.command(
-                                "merge-base",
-                                bundle.code.merge_base_sha,
-                                line.sha,
-                                cwd=wt.mirror,
-                            )
-                        )
-                        .decode()
-                        .strip()
-                    )
-                    introduced |= ancestor != line.sha
-                a.introduced_by_this_change = introduced
+                a.introduced_by_this_change = any(
+                    line.sha in commits for line in blamed
+                )
             except Exception:
                 # Unknown attribution is non-blocking.
                 a.introduced_by_this_change = False

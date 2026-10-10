@@ -16,7 +16,7 @@ from reviewer.decision.engine import decide, status
 from reviewer.findings.dedup import deduplicate, fingerprint
 from reviewer.findings.models import Finding, Provenance
 from reviewer.findings.policy import normalize
-from reviewer.findings.validator import validate
+from reviewer.findings.validator import change_commits, validate
 from reviewer.orchestrator.budget import BudgetTracker
 from reviewer.orchestrator.stages import execute
 from reviewer.orchestrator.states import ORDER, TERMINAL
@@ -368,6 +368,14 @@ class Pipeline:
 
                 async def process(raw):
                     values = []
+                    commits = None
+                    if raw:
+                        try:
+                            commits = await change_commits(self.git, wt, bundle)
+                        except Exception:
+                            # Unknown attribution is non-blocking: validate()
+                            # retries per finding and falls back to not-introduced.
+                            commits = None
                     for name, proposed in raw:
                         f = Finding(
                             **proposed.model_dump(),
@@ -388,7 +396,9 @@ class Pipeline:
                                 context_bundle_hash=bundle.content_hash(),
                             ),
                         )
-                        await validate(f, bundle, symbols, self.git, wt)
+                        await validate(
+                            f, bundle, symbols, self.git, wt, commits=commits
+                        )
                         if f.status != "discarded":
                             values.append(f)
                         else:
