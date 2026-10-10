@@ -639,7 +639,7 @@ async def test_instruction_is_framed_and_requests_are_answered_from_the_corpus(
     assert "Focus on retry semantics" in first["system"]
     assert "requested-material" in second["user"]
     assert "five times" in second["user"]
-    assert "in_corpus&quot;: true" in second["user"]
+    assert '"in_corpus": true' in second["user"]
     assert len(await store.findings_for(review.id)) == 1
 
 
