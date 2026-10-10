@@ -164,42 +164,29 @@ async def build(
             pass
 
     from reviewer.context.code_cache import ScannedCodeCache
+    from reviewer.context.lookup import CodeLookup
 
     code_cache = ScannedCodeCache(git, wt, scanner, redactor)
+    lookup = CodeLookup(git, wt, code_cache, symbols)
 
     @activity("tool", "Read requested code context")
     async def context_provider(requests):
         output = {}
         for request in requests[:5]:
-            paths = [request.target]
-            if request.kind == "symbol":
-                paths = [
-                    p
-                    for p, syms in symbols.symbols.items()
-                    if any(s["name"] == request.target for s in syms)
-                ][:3]
-            elif request.kind in {"callers", "tests_for"}:
-                paths = [
-                    f.path
-                    for f in files
-                    if (request.target in f.path or "test" in f.path)
-                ][:3]
-            for path in paths:
-                try:
-                    from reviewer.context.excerpts import excerpt
-
-                    source = await code_cache.read(path)
-                    start, end = request.line_start or 1, request.line_end
-                    if request.kind == "symbol":
-                        match = next(
-                            s
-                            for s in symbols.symbols[path]
-                            if s["name"] == request.target
-                        )
-                        start, end = match["start"], match["end"]
-                    output[path] = excerpt(source.splitlines(), start, end)
-                except Exception:
-                    output[path] = {"unavailable": True}
+            try:
+                if request.kind == "symbol":
+                    found = await lookup.symbol(request.target)
+                elif request.kind == "callers":
+                    found = await lookup.callers(request.target)
+                elif request.kind == "tests_for":
+                    found = await lookup.tests_for(request.target)
+                else:
+                    found = await lookup.file(
+                        request.target, request.line_start, request.line_end
+                    )
+                output.update(found or {request.target: {"unavailable": True}})
+            except Exception:
+                output[request.target] = {"unavailable": True}
         return output
 
     return bundle, redactor, symbols, secret_findings, context_provider

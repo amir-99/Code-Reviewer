@@ -251,6 +251,49 @@ class GitService:
             raise GitError("File exceeds budget")
         return file.read_text(errors="replace")
 
+    async def grep(self, wt, word, pathspecs=(), limit=2_000_000):
+        """Whole-word fixed-string matches in the pinned checkout.
+
+        Returns (path, line, text). The text is unscanned source: use it to
+        choose what to read, never to show a model.
+
+        The word is passed after -e and the paths after --, so neither can be
+        read as an option; no text conversion or repository filter runs.
+        """
+        if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]{0,127}", word):
+            return []
+        try:
+            data = await self.command(
+                "grep",
+                "-n",
+                "-z",
+                "-I",
+                "-w",
+                "-F",
+                "--no-color",
+                "--no-textconv",
+                "--full-name",
+                "-e",
+                word,
+                "--",
+                *pathspecs,
+                cwd=wt.path,
+                limit=limit,
+            )
+        except GitError:
+            # Exit status 1 means no match; any other failure finds nothing too.
+            return []
+        hits = []
+        for record in data.decode(errors="replace").splitlines():
+            parts = record.split("\0", 2)
+            if len(parts) == 3 and parts[1].isdigit():
+                hits.append((parts[0], int(parts[1]), parts[2]))
+        return hits
+
+    async def ls_files(self, wt, limit=5_000_000):
+        data = await self.command("ls-files", "-z", cwd=wt.path, limit=limit)
+        return [path for path in data.decode(errors="replace").split("\0") if path]
+
     async def diff(self, wt, base, head, context_lines=3):
         names = (
             (
