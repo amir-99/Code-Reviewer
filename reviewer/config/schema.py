@@ -113,7 +113,8 @@ class ReviewConfig(Strict):
     max_changed_lines: int | None = None
     token_ceiling: int = Field(default=120000, ge=1)
     timeout_s: int = Field(default=2400, ge=1, le=2400)
-    unit_tokens: int = Field(default=6000, ge=256, le=20000)
+    # UTF-8 bytes of diff per Defect Review call; small files are packed together.
+    unit_tokens: int = Field(default=24000, ge=256, le=100000)
     context_lines: int = 20
     max_inline: int = Field(default=15, ge=0, le=15)
     max_per_file: int = Field(default=5, ge=0, le=5)

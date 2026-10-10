@@ -6,7 +6,7 @@ from test_stages import bundle
 from reviewer.agents.defects import DefectEnvelope
 from reviewer.config.schema import ProjectConfig
 from reviewer.context.models import DiffLine, Hunk
-from reviewer.context.partition import partition
+from reviewer.context.partition import partition, render
 from reviewer.orchestrator.pipeline import frozen_config
 from reviewer.orchestrator.stages import execute
 
@@ -67,11 +67,12 @@ def test_hunks_pack_intact_and_oversized_hunks_split_at_lines(tmp_path):
     for index, unit in enumerate(units):
         assert len(unit.content.encode()) <= 300
         for line in file.lines[index * 4 : index * 4 + 4]:
-            assert f"new={line.new_line} added: {line.text}" in unit.content
+            assert render(line) in unit.content
     file.hunks = []
     units = partition(b, "hunks", 256)
     assert all(len(u.content.encode()) <= 256 for u in units)
-    assert sum(len(u.content.splitlines()) for u in units) == 8
+    assert sum(len(u.content.splitlines()) - 1 for u in units) == 8
+    assert all(u.content.startswith("=== f0.py ===\n") for u in units)
 
 
 async def test_oversized_line_is_skipped_without_false_coverage(tmp_path):

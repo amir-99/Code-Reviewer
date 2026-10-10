@@ -38,7 +38,7 @@ def test_split_function_is_explicitly_an_excerpt_and_continuation_is_retained(
         DiffLine(text=line, new_line=n, old_line=None, kind="added")
         for n, line in enumerate(source, 1)
     ]
-    units = partition(b, kind, 6000)
+    units = partition(b, kind, 3000)
     first = units[0].file_context[file.path]
     assert first["total_lines"] == 142
     assert first["has_more_after"] and not first["complete_file"]
@@ -46,9 +46,10 @@ def test_split_function_is_explicitly_an_excerpt_and_continuation_is_retained(
     assert "return backend.reconcile()" in units[-1].content
     assert not units[-1].file_context[file.path]["has_more_after"]
     supplied = [
-        line.split("added: ", 1)[1]
+        line.split(" + ", 1)[1]
         for unit in units
         for line in unit.content.splitlines()
+        if not line.startswith("=== ")
     ]
     assert supplied == source
 

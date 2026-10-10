@@ -70,10 +70,7 @@ class Reviewing:
         user = unescape(kwargs["user"])
         ids = re.findall(r'"id": "([^"]+:unit-\d+)"', user)
         findings = []
-        if (
-            kwargs["stage"] in {"correctness", "defect_review"}
-            and "added: x = 0" in user
-        ):
+        if kwargs["stage"] in {"correctness", "defect_review"} and "+ x = 0" in user:
             findings = [
                 ProposedFinding(
                     anchor=Anchor(file="new0.py", line_start=1, line_end=1),

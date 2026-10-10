@@ -65,7 +65,8 @@ Orchestration is an ordinary Python state machine, not an agent framework.
   concurrent Correctness/Complexity/Test/Line Review and final System Context.
   Frozen runs without analysis_mode retain deep mode; lower milestones retain
   their limited stage behavior. Standard triage uses the combined defect review.
-  The compact contract caps findings at three per chunk; flagged omissions and
+  The compact contract caps findings at three per unit, plus one per further 8 KB
+  of code (at most eight); flagged omissions and
   oversized unexamined lines make coverage partial.
 - Findings never terminate a review early. Secret findings and normalized BLOCKER
   findings are advisory SUGGESTION warnings. Preserve validation and verification;

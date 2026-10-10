@@ -86,6 +86,10 @@ class ChangedFile(BaseModel):
     symbol_ranges: list[tuple[int, int]] = []
     size_bytes: int = 0
     lines: list[DiffLine] = []
+    # Scanned, redacted head lines of the enclosing definitions of changed
+    # lines, by new line number, excluding lines the diff already carries.
+    # Rebuilt by every run and never persisted with the bundle.
+    scope: dict[int, str] = Field(default_factory=dict, exclude=True)
 
 
 class CodeContext(BaseModel):

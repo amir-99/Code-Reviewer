@@ -168,6 +168,11 @@ async def build(
 
     code_cache = ScannedCodeCache(git, wt, scanner, redactor)
     lookup = CodeLookup(git, wt, code_cache, symbols)
+    try:
+        await attach_scopes(bundle, symbols, code_cache)
+    except Exception:
+        # Scope is optional context; the diff with its context lines remains.
+        bundle.degradations.append("scope_unavailable")
 
     @activity("tool", "Read requested code context")
     async def context_provider(requests):
@@ -190,3 +195,41 @@ async def build(
         return output
 
     return bundle, redactor, symbols, secret_findings, context_provider
+
+
+# The innermost enclosing definition of a changed line is shown whole when it
+# is at most this long; a longer one keeps the diff's own context lines.
+SCOPE_LINES = 120
+
+
+async def attach_scopes(bundle, symbols, code_cache):
+    """Widen each change to its enclosing definition with scanned head lines."""
+    wanted = {}
+    for file in bundle.code.files:
+        if file.is_excluded or file.change_type == "deleted":
+            continue
+        present = {line.new_line for line in file.lines if line.new_line is not None}
+        changed, following = set(), None
+        for line in reversed(file.lines):
+            if line.new_line is not None:
+                following = line.new_line
+                if line.kind == "added":
+                    changed.add(line.new_line)
+            elif following is not None:
+                # A removal sits where the next surviving line now is.
+                changed.add(following)
+        lines = set()
+        for number in changed:
+            scope = symbols.enclosing(file.path, number)
+            if scope and scope["end"] - scope["start"] < SCOPE_LINES:
+                lines.update(range(scope["start"], scope["end"] + 1))
+        if lines - present:
+            wanted[file.path] = (file, lines - present)
+    if not wanted:
+        return
+    sources = await code_cache.read_many(list(wanted))
+    for path, (file, lines) in wanted.items():
+        if path not in sources:
+            continue
+        text = sources[path].splitlines()
+        file.scope = {n: text[n - 1] for n in sorted(lines) if n <= len(text)}

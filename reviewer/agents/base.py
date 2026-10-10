@@ -4,7 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
-from pydantic import create_model
+from pydantic import Field, create_model
 
 from reviewer.context.framing import INJECTION_RULE, frame
 from reviewer.findings.models import Coverage, StageEnvelope
@@ -26,8 +26,8 @@ for path in sorted(
 SHARED = "_shared"
 
 
-def unit_response_model(unit_id, compact=False):
-    from reviewer.agents.defects import DefectEnvelope
+def unit_response_model(unit_id, compact=False, max_findings=3):
+    from reviewer.agents.defects import DefectClaim, DefectEnvelope
 
     # Constrain IDs in the gateway schema as well as checking coverage in code.
     # Empty coverage stays representable and triggers the one coverage retry.
@@ -37,10 +37,17 @@ def unit_response_model(unit_id, compact=False):
         units_examined=(list[Literal[unit_id]], ...),
         units_skipped=(list[Literal[unit_id]], ...),
     )
+    if not compact:
+        return create_model(
+            "UnitStageEnvelope", __base__=StageEnvelope, coverage=(coverage, ...)
+        )
+    # The per-unit cap grows with the unit, so packing more code into one call
+    # does not crowd out findings a smaller unit would have had room for.
     return create_model(
         "UnitStageEnvelope",
-        __base__=DefectEnvelope if compact else StageEnvelope,
+        __base__=DefectEnvelope,
         coverage=(coverage, ...),
+        findings=(list[DefectClaim], Field(max_length=max_findings)),
     )
 
 
@@ -77,7 +84,9 @@ class StageAgent(ABC):
         initial_user = user
         context = {}
         compact = self.name == "defect_review"
-        response_model = unit_response_model(unit.id, compact)
+        response_model = unit_response_model(
+            unit.id, compact, getattr(unit, "max_findings", 3)
+        )
         rounds = 2 if compact else 3
         for round_no in range(rounds):
             result = await llm.complete(
@@ -157,8 +166,16 @@ class StageAgent(ABC):
 class TemplateAgent(StageAgent):
     def __init__(self, name, tier=None, unit_kind="file_group"):
         self.name, self.tier, self.unit_kind = name, tier or name, unit_kind
+        self.prompts = {}
 
     def build_prompt(self, bundle, unit):
+        # Unit identity and the call itself both need the prompt; build it once.
+        key = (id(bundle), unit.id, unit.content)
+        if key not in self.prompts:
+            self.prompts[key] = self.compose(bundle, unit)
+        return self.prompts[key]
+
+    def compose(self, bundle, unit):
         version, template, digest = PROMPTS[self.name]
         requirements = {
             "issue": bundle.issue.model_dump() if bundle.issue else None,
@@ -174,27 +191,34 @@ class TemplateAgent(StageAgent):
             + "\n"
             + INJECTION_RULE
         )
+        static = [s.model_dump() for s in bundle.static]
+        meta = {"unit": unit.model_dump(exclude={"omitted", "content"})}
+        if self.name == "system_context":
+            meta["aggregated_findings"] = bundle.aggregated_findings
 
         def render(requirements):
-            return frame(
-                json.dumps(
-                    {
-                        "unit": unit.model_dump(exclude={"omitted"}),
-                        "requirements": requirements,
-                        "aggregated_findings": bundle.aggregated_findings
-                        if self.name == "system_context"
-                        else [],
-                        "static": [s.model_dump() for s in bundle.static],
-                    }
-                ),
-                "review-context",
+            # What every unit of the review shares comes first, so a gateway's
+            # prefix cache can reuse it; the unit's own code comes last, as
+            # numbered lines rather than a JSON string of escaped newlines.
+            return "\n".join(
+                [
+                    frame(
+                        json.dumps(
+                            {"requirements": requirements, "static": static},
+                            ensure_ascii=False,
+                        ),
+                        "review-context",
+                    ),
+                    frame(json.dumps(meta, ensure_ascii=False), "review-unit"),
+                    frame(unit.content, "review-diff"),
+                ]
             )
 
         # Use the receiving model's window instead of a universal 12 KB cutoff.
         # Leave a quarter of that window for output; this sizes input only and
         # does not impose a generation cap. Fakes without model metadata retain
         # the historical conservative requirements allocation.
-        encoded = json.dumps(requirements)
+        encoded = json.dumps(requirements, ensure_ascii=False)
         user = render(requirements)
         input_limit = self.context_tokens * 3 // 4 if self.context_tokens else None
 

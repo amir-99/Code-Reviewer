@@ -158,6 +158,10 @@ async def execute(
                         ):
                             result.examined.append(unit.id)
                             break
+                        if unit.id in envelope.coverage.units_skipped:
+                            # An explicit skip answers the coverage question;
+                            # only missing coverage earns the one retry.
+                            break
             except asyncio.CancelledError:
                 progress["running"] -= 1
                 progress["stopped"] += 1
