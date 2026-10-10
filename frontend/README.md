@@ -45,8 +45,8 @@ node --test frontend/sse.test.js frontend/flow.test.js
 ```
 
 `flow.js` holds the pipeline's shape and the pure reading of where a review is in
-it; `app.js` only paints what it returns. Adding a state or a fan-out lane means
-editing that one list. A new asset also has to be added to `ASSETS` in
+it; `app.js` only paints what it returns. Adding a state means editing that one
+list. A new asset also has to be added to `ASSETS` in
 `server.py` and to the image's `COPY` line.
 
 The dashboard supports recent reviews, manual triggers, Jira story/epic and
@@ -63,13 +63,12 @@ report mode, over a progress track, the pipeline flow, and the state trail; a
 partial review or a recorded error is called out above them.
 
 The flow is the pipeline drawn as it runs: sequential steps joined by links,
-the two gates that can end a review on a verified blocker, and the fan-out
-branching into the four lanes that run concurrently before the system stage
-rejoins them. Each step lights up as the review reaches it — walked steps carry
-the time the pipeline spent in them, the running one counts up, and the lanes
-report themselves as their stages finish. A step reached but never walked, by a
-milestone short circuit or a gate, is drawn as not run rather than as still to
-come, and a stage that came back partial, failed or without a completion keeps
+with the Defect review step showing its unit counts. Each step lights up as the
+review reaches it — walked steps carry the time the pipeline spent in them and
+the running one counts up. A review run by the removed seven-stage deep mode is
+drawn the same way: its legacy states and stage reports fold into the Defect
+review step. A step reached but never walked, by a milestone short circuit, is
+drawn as not run rather than as still to come, and a stage that came back partial, failed or without a completion keeps
 its step off "done" whatever the state moved on to. Only a published review
 fills the track: one that failed, was cancelled or was superseded stops where it
 stopped. Activity,

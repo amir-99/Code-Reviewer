@@ -6,12 +6,9 @@
    tested directly. */
 
 // What each role is called in the interface. The pipeline names roles after the
-// stage that makes the call; "tests_" keeps Python's trailing underscore, which
-// is not something to show an operator.
+// stage that makes the call.
 export const ROLE_LABELS = {
-  purpose: 'Purpose', design: 'Design', correctness: 'Correctness', complexity: 'Complexity',
-  defect_review: 'Defect review', tests_: 'Tests', line_review: 'Line review', system_context: 'System context',
-  verification: 'Verification', recheck: 'Recheck', chat: 'Chat',
+  defect_review: 'Defect review', verification: 'Verification', recheck: 'Recheck', chat: 'Chat',
   document_review: 'Document review', document_verification: 'Document verification',
 };
 

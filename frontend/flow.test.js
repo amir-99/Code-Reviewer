@@ -4,7 +4,6 @@ import {walk, spans} from './flow.js';
 
 const at = (...steps) => new Map(steps);
 const status = (flow, state) => flow.steps.find(step => step.state === state).status;
-const lane = (flow, name) => flow.steps.find(step => step.lanes.length).lanes.find(l => l.stage === name);
 
 test('a fresh review lights only the step it is on', () => {
   const flow = walk('INIT', ['INIT']);
@@ -16,66 +15,61 @@ test('a fresh review lights only the step it is on', () => {
 });
 
 test('walked steps light up behind the running one', () => {
-  const flow = walk('DESIGN_REVIEW',
-    ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'PURPOSE_REVIEW', 'DESIGN_REVIEW']);
+  const flow = walk('DEFECT_REVIEW',
+    ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'DEFECT_REVIEW']);
   assert.equal(status(flow, 'STATIC_ANALYSIS'), 'done');
-  assert.equal(status(flow, 'PURPOSE_REVIEW'), 'done');
-  assert.equal(status(flow, 'DESIGN_REVIEW'), 'active');
-  assert.equal(status(flow, 'ANALYSIS_FAN_OUT'), 'pending');
+  assert.equal(status(flow, 'DEFECT_REVIEW'), 'active');
+  assert.equal(status(flow, 'EVIDENCE_VALIDATION'), 'pending');
   assert.ok(flow.percent > 0 && flow.percent < 100);
 });
 
-test('the fan-out lanes report themselves, and a silent lane did not run', () => {
+test('a review run by the removed deep mode reads as the defect review step', () => {
   const history = ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'PURPOSE_REVIEW',
-    'DESIGN_REVIEW', 'ANALYSIS_FAN_OUT'];
-  const running = walk('ANALYSIS_FAN_OUT', history, new Map([
-    ['correctness', {status: 'started', at: 10}],
-    ['complexity', {status: 'completed', at: 5, took: 900}],
-    ['tests_', {status: 'partial', at: 5, took: 400}],
-    ['line_review', {status: 'failed', at: 5, took: 100}],
-  ]));
-  assert.equal(lane(running, 'correctness').status, 'active');
-  assert.equal(lane(running, 'complexity').status, 'done');
-  assert.equal(lane(running, 'tests_').status, 'warn');
-  assert.equal(lane(running, 'line_review').status, 'failed');
-  assert.equal(lane(running, 'complexity').took, 900);
-  // A clean lane says nothing; the ones worth a second look name themselves.
-  assert.equal(lane(running, 'complexity').note, '');
-  assert.equal(lane(running, 'tests_').note, 'partial');
-
-  // Triage mode dispatches one lane; the rest never ran and must not read as passed.
-  const triage = walk('SYSTEM_CONTEXT_REVIEW', [...history, 'SYSTEM_CONTEXT_REVIEW'],
-    new Map([['tests_', {status: 'completed'}]]));
-  assert.equal(lane(triage, 'tests_').status, 'done');
-  assert.equal(lane(triage, 'correctness').status, 'skipped');
-  assert.equal(lane(triage, 'correctness').note, 'not reported');
+    'DESIGN_REVIEW', 'ANALYSIS_FAN_OUT', 'SYSTEM_CONTEXT_REVIEW', 'EVIDENCE_VALIDATION'];
+  const times = at(['STATIC_ANALYSIS', 1000], ['PURPOSE_REVIEW', 2000], ['DESIGN_REVIEW', 3000],
+    ['ANALYSIS_FAN_OUT', 4000], ['SYSTEM_CONTEXT_REVIEW', 5000], ['EVIDENCE_VALIDATION', 9000]);
+  const stages = new Map([
+    ['purpose', {status: 'completed', at: 2000}],
+    ['tests_', {status: 'partial', at: 4000}],
+  ]);
+  const flow = walk('EVIDENCE_VALIDATION', history, stages, times);
+  assert.ok(!flow.steps.some(step => step.state === 'PURPOSE_REVIEW'));
+  // One partial legacy stage keeps the combined step off "done".
+  assert.equal(status(flow, 'DEFECT_REVIEW'), 'warn');
+  assert.equal(flow.steps.find(s => s.state === 'DEFECT_REVIEW').took, 7000);
+  assert.equal(status(flow, 'EVIDENCE_VALIDATION'), 'active');
+  // Interrupted in a legacy stage, it is in the defect review step now.
+  const running = walk('DESIGN_REVIEW', history.slice(0, 5));
+  assert.equal(status(running, 'DEFECT_REVIEW'), 'active');
 });
 
 test('a partial stage keeps its step off "done" after the state moves on', () => {
-  const history = ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'PURPOSE_REVIEW', 'DESIGN_REVIEW'];
-  const flow = walk('DESIGN_REVIEW', history, new Map([['purpose', {status: 'partial'}]]));
-  assert.equal(status(flow, 'PURPOSE_REVIEW'), 'warn');
-  assert.equal(flow.steps.find(s => s.state === 'PURPOSE_REVIEW').note, 'partial');
+  const history = ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'DEFECT_REVIEW',
+    'EVIDENCE_VALIDATION'];
+  const flow = walk('EVIDENCE_VALIDATION', history, new Map([['defect_review', {status: 'partial'}]]));
+  assert.equal(status(flow, 'DEFECT_REVIEW'), 'warn');
+  assert.equal(flow.steps.find(s => s.state === 'DEFECT_REVIEW').note, 'partial');
 
-  const lost = walk('DESIGN_REVIEW', history, new Map([['purpose', {status: 'no completion'}]]));
-  assert.equal(status(lost, 'PURPOSE_REVIEW'), 'failed');
+  const lost = walk('EVIDENCE_VALIDATION', history,
+    new Map([['defect_review', {status: 'no completion'}]]));
+  assert.equal(status(lost, 'DEFECT_REVIEW'), 'failed');
 });
 
 test('a milestone short circuit marks the states it jumped as not run', () => {
   const flow = walk('PUBLISHED', ['INIT', 'FINALIZATION', 'DECISION', 'PUBLISHED']);
   assert.equal(status(flow, 'INIT'), 'done');
   assert.equal(status(flow, 'CONTEXT_COLLECTION'), 'skipped');
-  assert.equal(status(flow, 'ANALYSIS_FAN_OUT'), 'skipped');
-  assert.equal(flow.steps.find(s => s.state === 'ANALYSIS_FAN_OUT').note, 'not run');
+  assert.equal(status(flow, 'DEFECT_REVIEW'), 'skipped');
+  assert.equal(flow.steps.find(s => s.state === 'DEFECT_REVIEW').note, 'not run');
   assert.equal(status(flow, 'PUBLISHED'), 'done');
   assert.equal(flow.percent, 100);
 });
 
 test('a review that stopped stops the flow where it stopped', () => {
   const early = walk('TERMINATED_EARLY',
-    ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'PURPOSE_REVIEW', 'TERMINATED_EARLY']);
-  assert.equal(status(early, 'PURPOSE_REVIEW'), 'stopped');
-  assert.equal(status(early, 'DESIGN_REVIEW'), 'skipped');
+    ['INIT', 'CONTEXT_COLLECTION', 'STATIC_ANALYSIS', 'DEFECT_REVIEW', 'TERMINATED_EARLY']);
+  assert.equal(status(early, 'DEFECT_REVIEW'), 'stopped');
+  assert.equal(status(early, 'EVIDENCE_VALIDATION'), 'skipped');
   assert.equal(status(early, 'PUBLISHED'), 'skipped');
   assert.equal(early.tone, 'warn');
   assert.equal(early.terminal, true);
@@ -111,7 +105,6 @@ test('standard reviews show the combined stage and preserve partial coverage', (
   assert.equal(status(flow, 'DEFECT_REVIEW'), 'warn');
   assert.equal(status(flow, 'FINDING_VERIFICATION'), 'done');
   assert.equal(flow.steps.some(step => step.state === 'PURPOSE_REVIEW'), false);
-  assert.equal(flow.steps.some(step => step.lanes.length), false);
   assert.equal(flow.percent, 100);
 });
 
@@ -137,14 +130,13 @@ test('unit counts use planned totals and ignore stale progress snapshots', async
   assert.equal(progress.get(step), undefined);
 });
 
-test('legacy coverage and concurrent lane aggregation preserve unknown totals', async () => {
+test('coverage without unit snapshots still yields counts, and stageless steps have none', async () => {
   const {UnitProgress} = await import('./flow.js');
   const progress = new UnitProgress();
-  const step = {lanes: [{stage: 'correctness'}, {stage: 'tests_'}]};
-  progress.accept({kind: 'stage_coverage', data: {name: 'correctness', examined: 3, skipped: 1}});
-  assert.equal(progress.get(step).total, null);
-  progress.accept({kind: 'stage_coverage', data: {name: 'tests_', examined: 2, skipped: 0}});
-  assert.deepEqual(progress.get(step), {total: 6, completed: 5, running: 0, idle: 0, stopped: 1});
+  progress.accept({kind: 'stage_coverage', data: {name: 'defect_review', examined: 3, skipped: 1}});
+  assert.deepEqual(progress.get({stage: 'defect_review'}),
+    {total: 4, completed: 3, running: 0, idle: 0, stopped: 1});
+  assert.equal(progress.get({state: 'FINALIZATION'}), undefined);
 });
 
 test('a document review walks the page flow without the code stages', () => {

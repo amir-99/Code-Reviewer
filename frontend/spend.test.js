@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {addAttempt, cost, emptySpend, mergeSpend, tokens, usage} from './spend.js';
 
 const attempt = (over = {}) => ({
-  role: 'correctness', model: 'vendor/strong', outcome: 'success',
+  role: 'defect_review', model: 'vendor/strong', outcome: 'success',
   tokens_in: 1000, tokens_out: 200, cost: 0.005, ...over,
 });
 
@@ -13,7 +13,7 @@ test('an attempt adds to both the total and its own role', () => {
   assert.equal(delta.tokens, 1200);
   assert.equal(delta.cost, 0.005);
   assert.deepEqual(delta.roles.map(r => [r.role, r.model, r.tokens, r.calls]),
-    [['correctness', 'vendor/strong', 1200, 1]]);
+    [['defect_review', 'vendor/strong', 1200, 1]]);
 });
 
 test('attempts on the same role and model accumulate into one row', () => {
@@ -48,24 +48,24 @@ test('an unpriced model is counted in tokens and never as free', () => {
 
 test('the audited spend and the live delta merge without double counting', () => {
   const audited = {
-    roles: [{role: 'correctness', model: 'vendor/strong', calls: 2, retries: 0,
+    roles: [{role: 'defect_review', model: 'vendor/strong', calls: 2, retries: 0,
       tokens_in: 2000, tokens_out: 400, tokens: 2400, cost: 0.01, unpriced_calls: 0}],
     calls: 2, retries: 0, tokens_in: 2000, tokens_out: 400, tokens: 2400,
     cost: 0.01, unpriced_calls: 0, token_ceiling: 100000,
   };
   const delta = emptySpend();
   addAttempt(delta, attempt());                       // same role and model
-  addAttempt(delta, attempt({role: 'line_review', model: 'vendor/cheap', cost: 0.001}));
+  addAttempt(delta, attempt({role: 'recheck', model: 'vendor/cheap', cost: 0.001}));
   const merged = mergeSpend(audited, delta);
   assert.equal(merged.calls, 4);
   assert.equal(merged.tokens, 2400 + 1200 + 1200);
   assert.equal(Math.round(merged.cost * 1000) / 1000, 0.016);
   assert.equal(merged.token_ceiling, 100000, 'the ceiling survives the merge');
-  const correctness = merged.roles.find(r => r.role === 'correctness');
-  assert.equal(correctness.calls, 3, 'one row, not one per source');
+  const defects = merged.roles.find(r => r.role === 'defect_review');
+  assert.equal(defects.calls, 3, 'one row, not one per source');
   assert.equal(merged.roles.length, 2);
   // Most expensive first: that is the row worth changing a model for.
-  assert.equal(merged.roles[0].role, 'correctness');
+  assert.equal(merged.roles[0].role, 'defect_review');
 });
 
 test('merging works before either side has anything to say', () => {

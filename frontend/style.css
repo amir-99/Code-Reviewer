@@ -498,9 +498,9 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
 @keyframes sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
 /* The pipeline as a flow: nodes joined by links, lighting up as the review
-   walks them, with the fan-out branching into the lanes that run concurrently. */
+   walks them. */
 .flow { display: flex; flex-wrap: wrap; align-items: center; row-gap: 8px; margin-top: 14px; }
-.node, .lane {
+.node {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -524,50 +524,36 @@ main { max-width: 1560px; margin: 0 auto; padding: 26px 24px 40px; }
   opacity: .75;
   white-space: nowrap;
 }
-.node.done, .lane.done { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); }
-.node.done .n-label, .lane.done .n-label { color: var(--accent); }
-.node.done .n-dot, .lane.done .n-dot { opacity: 1; }
-.node.active, .lane.active {
+.node.done { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); }
+.node.done .n-label { color: var(--accent); }
+.node.done .n-dot { opacity: 1; }
+.node.active {
   color: var(--amber);
   border-color: color-mix(in srgb, var(--amber) 50%, transparent);
   background: var(--amber-soft);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 12%, transparent);
 }
-.node.active .n-label, .lane.active .n-label { color: var(--amber); }
-.node.active .n-dot, .lane.active .n-dot { opacity: 1; animation: pulse 1.4s ease-out infinite; }
-.node.warn, .lane.warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: var(--amber-soft); }
-.node.warn .n-label, .lane.warn .n-label { color: var(--amber); }
-.node.warn .n-dot, .lane.warn .n-dot { opacity: 1; }
-.node.failed, .node.stopped, .lane.failed {
+.node.active .n-label { color: var(--amber); }
+.node.active .n-dot { opacity: 1; animation: pulse 1.4s ease-out infinite; }
+.node.warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: var(--amber-soft); }
+.node.warn .n-label { color: var(--amber); }
+.node.warn .n-dot { opacity: 1; }
+.node.failed, .node.stopped {
   color: var(--red);
   border-color: color-mix(in srgb, var(--red) 45%, transparent);
   background: var(--red-soft);
 }
 .node.stopped { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); }
-.node.failed .n-label, .node.stopped .n-label, .lane.failed .n-label { color: inherit; }
-.node.failed .n-dot, .node.stopped .n-dot, .lane.failed .n-dot { opacity: 1; }
-.node.skipped, .lane.skipped { border-style: dashed; opacity: .5; }
-.node.pending, .lane.pending { opacity: .68; }
+.node.failed .n-label, .node.stopped .n-label { color: inherit; }
+.node.failed .n-dot, .node.stopped .n-dot { opacity: 1; }
+.node.skipped { border-style: dashed; opacity: .5; }
+.node.pending { opacity: .68; }
 
 .link { flex: none; width: 12px; height: 2px; border-radius: 2px; background: var(--line); }
-.flow .node.done + .link, .flow .branch:has(.node.done) + .link { background: var(--accent); }
-.flow .node.active + .link, .flow .branch:has(.node.active) + .link {
+.flow .node.done + .link { background: var(--accent); }
+.flow .node.active + .link {
   background: linear-gradient(90deg, var(--amber), color-mix(in srgb, var(--amber) 20%, transparent));
 }
-
-/* The one branch in the flow: lanes hang off the node that dispatched them. */
-.branch { display: flex; flex-direction: column; gap: 5px; }
-.lanes {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  margin-left: 12px;
-  padding-left: 10px;
-  border-left: 2px solid var(--line-soft);
-  border-bottom-left-radius: 6px;
-}
-.lane { padding: 4px 8px; border-radius: 8px; }
-.lane .n-top { font-size: 10px; }
 
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
 .actions .hint { flex: 1; min-width: 220px; }
@@ -893,7 +879,7 @@ input:focus, textarea:focus, select:focus {
 #account-content label { display:grid; gap:.3rem; }
 #account-content .card { padding:1rem; overflow-wrap:anywhere; }
 
-/* Per-step work counters remain readable in the concurrent lanes and on mobile. */
+/* Per-step work counters remain readable on mobile. */
 .unit-counts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; margin-top: 7px; }
 .unit-count { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--text-dim); }
 .unit-count > span { text-transform: capitalize; }
@@ -902,7 +888,6 @@ input:focus, textarea:focus, select:focus {
 .unit-running b { color: var(--amber); }
 .unit-idle b { color: var(--violet); }
 .unit-stopped { font-size: 10px; color: var(--amber); }
-.lanes { grid-template-columns: 1fr; }
 
 .comment-panel { border-top: 1px solid var(--border, #8884); margin-top: 1rem; padding-top: 1rem; }
 .comment-message { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow: auto; }

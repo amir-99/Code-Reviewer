@@ -301,8 +301,8 @@ function buildFlow(steps = walk("INIT").steps) {
   nodes.clear();
   const flow = $('flow');
   flow.replaceChildren();
-  const cell = (kind, text) => {
-    const box = el(kind === 'lane' ? 'span' : 'div', '', kind);
+  const cell = text => {
+    const box = el('div', '', 'node');
     const top = el('span', '', 'n-top');
     top.append(el('i', '', 'n-dot'), el('span', text, 'n-label'), el('span', '', 'n-time'));
     const counts = el('span', '', 'unit-counts');
@@ -315,34 +315,19 @@ function buildFlow(steps = walk("INIT").steps) {
     box.append(top, el('span', '', 'n-note'), counts, el('span', '', 'unit-stopped'));
     return box;
   };
-  // The flow's own shape, read from an unstarted review: labels and lanes only.
+  // The flow's own shape, read from an unstarted review: labels only.
   steps.forEach((step, index) => {
     if (index) flow.append(el('i', '', 'link'));
-    const node = cell('node', step.label);
+    const node = cell(step.label);
     node.dataset.node = step.state;
-    const entry = {node, lanes: new Map()};
-    if (!step.lanes.length) flow.append(node);
-    else {
-      // The fan-out is the one place the flow branches: its lanes hang off the
-      // node that dispatched them and rejoin at the step that follows.
-      const branch = el('div', '', 'branch');
-      const lanes = el('div', '', 'lanes');
-      for (const lane of step.lanes) {
-        const box = cell('lane', lane.label);
-        box.dataset.lane = lane.stage;
-        entry.lanes.set(lane.stage, box);
-        lanes.append(box);
-      }
-      branch.append(node, lanes);
-      flow.append(branch);
-    }
-    nodes.set(step.state, entry);
+    flow.append(node);
+    nodes.set(step.state, node);
   });
 }
 
 function paint(target, step) {
   if (!target) return;
-  target.className = `${target.dataset.lane ? 'lane' : 'node'} ${step.status}`;
+  target.className = `node ${step.status}`;
   const time = target.querySelector('.n-time');
   delete time.dataset.since;
   if (step.status === 'active' && Number.isFinite(step.at)) {
@@ -371,10 +356,7 @@ function renderPipeline(state = current?.state ?? 'INIT', history = current?.his
   $('track-fill').style.setProperty('--progress', flow.percent);
   $('track').className = `track${flow.terminal ? '' : ' running'}${flow.tone ? ` ${flow.tone}` : ''}`;
   for (const step of flow.steps) {
-    const entry = nodes.get(step.state);
-    if (!entry) continue;
-    paint(entry.node, step);
-    for (const lane of step.lanes) paint(entry.lanes.get(lane.stage), lane);
+    paint(nodes.get(step.state), step);
   }
 }
 

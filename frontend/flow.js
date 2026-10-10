@@ -7,29 +7,27 @@ export const TERMINAL = new Set([...FAILED, ...HALTED, 'PUBLISHED']);
 
 export const label = value => String(value ?? '').replaceAll('_', ' ').trim().toLowerCase();
 
-// The states the orchestrator walks, drawn as the flow it actually is: the
-// sequential steps, the two gates that can end a review on a verified blocker,
-// and the lanes that fan out concurrently before the system stage rejoins them.
+// The states the orchestrator walks, drawn as the flow it actually is.
 // `stage` is the agent a step reports its work under.
 export const FLOW = [
   {state: 'INIT', label: 'Admit', note: 'admission'},
   {state: 'CONTEXT_COLLECTION', label: 'Context', note: 'repository, requirements'},
   {state: 'STATIC_ANALYSIS', label: 'Static analysis', note: 'scanners'},
-  {state: 'DEFECT_REVIEW', label: 'Defect review', stage: 'defect_review', note: 'concurrent chunks'},
+  {state: 'DEFECT_REVIEW', label: 'Defect review', stage: 'defect_review', note: 'concurrent units'},
   {state: 'DOCUMENT_REVIEW', label: 'Document review', stage: 'document_review', note: 'page sections'},
-  {state: 'PURPOSE_REVIEW', label: 'Purpose', stage: 'purpose', note: 'gate'},
-  {state: 'DESIGN_REVIEW', label: 'Design', stage: 'design', note: 'gate'},
-  {state: 'ANALYSIS_FAN_OUT', label: 'Analysis', note: 'concurrent', lanes: [
-    ['correctness', 'Correctness'], ['complexity', 'Complexity'],
-    ['tests_', 'Tests'], ['line_review', 'Line review'],
-  ]},
-  {state: 'SYSTEM_CONTEXT_REVIEW', label: 'System context', stage: 'system_context', note: 'aggregated'},
   {state: 'EVIDENCE_VALIDATION', label: 'Evidence', note: 'mechanical checks'},
   {state: 'FINDING_VERIFICATION', label: 'Verification', note: 'independent'},
   {state: 'FINALIZATION', label: 'Finalize', note: 'dedup, severity'},
   {state: 'DECISION', label: 'Decision', note: 'deterministic'},
   {state: 'PUBLISHED', label: 'Publish', note: 'report, status'},
 ];
+
+// The removed seven-stage deep mode. Reviews it ran still carry its states and
+// stage activity; they are read as the analysis step that replaced them.
+const LEGACY_STATES = new Set(['PURPOSE_REVIEW', 'DESIGN_REVIEW', 'ANALYSIS_FAN_OUT', 'SYSTEM_CONTEXT_REVIEW']);
+const LEGACY_STAGES = ['purpose', 'design', 'correctness', 'complexity', 'tests_', 'line_review', 'system_context'];
+const legacy = state => LEGACY_STATES.has(state) ? 'DEFECT_REVIEW' : state;
+
 export const PIPELINE = FLOW.map(step => step.state);
 
 // A stage refines the step it ran under: partial, failed or unreported work is
@@ -48,24 +46,54 @@ export function spans(history = [], at = new Map()) {
   return took;
 }
 
+// The worst of several stage reports, so one partial or failed legacy stage
+// keeps the analysis step off "done".
+const RANK = {completed: 0, started: 1, partial: 2};
+const worst = reports => reports.reduce((a, b) =>
+  (RANK[b.status] ?? 3) > (RANK[a.status] ?? 3) ? b : a);
+
+/* A deep-mode review read as the flow it would run today: its legacy states
+   become the Defect review step (entered when the first of them was) and its
+   stage reports become that step's report. */
+function fold(state, history, stages, at) {
+  if (!LEGACY_STATES.has(state) && !history.some(s => LEGACY_STATES.has(s))) {
+    return {state, history, stages, at};
+  }
+  const folded = [];
+  for (const entry of history.map(legacy)) if (folded.at(-1) !== entry) folded.push(entry);
+  const times = new Map();
+  for (const [entry, when] of at) {
+    const key = legacy(entry);
+    if (!times.has(key) || when < times.get(key)) times.set(key, when);
+  }
+  const reports = LEGACY_STAGES.map(name => stages.get(name)).filter(Boolean);
+  const merged = new Map(stages);
+  if (!merged.has('defect_review') && reports.length) {
+    const starts = reports.map(r => r.at).filter(Number.isFinite);
+    merged.set('defect_review', {
+      status: worst(reports).status,
+      at: starts.length ? Math.min(...starts) : null,
+      took: null,
+    });
+  }
+  return {state: legacy(state), history: folded, stages: merged, at: times};
+}
+
 /* Where the review stands, step by step.
 
    `stages` maps an agent name to {status, at, took} as its activity reported it,
    and `at` maps a state to when the pipeline entered it. A step reached but
-   never walked was skipped outright — by a milestone short circuit or a gate
-   that ended the review — and is not a step still to come. */
+   never walked was skipped outright — by a milestone short circuit — and is not
+   a step still to come. */
 export function walk(state, history = [], stages = new Map(), at = new Map()) {
+  ({state, history, stages, at} = fold(state, history, stages, at));
   const walked = history.length ? history : [state];
   const seen = new Set(walked);
-  const standard = seen.has('DEFECT_REVIEW') || state === 'DEFECT_REVIEW' || stages.has('defect_review');
   // A document review reads pages, not a repository: no static analysis and a
   // single review stage in place of the code stages.
   const document = seen.has('DOCUMENT_REVIEW') || state === 'DOCUMENT_REVIEW' || stages.has('document_review');
-  const deepStates = new Set(['PURPOSE_REVIEW', 'DESIGN_REVIEW', 'ANALYSIS_FAN_OUT', 'SYSTEM_CONTEXT_REVIEW']);
-  const codeStates = new Set(['STATIC_ANALYSIS', 'DEFECT_REVIEW', ...deepStates]);
-  const flow = FLOW.filter(s => document ? !codeStates.has(s.state)
-    : s.state === 'DOCUMENT_REVIEW' ? false
-    : standard ? !deepStates.has(s.state) : s.state !== 'DEFECT_REVIEW');
+  const codeStates = new Set(['STATIC_ANALYSIS', 'DEFECT_REVIEW']);
+  const flow = FLOW.filter(s => document ? !codeStates.has(s.state) : s.state !== 'DOCUMENT_REVIEW');
   const pipeline = flow.map(s => s.state);
   const reached = Math.max(0, ...[...walked, state].map(s => pipeline.indexOf(s)));
   const terminal = TERMINAL.has(state);
@@ -84,24 +112,7 @@ export function walk(state, history = [], stages = new Map(), at = new Map()) {
       : reported && reported.status !== 'started' && reported.status !== 'completed' ? label(reported.status)
       : status === 'stopped' || (status === 'failed' && !reported) ? label(state)
       : spec.note;
-    const lanes = (spec.lanes ?? []).map(([stage, name]) => {
-      const own = stages.get(stage);
-      return {
-        stage,
-        label: name,
-        // A lane the fan-out never reported did not run: only triage mode and an
-        // early exit leave one silent, and neither is a lane that passed.
-        status: own ? (stageTone(own.status) ?? 'done')
-          : status === 'pending' || status === 'active' ? 'pending' : 'skipped',
-        // Only the lanes worth a second look say anything: a clean one is its
-        // colour and its time.
-        note: !own ? 'not reported'
-          : own.status === 'completed' || own.status === 'started' ? '' : label(own.status),
-        took: own?.took ?? null,
-        at: own?.at ?? null,
-      };
-    });
-    return {...spec, status, note, lanes, took: took.get(spec.state) ?? null, at: at.get(spec.state) ?? null};
+    return {...spec, status, note, took: took.get(spec.state) ?? null, at: at.get(spec.state) ?? null};
   });
 
   return {
@@ -136,16 +147,7 @@ export class UnitProgress {
     return true;
   }
   get(step) {
-    if (step.stage) return this.stages.get(step.stage);
-    if (!step.lanes?.length) return undefined;
-    const counts = step.lanes.map(lane => this.stages.get(lane.stage));
-    if (counts.every(value => !value)) return undefined;
-    const result = {};
-    for (const key of ['total', 'completed', 'running', 'idle', 'stopped']) {
-      result[key] = counts.every(value => Number.isFinite(value?.[key]))
-        ? counts.reduce((sum, value) => sum + value[key], 0) : null;
-    }
-    return result;
+    return step.stage ? this.stages.get(step.stage) : undefined;
   }
   close() {
     for (const value of this.stages.values()) {
