@@ -119,6 +119,24 @@ def test_dedup_retains_impact_with_claim_and_provenance():
     assert first.impact == "Wrong result"
 
 
+def test_dedup_keeps_distinct_nearby_defects_of_one_category():
+    from reviewer.findings.dedup import deduplicate
+
+    first, other = finding(10), finding(14)
+    other.claim = "Loop skips the final element of the batch"
+    other.fingerprint = "b" * 32
+    assert deduplicate([first, other]) == [first, other]
+
+
+def test_dedup_merges_nearby_claims_worded_alike():
+    from reviewer.findings.dedup import deduplicate
+
+    first, other = finding(10), finding(14)
+    other.claim = "Fails at runtime on empty input"
+    other.fingerprint = "b" * 32
+    assert deduplicate([first, other]) == [first]
+
+
 async def test_verifier_does_not_receive_impact_level(tmp_path):
     from reviewer.agents.verification import verify
     from reviewer.findings.models import VerificationResult

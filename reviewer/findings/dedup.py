@@ -41,6 +41,30 @@ def combine(first, other):
     return first
 
 
+def similar(first, other, threshold=0.5):
+    """Word overlap of two normalized claims (Jaccard), for near-duplicates."""
+    a, b = set(normalize_claim(first).split()), set(normalize_claim(other).split())
+    return bool(a and b) and len(a & b) / len(a | b) >= threshold
+
+
+def related(first, other, distance):
+    """Nearby claims merge only when they describe the same defect.
+
+    Proximity alone is not identity: two distinct defects of one category can
+    sit a few lines apart in one function. Merge when the cited ranges overlap,
+    or when nearby claims are worded alike.
+    """
+    if first.anchor.file != other.anchor.file or first.category != other.category:
+        return False
+    if abs(first.anchor.line_start - other.anchor.line_start) > distance:
+        return False
+    overlap = (
+        first.anchor.line_start <= other.anchor.line_end
+        and other.anchor.line_start <= first.anchor.line_end
+    )
+    return overlap or similar(first.claim, other.claim)
+
+
 def deduplicate(findings, distance=10):
     exact = {}
     for f in findings:
@@ -50,18 +74,12 @@ def deduplicate(findings, distance=10):
             exact[f.fingerprint] = f
     merged = []
     for f in exact.values():
-        related = next(
-            (
-                x
-                for x in merged
-                if x.anchor.file == f.anchor.file
-                and x.category == f.category
-                and abs(x.anchor.line_start - f.anchor.line_start) <= distance
-            ),
+        related_finding = next(
+            (x for x in merged if related(x, f, distance)),
             None,
         )
-        if related:
-            combine(related, f)
+        if related_finding:
+            combine(related_finding, f)
         else:
             merged.append(f)
     return merged

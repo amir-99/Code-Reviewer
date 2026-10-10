@@ -81,7 +81,7 @@ def test_one_published_identity_is_adopted_once(tmp_path):
     assert [first.fingerprint, second.fingerprint] == ["p" * 32, "m" * 32]
 
 
-def test_carried_identity_survives_a_nearby_merge():
-    carried, new = published(10), fresh(12)
+def test_carried_identity_survives_an_overlapping_merge():
+    carried, new = published(10), fresh(10)
     merged = deduplicate([carried, new])
     assert [f.fingerprint for f in merged] == ["p" * 32]
