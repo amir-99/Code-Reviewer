@@ -8,6 +8,9 @@ class ReviewState(StrEnum):
     DEFECT_REVIEW = "DEFECT_REVIEW"
     # Document reviews: the single analysis stage over page sections.
     DOCUMENT_REVIEW = "DOCUMENT_REVIEW"
+    # Stages of the removed deep mode. Persisted reviews and their history may
+    # still name them, and a review interrupted in one resumes from it, but no
+    # run enters them any more.
     PURPOSE_REVIEW = "PURPOSE_REVIEW"
     DESIGN_REVIEW = "DESIGN_REVIEW"
     ANALYSIS_FAN_OUT = "ANALYSIS_FAN_OUT"
@@ -40,19 +43,13 @@ LEGAL = {
         ReviewState.STATIC_ANALYSIS,
         ReviewState.DOCUMENT_REVIEW,
     },
-    ReviewState.STATIC_ANALYSIS: {
-        ReviewState.PURPOSE_REVIEW,
-        ReviewState.DEFECT_REVIEW,
-    },
+    ReviewState.STATIC_ANALYSIS: {ReviewState.DEFECT_REVIEW},
     ReviewState.DEFECT_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
     ReviewState.DOCUMENT_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
-    ReviewState.PURPOSE_REVIEW: {
-        ReviewState.DESIGN_REVIEW,
-    },
-    ReviewState.DESIGN_REVIEW: {
-        ReviewState.ANALYSIS_FAN_OUT,
-    },
-    ReviewState.ANALYSIS_FAN_OUT: {ReviewState.SYSTEM_CONTEXT_REVIEW},
+    # A review recovered in a legacy stage finishes through validation.
+    ReviewState.PURPOSE_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
+    ReviewState.DESIGN_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
+    ReviewState.ANALYSIS_FAN_OUT: {ReviewState.EVIDENCE_VALIDATION},
     ReviewState.SYSTEM_CONTEXT_REVIEW: {ReviewState.EVIDENCE_VALIDATION},
     ReviewState.EVIDENCE_VALIDATION: {ReviewState.FINDING_VERIFICATION},
     ReviewState.FINDING_VERIFICATION: {ReviewState.FINALIZATION},
@@ -69,7 +66,9 @@ for state in set(ReviewState) - TERMINAL:
 
 
 # Forward order of the working states. `advance` only ever moves a review to a
-# later entry, so a stage a run does not visit is simply skipped.
+# later entry, so a stage a run does not visit is simply skipped. The legacy
+# deep-mode states sit after DEFECT_REVIEW, so a review recovered in one of
+# them skips straight on to validation.
 ORDER = [
     "INIT",
     "CONTEXT_COLLECTION",

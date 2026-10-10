@@ -17,7 +17,6 @@ class WorkUnit(BaseModel):
     paths: list[str]
     content: str
     omitted: bool = False
-    representation: str = "diff_excerpt"
     file_context: dict[str, dict] = {}
     max_findings: int = 3
 
@@ -199,14 +198,20 @@ def context_for(file, section, omitted, index, count):
     }
 
 
-def coherent_units(bundle, limit, pack=False):
+def coherent_units(bundle, limit, paths=None):
     """Units of whole runs of one file, or several small related files packed.
 
-    No source program is loaded or executed here.
+    `paths` restricts the units to those files (an incremental re-review), so
+    packing never pulls an unaffected file back into review. No source program
+    is loaded or executed here.
     """
-    files = [f for f in bundle.code.files if not f.is_excluded]
-    if pack:
-        files = ordered(files)
+    files = ordered(
+        [
+            f
+            for f in bundle.code.files
+            if not f.is_excluded and (paths is None or f.path in paths)
+        ]
+    )
     units = []
     packed = []  # (file, section) pairs waiting to share one unit
 
@@ -233,7 +238,7 @@ def coherent_units(bundle, limit, pack=False):
         chunks = file_chunks(file, max(1, limit - len(title.encode()) - 1))
         sections = ["\n".join([title] + chunk) for chunk in chunks]
         oversized = [len(section.encode()) > limit for section in sections]
-        if pack and len(sections) == 1 and not oversized[0]:
+        if len(sections) == 1 and not oversized[0]:
             current = "\n".join(
                 section for _, section in packed + [(file, sections[0])]
             )
@@ -267,35 +272,6 @@ def coherent_units(bundle, limit, pack=False):
     return units
 
 
-def whole_change(bundle, limit):
-    files = [f for f in bundle.code.files if not f.is_excluded]
-    outline = "\n".join(
-        f"{f.path} ({f.change_type}): " + "; ".join(h.header for h in f.hunks)
-        for f in files
-    )
-    if len(outline.encode()) > limit:
-        outline = "\n".join(
-            f"{f.path} ({f.change_type}, {len(f.hunks)} hunks)" for f in files
-        )
-    if len(outline.encode()) > limit:
-        bundle.degradations.append("whole_change_summary_truncated")
-        outline = outline.encode()[:limit].decode(errors="ignore")
-    if not files:
-        return []
-    return [
-        WorkUnit(
-            id="change:unit-0",
-            paths=[f.path for f in files],
-            content=outline,
-            representation="outline",
-            file_context={f.path: context_for(f, "", False, 0, 1) for f in files},
-        )
-    ]
-
-
-def partition(bundle, kind="file_group", limit=6000):
+def partition(bundle, limit=24000, paths=None):
     # UTF-8 bytes form a conservative token ceiling.
-    limit = max(256, limit)
-    if kind == "whole_change":
-        return whole_change(bundle, limit)
-    return coherent_units(bundle, limit, pack=kind == "hunks")
+    return coherent_units(bundle, max(256, limit), paths)

@@ -298,17 +298,17 @@ async def test_manual_trigger_carries_the_operator_s_model_choice(client_parts):
         app,
         {
             "merge_request_url": f"{BASE}/group/proj/-/merge_requests/2",
-            "models": {"correctness": DEFAULT_ROLE_MODELS["verification"]},
+            "models": {"defect_review": DEFAULT_ROLE_MODELS["verification"]},
         },
     )
     assert response.status_code == 202
     assert response.json()["models"] == {
-        "correctness": DEFAULT_ROLE_MODELS["verification"]
+        "defect_review": DEFAULT_ROLE_MODELS["verification"]
     }
     overrides = queue.jobs[0][1][0]["overrides"]
     # Only the role the operator moved: every other role stays on project policy,
     # and the choice is persisted so a replay reruns on the same models.
-    assert overrides["models"] == {"correctness": DEFAULT_ROLE_MODELS["verification"]}
+    assert overrides["models"] == {"defect_review": DEFAULT_ROLE_MODELS["verification"]}
 
 
 async def test_manual_trigger_without_models_runs_on_the_defaults(client_parts):
@@ -332,7 +332,7 @@ async def test_manual_trigger_rejects_unknown_roles_and_unconfigured_models(
     # A model this deployment is not configured for would otherwise fail one
     # stage at a time, deep inside the run.
     unknown_model = await post(
-        app, {"merge_request_url": url, "models": {"design": "attacker/model"}}
+        app, {"merge_request_url": url, "models": {"recheck": "attacker/model"}}
     )
     assert unknown_model.status_code == 400
     assert "attacker/model" in unknown_model.json()["detail"]
@@ -348,5 +348,5 @@ async def test_models_endpoint_reports_defaults_and_what_may_be_selected(client_
     assert response.status_code == 200
     body = response.json()
     assert set(body["roles"]) == set(ROLES)
-    assert body["defaults"]["line_review"] == DEFAULT_ROLE_MODELS["line_review"]
+    assert body["defaults"]["defect_review"] == DEFAULT_ROLE_MODELS["defect_review"]
     assert set(DEFAULT_ROLE_MODELS.values()) <= set(body["catalog"])

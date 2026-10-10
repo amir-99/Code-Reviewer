@@ -35,8 +35,9 @@ EXISTING_FINDINGS = 2
 
 
 def frozen_config(data):
-    # Runs frozen before the combined reviewer shipped retain their stage graph.
-    return ProjectConfig.model_validate({"analysis_mode": "deep", **data})
+    # Every run, including one frozen when the seven-stage deep mode existed,
+    # now runs the combined Defect Review; the schema drops the old selector.
+    return ProjectConfig.model_validate(data)
 
 
 class Pipeline:
@@ -225,7 +226,6 @@ class Pipeline:
                 carried = []
                 previous_findings = []
                 previous_head = None
-                system_paths = None
                 delta = None
                 if previous:
                     # Loaded whether or not the re-review is incremental: the
@@ -259,9 +259,6 @@ class Pipeline:
                             wt, old_bundle["code"]["head_sha"], review.head_sha
                         )
                         only_paths = {f.path for f in delta}
-                        old_files = {f["path"] for f in old_bundle["code"]["files"]}
-                        new_files = {f.path for f in bundle.code.files}
-                        system_paths = None if old_files != new_files else set()
                         for old in previous_findings:
                             classification, moved = reanchor(old, wt.path)
                             if moved and (
@@ -301,7 +298,13 @@ class Pipeline:
                     return await self.finish(
                         review, "PUBLISHED", "COMMENT_ONLY", config, True
                     )
-                results = await self.store.stages(review.id)
+                # A run recovered from before deep mode was removed may hold
+                # results of stages that no longer exist; only this one counts.
+                results = {
+                    name: result
+                    for name, result in (await self.store.stages(review.id)).items()
+                    if name == "defect_review"
+                }
                 from sqlalchemy import func, select
 
                 from reviewer.store.models import LLMCall
@@ -353,7 +356,7 @@ class Pipeline:
                         llm,
                         config,
                         context_provider,
-                        system_paths if name == "system_context" else only_paths,
+                        only_paths,
                         self.store,
                         redactor,
                         results.get(name),
@@ -461,49 +464,10 @@ class Pipeline:
                     return values
 
                 raw = []
-                if config.analysis_mode == "standard" and level >= 5:
+                if level >= 5:
                     await self.advance(review, "DEFECT_REVIEW")
                     result = await stage("defect_review")
                     raw.extend(("defect_review", f) for f in result.findings)
-                else:
-                    for name, state in [
-                        ("purpose", "PURPOSE_REVIEW"),
-                        ("design", "DESIGN_REVIEW"),
-                    ]:
-                        await self.advance(review, state)
-                        result = await stage(name)
-                        raw.extend((name, f) for f in result.findings)
-                    if level >= 5:
-                        await self.advance(review, "ANALYSIS_FAN_OUT")
-                        names = ["correctness", "complexity", "tests_", "line_review"]
-                        fan = await asyncio.gather(
-                            *(stage(n) for n in names), return_exceptions=True
-                        )
-                        from reviewer.orchestrator.stages import StageResult
-
-                        for stage_name, item in zip(names, fan):
-                            if isinstance(item, Exception):
-                                results[stage_name] = StageResult(
-                                    stage=stage_name, failed=True, partial=True
-                                )
-                        raw.extend(
-                            (r.stage, f)
-                            for r in fan
-                            if not isinstance(r, Exception)
-                            for f in r.findings
-                        )
-                        await self.advance(review, "SYSTEM_CONTEXT_REVIEW")
-                        # Include aggregated claims as data for the system stage.
-                        bundle.aggregated_findings = [
-                            {
-                                "stage": n,
-                                "claim": f.claim,
-                                "anchor": f.anchor.model_dump(),
-                            }
-                            for n, f in raw
-                        ][:100]
-                        result = await stage("system_context")
-                        raw.extend(("system_context", f) for f in result.findings)
                 if level >= 5:
                     await self.advance(review, "EVIDENCE_VALIDATION")
                     await self.advance(review, "FINDING_VERIFICATION")
@@ -541,7 +505,6 @@ class Pipeline:
                     or "prompt_requirements_truncated" in bundle.degradations
                     or "budget_exhausted" in bundle.degradations
                     or "unverified_scope_claims" in bundle.degradations
-                    or "whole_change_summary_truncated" in bundle.degradations
                     or level < 7
                 )
                 if partial:

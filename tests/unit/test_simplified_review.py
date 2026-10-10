@@ -62,14 +62,14 @@ def test_hunks_pack_intact_and_oversized_hunks_split_at_lines(tmp_path):
         Hunk(old_start=0, old_lines=0, new_start=1, new_lines=4, header="first"),
         Hunk(old_start=0, old_lines=0, new_start=5, new_lines=4, header="second"),
     ]
-    units = partition(b, "hunks", 300)
+    units = partition(b, 300)
     assert len(units) == 2
     for index, unit in enumerate(units):
         assert len(unit.content.encode()) <= 300
         for line in file.lines[index * 4 : index * 4 + 4]:
             assert render(line) in unit.content
     file.hunks = []
-    units = partition(b, "hunks", 256)
+    units = partition(b, 256)
     assert all(len(u.content.encode()) <= 256 for u in units)
     assert sum(len(u.content.splitlines()) - 1 for u in units) == 8
     assert all(u.content.startswith("=== f0.py ===\n") for u in units)
@@ -88,10 +88,23 @@ async def test_oversized_line_is_skipped_without_false_coverage(tmp_path):
     assert result.partial and result.skipped and not result.examined
 
 
-def test_old_frozen_runs_retain_deep_mode():
-    assert ProjectConfig().analysis_mode == "standard"
-    assert frozen_config({}).analysis_mode == "deep"
-    assert frozen_config({"analysis_mode": "standard"}).analysis_mode == "standard"
+def test_runs_and_files_from_deep_mode_load_as_standard_reviews():
+    for mode in ("deep", "standard"):
+        config = frozen_config(
+            {
+                "analysis_mode": mode,
+                "models": {
+                    "roles": {
+                        "line_review": {"model": "vendor/old"},
+                        "defect_review": {"model": "vendor/new"},
+                    }
+                },
+            }
+        )
+        assert not hasattr(config, "analysis_mode")
+        assert set(config.models.roles) == {"defect_review"}
+    with pytest.raises(ValueError):
+        ProjectConfig.model_validate({"models": {"roles": {"unknown": {"model": "m"}}}})
 
 
 def test_compact_claim_expands_with_impact_and_code_owned_metadata():

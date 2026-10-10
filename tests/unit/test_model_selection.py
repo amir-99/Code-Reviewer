@@ -39,56 +39,55 @@ def test_every_role_resolves_to_a_model_by_default():
     resolved = resolve(settings())
     assert set(ROLES) <= set(resolved)
     assert assignment(resolved) == DEFAULT_ROLE_MODELS
-    # Stages that were one tier before are separately selectable now.
-    assert resolved["correctness"].model == resolved["complexity"].model
-    assert resolved["tests_"].model == "google/gemini-3.8-flash"
-    assert resolved["verification"].model != resolved["line_review"].model
+    # The proposer and its independent verifier are separately selectable.
+    assert resolved["defect_review"].model == "google/gemini-3.8-flash"
+    assert resolved["verification"].model != resolved["defect_review"].model
 
 
 def test_selection_layers_from_most_specific_to_least():
     config = ProjectConfig(
         models=ModelProfile(
             default=ModelSpec(model="project/default"),
-            roles={"correctness": ModelSpec(model="project/correctness")},
+            roles={"defect_review": ModelSpec(model="project/defects")},
         )
     )
     resolved = resolve(
-        settings(model_roles={"design": "env/design"}),
+        settings(model_roles={"recheck": "env/recheck"}),
         config,
-        ReviewOverrides(models={"correctness": "run/correctness"}),
+        ReviewOverrides(models={"defect_review": "run/defects"}),
     )
     # The run's own choice beats the project, which beats the environment, which
     # beats the shipped default.
-    assert resolved["correctness"].model == "run/correctness"
-    assert resolved["design"].model == "project/default"
-    assert resolved["purpose"].model == "project/default"
+    assert resolved["defect_review"].model == "run/defects"
+    assert resolved["recheck"].model == "project/default"
+    assert resolved["chat"].model == "project/default"
     # With no project profile at all the environment is what answers.
-    plain = resolve(settings(model_roles={"design": "env/design"}))
-    assert plain["design"].model == "env/design"
-    assert plain["purpose"].model == DEFAULT_ROLE_MODELS["purpose"]
+    plain = resolve(settings(model_roles={"recheck": "env/recheck"}))
+    assert plain["recheck"].model == "env/recheck"
+    assert plain["chat"].model == DEFAULT_ROLE_MODELS["chat"]
 
 
 def test_limits_come_from_the_model_not_the_installation():
     resolved = resolve(
         settings(
-            model_roles={"purpose": "vendor/small"},
+            model_roles={"chat": "vendor/small"},
             model_limits={
                 "vendor/small": {"context_tokens": 8000, "max_output_tokens": 900}
             },
         )
     )
-    assert resolved["purpose"].context_tokens == 8000
-    assert resolved["purpose"].max_output_tokens == 900
+    assert resolved["chat"].context_tokens == 8000
+    assert resolved["chat"].max_output_tokens == 900
     # A model with no declared limits falls back to the installation-wide window.
-    assert resolved["design"].context_tokens == 32000
-    assert resolved["design"].max_output_tokens is None
+    assert resolved["recheck"].context_tokens == 32000
+    assert resolved["recheck"].max_output_tokens is None
     # A role's own spec outranks the per-model table.
     config = ProjectConfig(
         models=ModelProfile(
-            roles={"purpose": ModelSpec(model="vendor/small", context_tokens=12000)}
+            roles={"chat": ModelSpec(model="vendor/small", context_tokens=12000)}
         )
     )
-    assert resolve(settings(), config)["purpose"].context_tokens == 12000
+    assert resolve(settings(), config)["chat"].context_tokens == 12000
 
 
 def test_legacy_tiers_still_resolve_for_callers_that_ask_for_them():

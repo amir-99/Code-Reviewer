@@ -130,12 +130,10 @@ class WireReview(Reviewing):
         return wire(result, kwargs["response_model"])
 
 
-def pipeline(store, forge, tmp_path, scanner=None, llm=None, mode="deep"):
-    # These legacy scenarios exercise the optional seven-stage workflow.
+def pipeline(store, forge, tmp_path, scanner=None, llm=None):
     path = tmp_path / "config.json"
-    config = json.loads(path.read_text()) if path.exists() else {}
-    config.setdefault("defaults", {}).setdefault("analysis_mode", mode)
-    path.write_text(json.dumps(config))
+    if not path.exists():
+        path.write_text("{}")
     settings = Settings(milestone="M9", config_path=tmp_path / "config.json")
     return Pipeline(
         store,
@@ -247,17 +245,11 @@ async def test_complete_pipeline_with_real_git_and_fake_external_services(
     assert len(forge.comments) == 1
     saved = await store.snapshot(review.id)
     assert not saved["partial"]
-    assert len(await store.stages(review.id)) == 7
+    assert set(await store.stages(review.id)) == {"defect_review"}
     events = await store.events(review.id, limit=2000)
     agents = [e["data"] for e in events if e["kind"] == "agent"]
     assert {e["name"] for e in agents if e["status"] == "completed"} == {
-        "purpose",
-        "design",
-        "correctness",
-        "complexity",
-        "tests_",
-        "line_review",
-        "system_context",
+        "defect_review"
     }
     assert any(e["kind"] == "unit" and e["data"]["parent_id"] for e in events)
     assert any(
@@ -269,9 +261,8 @@ async def test_complete_pipeline_with_real_git_and_fake_external_services(
 
 
 @pytest.mark.parametrize("failed_stage", [False, True])
-@pytest.mark.parametrize("mode", ["standard", "deep"])
 async def test_secret_warning_continues_redacted_review(
-    store, history, tmp_path, failed_stage, mode
+    store, history, tmp_path, failed_stage
 ):
     repo, base, head = history
     forge = FakeForge(
@@ -304,33 +295,16 @@ async def test_secret_warning_continues_redacted_review(
         async def complete(self, **kwargs):
             attempted_stages.add(kwargs["stage"])
             assert "x = 0" not in kwargs["user"]
-            if failed_stage and kwargs["stage"] == (
-                "defect_review" if mode == "standard" else "design"
-            ):
+            if failed_stage and kwargs["stage"] == "defect_review":
                 raise TimeoutError()
             return await super().complete(**kwargs)
 
     (tmp_path / "config.json").write_text('{"defaults":{"enforcement":"gating"}}')
     llm = SecretReview()
     review = await store.accept(7, 2, head, "secret")
-    state = await pipeline(store, forge, tmp_path, scanner, llm, mode=mode).run(
-        review.id
-    )
+    state = await pipeline(store, forge, tmp_path, scanner, llm).run(review.id)
     assert state == "PUBLISHED"
-    expected_stages = (
-        {"defect_review"}
-        if mode == "standard"
-        else {
-            "purpose",
-            "design",
-            "correctness",
-            "complexity",
-            "tests_",
-            "line_review",
-            "system_context",
-        }
-    )
-    assert expected_stages <= attempted_stages
+    assert "defect_review" in attempted_stages
     assert "verification" not in attempted_stages  # Secrets remain deterministic.
     snapshot = await store.snapshot(review.id)
     assert "x = 0" not in json.dumps(snapshot)
@@ -403,7 +377,8 @@ async def test_incremental_push_only_dispatches_affected_files(
     forge.paths = git(
         repo, "diff", "--no-renames", "--name-only", base, head
     ).splitlines()
-    machine = pipeline(store, forge, tmp_path)
+    llm = Echo()
+    machine = pipeline(store, forge, tmp_path, llm=llm)
     first = await store.accept(7, 2, head, "first-push")
     assert await machine.run(first.id) == "PUBLISHED"
     (repo / "new0.py").write_text("x = 4\n")
@@ -412,16 +387,18 @@ async def test_incremental_push_only_dispatches_affected_files(
     newhead = git(repo, "rev-parse", "HEAD")
     forge.mr.head_sha = newhead
     second = await store.accept(7, 2, newhead, "next-push")
+    llm.calls.clear()
     assert await machine.run(second.id) == "PUBLISHED"
     stages = await store.stages(second.id)
-    assert stages["correctness"].examined == ["new0.py:unit-0"]
-    assert not stages["system_context"].examined
+    assert stages["defect_review"].examined == ["new0.py:unit-0"]
+    # Only the file the push changed is sent; packing pulls in no other file.
+    (call,) = [c for c in llm.calls if c["stage"] == "defect_review"]
+    assert "=== new0.py ===" in call["user"] and "=== new1.py ===" not in call["user"]
 
 
-@pytest.mark.parametrize("proposing_stage", ["purpose", "design"])
 @pytest.mark.parametrize("category", ["security", "data_integrity", "prompt_injection"])
 async def test_verified_blocker_becomes_warning_and_continues(
-    store, history, tmp_path, proposing_stage, category
+    store, history, tmp_path, category
 ):
     from reviewer.findings.models import ProposedFinding, VerificationResult
 
@@ -449,7 +426,7 @@ async def test_verified_blocker_becomes_warning_and_continues(
                     reasoning="Fixture evidence",
                 )
             result = await super().complete(**kwargs)
-            if kwargs["stage"] == proposing_stage:
+            if kwargs["stage"] == "defect_review":
                 result.findings = [
                     ProposedFinding.model_validate(
                         {
@@ -462,6 +439,7 @@ async def test_verified_blocker_becomes_warning_and_continues(
                             "severity_proposed": "BLOCKER",
                             "claim": "Fixture security blocker",
                             "reason": "Fixture",
+                            "failure_scenario": "Fixture input",
                             "impact": "Fixture",
                             "evidence": [
                                 {
@@ -482,16 +460,7 @@ async def test_verified_blocker_becomes_warning_and_continues(
     review = await store.accept(7, 2, head, "purpose-blocker")
     (tmp_path / "config.json").write_text('{"defaults":{"enforcement":"gating"}}')
     assert await pipeline(store, forge, tmp_path, llm=llm).run(review.id) == "PUBLISHED"
-    assert {c["stage"] for c in llm.calls} == {
-        "purpose",
-        "design",
-        "correctness",
-        "complexity",
-        "tests_",
-        "line_review",
-        "system_context",
-        "verification",
-    }
+    assert {c["stage"] for c in llm.calls} == {"defect_review", "verification"}
     completed = await store.get(review.id)
     assert completed.decision == "APPROVE"
     assert not completed.partial
@@ -627,7 +596,10 @@ async def test_a_run_resolves_its_models_once_and_records_what_it_used(
         2,
         head,
         "models",
-        overrides={"requested_by": "admin", "models": {"correctness": "vendor/strong"}},
+        overrides={
+            "requested_by": "admin",
+            "models": {"defect_review": "vendor/strong"},
+        },
     )
     tiers = []
 
@@ -643,14 +615,14 @@ async def test_a_run_resolves_its_models_once_and_records_what_it_used(
     announced = [e for e in events if e["kind"] == "models"]
     assert len(announced) == 1, "one selection per run, before any stage starts"
     selection = announced[0]["data"]
-    assert selection["correctness"] == "vendor/strong"
-    assert selection["line_review"] == DEFAULT_ROLE_MODELS["line_review"]
+    assert selection["defect_review"] == "vendor/strong"
+    assert selection["recheck"] == DEFAULT_ROLE_MODELS["recheck"]
     assert selection["verification"] == DEFAULT_ROLE_MODELS["verification"]
     first_stage = next(i for i, e in enumerate(events) if e["kind"] == "agent")
     assert events.index(announced[0]) < first_stage
-    # Stages ask for their own role rather than a shared tier, so an operator can
+    # Calls ask for their own role rather than a shared tier, so an operator can
     # price them separately.
-    assert {"purpose", "design", "correctness", "line_review"} <= set(tiers)
+    assert "defect_review" in tiers
     assert "strong" not in tiers and "fast" not in tiers
     # The run's own record survives its events: the snapshot carries it too.
     saved = await store.snapshot(review.id)
@@ -773,7 +745,7 @@ async def test_recovery_keeps_frozen_models_and_config_without_resolving_again(
 
     async def interrupted(review_id, result):
         await original(review_id, result)
-        if result.stage == "purpose":
+        if result.stage == "defect_review":
             raise asyncio.CancelledError()
 
     monkeypatch.setattr(store, "save_stage", interrupted)
@@ -785,7 +757,7 @@ async def test_recovery_keeps_frozen_models_and_config_without_resolving_again(
         json.dumps(
             {
                 "defaults": {
-                    "models": {"roles": {"tests_": {"model": "changed/model"}}},
+                    "models": {"roles": {"defect_review": {"model": "changed/model"}}},
                     "unit_concurrency": 1,
                 }
             }
@@ -817,7 +789,7 @@ async def test_standard_review_uses_one_proposer_and_verifies_findings(
     forge.paths = git(
         repo, "diff", "--no-renames", "--name-only", base, head
     ).splitlines()
-    config = {"defaults": {"analysis_mode": "standard", "enforcement": "gating"}}
+    config = {"defaults": {"enforcement": "gating"}}
     if legacy_limits:
         config["defaults"]["review"] = {"max_changed_lines": 1}
         config["defaults"]["triage_max_units"] = 2
@@ -825,7 +797,7 @@ async def test_standard_review_uses_one_proposer_and_verifies_findings(
 
     llm = WireReview()
     review = await store.accept(7, 2, head, "standard")
-    machine = pipeline(store, forge, tmp_path, llm=llm, mode="standard")
+    machine = pipeline(store, forge, tmp_path, llm=llm)
     assert await machine.run(review.id) == "PUBLISHED"
     stages = await store.stages(review.id)
     assert set(stages) == {"defect_review"}
@@ -863,10 +835,7 @@ async def test_large_change_reviews_clock_source_and_excludes_only_lockfiles(
     ).splitlines()
     review = await store.accept(7, 2, head, "large-change")
     assert (
-        await pipeline(store, forge, tmp_path, llm=Echo(), mode="standard").run(
-            review.id
-        )
-        == "PUBLISHED"
+        await pipeline(store, forge, tmp_path, llm=Echo()).run(review.id) == "PUBLISHED"
     )
     snapshot = await store.snapshot(review.id)
     assert snapshot["bundle"]["code"]["total_changed_lines"] > 3000
@@ -915,9 +884,7 @@ async def test_unverified_absence_is_a_coverage_gap_not_a_published_suggestion(
 
     review = await store.accept(7, 2, head, "scope-" + verdict)
     assert (
-        await pipeline(store, forge, tmp_path, llm=MissingScope(), mode="standard").run(
-            review.id
-        )
+        await pipeline(store, forge, tmp_path, llm=MissingScope()).run(review.id)
         == "PUBLISHED"
     )
     snapshot = await store.snapshot(review.id)
@@ -961,7 +928,7 @@ async def test_reworded_claim_on_a_later_push_stays_in_its_open_thread(
             return result
 
     llm = Rewording()
-    machine = pipeline(store, forge, tmp_path, llm=llm, mode="standard")
+    machine = pipeline(store, forge, tmp_path, llm=llm)
     first = await store.accept(7, 2, head, "first-push")
     assert await machine.run(first.id) == "PUBLISHED"
     threads = [d for d in forge.discussions if d.file == "new0.py"]
@@ -1038,7 +1005,7 @@ async def test_only_publishable_pre_existing_findings_are_verified(
 
     llm = PreExisting()
     review = await store.accept(7, 2, head, "pre-existing")
-    machine = pipeline(store, forge, tmp_path, llm=llm, mode="standard")
+    machine = pipeline(store, forge, tmp_path, llm=llm)
     assert await machine.run(review.id) == "PUBLISHED"
     assert llm.verified == 2
     findings = {
@@ -1052,3 +1019,54 @@ async def test_only_publishable_pre_existing_findings_are_verified(
         findings[c]["severity_final"] == "FYI" and findings[c]["verification"]
         for c in ("concurrency", "error_handling")
     )
+
+
+async def test_review_interrupted_in_a_removed_deep_stage_finishes_as_standard(
+    store, history, tmp_path
+):
+    from sqlalchemy import update
+
+    from reviewer.store.models import Review
+
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
+    review = await store.accept(7, 2, head, "legacy-deep")
+    # Frozen before deep mode was removed: the old selector and stage roles.
+    await store.freeze_execution(
+        review.id,
+        {
+            "config": {
+                "analysis_mode": "deep",
+                "models": {"roles": {"purpose": {"model": "vendor/old"}}},
+            },
+            "models": {
+                role: {
+                    "role": role,
+                    "model": DEFAULT_ROLE_MODELS["defect_review"],
+                    "context_tokens": 32000,
+                }
+                for role in ("defect_review", "purpose", "verification", "recheck")
+            },
+        },
+    )
+    async with store.transaction() as session:
+        await session.execute(
+            update(Review).where(Review.id == review.id).values(state="DESIGN_REVIEW")
+        )
+    llm = Echo()
+    assert await pipeline(store, forge, tmp_path, llm=llm).run(review.id) == (
+        "PUBLISHED"
+    )
+    assert {c["stage"] for c in llm.calls} == {"defect_review"}
+    assert set(await store.stages(review.id)) == {"defect_review"}

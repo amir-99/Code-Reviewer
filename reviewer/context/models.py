@@ -128,7 +128,6 @@ class ContextBundle(BaseModel):
     static: list[StaticAnalysisResult] = []
     budget: Budget
     degradations: list[str] = []
-    aggregated_findings: list[dict] = []
     jira_base_url: str = ""
 
     def content_hash(self):
@@ -137,7 +136,6 @@ class ContextBundle(BaseModel):
             exclude={
                 "review_id",
                 "budget",
-                "aggregated_findings",
                 "degradations",
                 "jira_base_url",
             },

@@ -4,9 +4,9 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from test_stages import Echo, bundle
+from test_stages import LONG, SEPARATE, Echo, bundle
 
-from reviewer.agents.base import TemplateAgent
+from reviewer.agents.base import DefectReviewAgent
 from reviewer.config.schema import ProjectConfig
 from reviewer.context.redaction import Redactor
 from reviewer.findings.models import Coverage, StageEnvelope
@@ -26,9 +26,9 @@ async def test_restart_keeps_completed_units_even_when_deadline_expired(
     store, tmp_path, monkeypatch
 ):
     review = await store.accept(7, 2, "a" * 40, "checkpoint")
-    b = bundle(tmp_path, 3)
+    b = bundle(tmp_path, 3, LONG)
     b.review_id = UUID(review.id)
-    config = ProjectConfig(unit_concurrency=1)
+    config = ProjectConfig(unit_concurrency=1, **SEPARATE)
     second = asyncio.Event()
     calls = []
 
@@ -39,9 +39,9 @@ async def test_restart_keeps_completed_units_even_when_deadline_expired(
             await asyncio.Event().wait()
         return envelope(unit)
 
-    monkeypatch.setattr(TemplateAgent, "run", run)
+    monkeypatch.setattr(DefectReviewAgent, "run", run)
     task = asyncio.create_task(
-        execute("tests_", b, None, config, store=store, redactor=Redactor())
+        execute("defect_review", b, None, config, store=store, redactor=Redactor())
     )
     try:
         await asyncio.wait_for(second.wait(), 2)
@@ -49,9 +49,11 @@ async def test_restart_keeps_completed_units_even_when_deadline_expired(
         task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert len(await store.unit_results(review.id, "tests_")) == 1
+    assert len(await store.unit_results(review.id, "defect_review")) == 1
     b.budget.deadline_at = datetime.now(UTC) - timedelta(seconds=1)
-    result = await execute("tests_", b, None, config, store=store, redactor=Redactor())
+    result = await execute(
+        "defect_review", b, None, config, store=store, redactor=Redactor()
+    )
     assert calls == ["f0.py:unit-0", "f1.py:unit-0"]
     assert result.examined == ["f0.py:unit-0"]
     assert result.skipped == ["f1.py:unit-0", "f2.py:unit-0"] and result.partial
@@ -61,25 +63,25 @@ async def test_resume_only_calls_unfinished_units_and_invalidates_changed_inputs
     store, tmp_path, monkeypatch
 ):
     review = await store.accept(7, 2, "a" * 40, "identities")
-    b = bundle(tmp_path, 2)
+    b = bundle(tmp_path, 2, LONG)
     b.review_id = UUID(review.id)
-    config = ProjectConfig(unit_concurrency=1)
+    config = ProjectConfig(unit_concurrency=1, **SEPARATE)
     calls = []
 
     async def run(self, bundle, unit, *args):
         calls.append(unit.id)
         return envelope(unit)
 
-    monkeypatch.setattr(TemplateAgent, "run", run)
-    llm = type("Models", (), {"models": {"tests_": "approved-a"}})()
-    result = await execute("tests_", b, llm, config, store=store)
-    await execute("tests_", b, llm, config, store=store)
+    monkeypatch.setattr(DefectReviewAgent, "run", run)
+    llm = type("Models", (), {"models": {"defect_review": "approved-a"}})()
+    result = await execute("defect_review", b, llm, config, store=store)
+    await execute("defect_review", b, llm, config, store=store)
     assert len(calls) == 2
-    b.code.files[1].lines[0].text = "changed = 2"
-    await execute("tests_", b, llm, config, store=store, previous=result)
+    b.code.files[1].lines[0].text = "changed = " + "2" * 150
+    await execute("defect_review", b, llm, config, store=store, previous=result)
     assert calls == ["f0.py:unit-0", "f1.py:unit-0", "f1.py:unit-0"]
-    llm.models["tests_"] = "approved-b"
-    await execute("tests_", b, llm, config, store=store)
+    llm.models["defect_review"] = "approved-b"
+    await execute("defect_review", b, llm, config, store=store)
     assert len(calls) == 5
 
 
@@ -103,10 +105,12 @@ async def test_checkpoint_redacts_model_findings(store, tmp_path, monkeypatch):
         ]
         return result
 
-    monkeypatch.setattr(TemplateAgent, "run", run)
+    monkeypatch.setattr(DefectReviewAgent, "run", run)
     redactor = Redactor([{"Secret": "private-fixture-value", "RuleID": "fixture"}])
-    await execute("tests_", b, None, ProjectConfig(), store=store, redactor=redactor)
-    rows = await store.unit_results(review.id, "tests_")
+    await execute(
+        "defect_review", b, None, ProjectConfig(), store=store, redactor=redactor
+    )
+    rows = await store.unit_results(review.id, "defect_review")
     assert "private-fixture-value" not in json.dumps(rows)
     assert "REDACTED:fixture" in json.dumps(rows)
 
@@ -124,10 +128,13 @@ async def test_unit_timeout_bounds_all_retries_and_preserves_other_units(
                 stopped.append(unit.id)
         return envelope(unit)
 
-    monkeypatch.setattr(TemplateAgent, "run", run)
+    monkeypatch.setattr(DefectReviewAgent, "run", run)
     result = await asyncio.wait_for(
         execute(
-            "tests_", bundle(tmp_path, 2), None, ProjectConfig(unit_timeout_s=0.03)
+            "defect_review",
+            bundle(tmp_path, 2, LONG),
+            None,
+            ProjectConfig(unit_timeout_s=0.03, **SEPARATE),
         ),
         1,
     )
@@ -135,33 +142,27 @@ async def test_unit_timeout_bounds_all_retries_and_preserves_other_units(
     assert result.examined == ["f1.py:unit-0"] and result.partial
 
 
-async def test_analysis_cutoff_preserves_final_stages(tmp_path):
+async def test_analysis_cutoff_preserves_verification_time(tmp_path):
     b = bundle(tmp_path, 1)
     config = ProjectConfig()
     b.budget.deadline_at = datetime.now(UTC) + timedelta(
         seconds=config.finalization_reserve_s * 2 / 3
     )
-    analysis = await execute("purpose", b, Echo(), config)
-    final = await execute("system_context", b, Echo(), config)
-    # System Context has a later cutoff than analysis and verification later still.
+    analysis = await execute("defect_review", b, Echo(), config)
+    # Analysis stops inside the finalization reserve; verification runs later.
     assert analysis.partial and not analysis.examined
-    assert not final.partial
-    assert (
-        cutoff(b, config, "purpose")
-        < cutoff(b, config, "system_context")
-        < cutoff(b, config, "verification")
-    )
+    assert cutoff(b, config, "defect_review") < cutoff(b, config, "verification")
 
 
 async def test_legacy_triage_limits_do_not_skip_units_when_time_remains(
     tmp_path,
 ):
-    b = bundle(tmp_path, 4)
+    b = bundle(tmp_path, 4, LONG)
     # Ten seconds of analysis remain: the old worst-case estimate selected zero
     # chunks despite these responses finishing well inside the real deadline.
     b.degradations.append("triage_mode")
     # Large *file* with intact bounded lines: oversized individual lines are
-    # now deliberately omitted in deep mode as well as standard mode.
+    # deliberately omitted.
     original = b.code.files[0].lines[0]
     b.code.files[0].lines = [
         original.model_copy(update={"text": "x" * 80, "new_line": n})
@@ -173,7 +174,7 @@ async def test_legacy_triage_limits_do_not_skip_units_when_time_remains(
     b.budget.deadline_at = datetime.now(UTC) + timedelta(
         seconds=config.finalization_reserve_s + 10
     )
-    result = await execute("tests_", b, Echo(), config)
+    result = await execute("defect_review", b, Echo(), config)
     assert result.examined[:4] == [f"f{i}.py:unit-0" for i in range(4)]
     assert "f0.py:unit-1" in result.examined
     assert not result.skipped and not result.partial
@@ -192,9 +193,9 @@ async def test_coverage_retry_explicitly_requests_exact_id(tmp_path):
             return result
 
     result = await execute(
-        "purpose", bundle(tmp_path, 1), MissingThenCorrect(), ProjectConfig()
+        "defect_review", bundle(tmp_path, 1), MissingThenCorrect(), ProjectConfig()
     )
-    assert result.examined == ["change:unit-0"] and result.attempts == 2
+    assert result.examined == ["f0.py:unit-0"] and result.attempts == 2
     from html import unescape
 
     assert '"coverage_retry": true' in unescape(prompts[-1])
@@ -211,13 +212,17 @@ async def test_requirements_use_receiving_model_context_window(
     prompts = []
 
     class Capture(Echo):
-        specs = {"tests_": ResolvedModel("tests_", "configured-model", context_tokens)}
+        specs = {
+            "defect_review": ResolvedModel(
+                "defect_review", "configured-model", context_tokens
+            )
+        }
 
         async def complete(self, **kwargs):
             prompts.append(kwargs)
             return await super().complete(**kwargs)
 
-    result = await execute("tests_", b, Capture(), ProjectConfig())
+    result = await execute("defect_review", b, Capture(), ProjectConfig())
     assert result.examined
     call = prompts[0]
     messages = [
@@ -238,7 +243,7 @@ async def test_requirements_use_receiving_model_context_window(
 async def test_execution_config_is_frozen_on_review(store):
     review = await store.accept(7, 2, "a" * 40, "freeze")
     first = {
-        "models": {"tests_": {"model": "approved-first"}},
+        "models": {"defect_review": {"model": "approved-first"}},
         "config": {"unit_concurrency": 2},
     }
     assert await store.freeze_execution(review.id, first) == first
@@ -283,7 +288,7 @@ async def test_checkpoint_failure_is_not_silently_treated_as_completed(tmp_path)
 
     with pytest.raises(ExceptionGroup):
         await execute(
-            "tests_",
+            "defect_review",
             bundle(tmp_path, 1),
             Echo(),
             ProjectConfig(),
@@ -294,7 +299,7 @@ async def test_checkpoint_failure_is_not_silently_treated_as_completed(tmp_path)
 
 async def test_frozen_configuration_safe_under_concurrent_recovery(store):
     review = await store.accept(7, 2, "a" * 40, "concurrent-freeze")
-    configs = [{"models": {"tests_": f"approved-{n}"}} for n in range(2)]
+    configs = [{"models": {"defect_review": f"approved-{n}"}} for n in range(2)]
     results = await asyncio.gather(
         *(store.freeze_execution(review.id, config) for config in configs)
     )
@@ -322,17 +327,18 @@ def test_response_schema_rejects_foreign_coverage_ids_without_inventing_coverage
 
     from reviewer.agents.base import unit_response_model
 
-    model = unit_response_model("change:unit-0")
+    model = unit_response_model("f0.py:unit-0")
     response = {
         "findings": [],
+        "findings_truncated": False,
         "coverage": {"units_examined": [], "units_skipped": [], "skip_reason": None},
     }
     assert not model.model_validate(response).coverage.units_examined
     response["coverage"]["units_examined"] = ["other-file.py:unit-0"]
     with pytest.raises(ValidationError):
         model.model_validate(response)
-    response["coverage"]["units_examined"] = ["change:unit-0"]
-    assert model.model_validate(response).coverage.units_examined == ["change:unit-0"]
+    response["coverage"]["units_examined"] = ["f0.py:unit-0"]
+    assert model.model_validate(response).coverage.units_examined == ["f0.py:unit-0"]
 
 
 async def test_cancelled_activity_wait_does_not_strand_sqlite_writer(store):
@@ -346,13 +352,13 @@ async def test_cancelled_activity_wait_does_not_strand_sqlite_writer(store):
     await asyncio.wait_for(
         asyncio.gather(
             store.save_unit(
-                review.id, "tests_", "a" * 64, {"examined": ["f0.py:unit-0"]}
+                review.id, "defect_review", "a" * 64, {"examined": ["f0.py:unit-0"]}
             ),
             store.append_event(review.id, "tool", {"name": "successful writer"}),
         ),
         2,
     )
-    assert len(await store.unit_results(review.id, "tests_")) == 1
+    assert len(await store.unit_results(review.id, "defect_review")) == 1
     rows = await store.events(review.id)
     assert all(row["data"].get("name") != "cancelled writer" for row in rows)
     assert rows[-1]["data"]["name"] == "successful writer"
@@ -364,9 +370,6 @@ def test_forty_minute_budget_preserves_scaled_phase_reserves(tmp_path):
     started = datetime.now(UTC)
     b.budget.deadline_at = started + timedelta(seconds=config.review.timeout_s)
     assert cutoff(b, config, "defect_review") == started + timedelta(minutes=34)
-    assert cutoff(b, config, "system_context") == started + timedelta(
-        minutes=36, seconds=30
-    )
     assert cutoff(b, config, "verification") == started + timedelta(minutes=39)
     assert cutoff(b, config, "recheck") == started + timedelta(minutes=39)
     with pytest.raises(ValueError):
@@ -386,7 +389,7 @@ def test_persisted_shorter_budget_keeps_its_phase_cutoffs(tmp_path):
     b = bundle(tmp_path, 1)
     started = datetime.now(UTC)
     b.budget.deadline_at = started + timedelta(seconds=restored.review.timeout_s)
-    assert cutoff(b, restored, "purpose") == started + timedelta(minutes=17)
+    assert cutoff(b, restored, "defect_review") == started + timedelta(minutes=17)
     assert cutoff(b, restored, "verification") == started + timedelta(
         minutes=19, seconds=30
     )

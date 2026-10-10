@@ -9,9 +9,6 @@ def cutoff(bundle, config, stage):
     finalization = min(config.finalization_reserve_s, total / 4)
     if stage in {"verification", "recheck"}:
         reserve = publication
-    elif stage == "system_context":
-        # Share the finishing reserve between System Context and verification.
-        reserve = publication + max(0, finalization - publication) / 2
     else:
         reserve = max(finalization, publication)
     return bundle.budget.deadline_at - timedelta(seconds=reserve)

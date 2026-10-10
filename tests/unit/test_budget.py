@@ -60,21 +60,23 @@ async def test_waiter_deadline_and_cancellation_do_not_leak_reservations():
     await budget.reserve(100)
 
 
-async def test_final_stages_can_use_protected_allowance():
+async def test_verification_can_use_protected_allowance():
     budget = tracker(protected=40)
     with pytest.raises(BudgetExhausted):
-        await budget.reserve(70, stage="correctness")
-    await budget.reserve(60, stage="correctness")
+        await budget.reserve(70, stage="defect_review")
+    await budget.reserve(60, stage="defect_review")
     await budget.settle(60, 60)
-    for stage in ("system_context", "verification"):
-        await budget.reserve(20, stage=stage)
+    with pytest.raises(BudgetExhausted):
+        await budget.reserve(20, stage="defect_review")
+    for _ in range(2):
+        await budget.reserve(20, stage="verification")
         await budget.settle(20, 20)
     assert budget.budget.tokens_used == 100
 
 
 async def test_uncapped_response_accounts_overrun_and_stops_further_dispatch():
     budget = tracker(protected=20)
-    reserved = await budget.reserve(1000, stage="correctness", minimum_tokens=10)
+    reserved = await budget.reserve(1000, stage="defect_review", minimum_tokens=10)
     assert reserved == 80
     await budget.settle(reserved, 120)
     assert budget.reserved == 0 and budget.budget.tokens_used == 120

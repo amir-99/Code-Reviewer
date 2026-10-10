@@ -19,13 +19,9 @@ class BudgetTracker:
         return self.budget.deadline_at - timedelta(seconds=self.deadline_reserve_s)
 
     async def reserve(self, tokens, *, stage=None, minimum_tokens=None):
-        # Final stages share the operator's protected allowance. Gates may still
-        # verify blockers immediately using the verification tier.
-        protected = (
-            self.final_stage_token_reserve
-            if stage not in {"system_context", "verification"}
-            else 0
-        )
+        # Verification draws on the operator's protected allowance; every
+        # other call leaves it untouched.
+        protected = self.final_stage_token_reserve if stage != "verification" else 0
         ceiling = self.budget.token_ceiling - protected
         async with self.condition:
             while True:

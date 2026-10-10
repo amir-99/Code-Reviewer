@@ -38,8 +38,8 @@ def client(handler, semaphore, seconds=60):
 
 async def complete(llm):
     return await llm.complete(
-        stage="purpose",
-        tier="purpose",
+        stage="defect_review",
+        tier="defect_review",
         system="review",
         user="code",
         response_model=StageEnvelope,

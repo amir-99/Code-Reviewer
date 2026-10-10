@@ -1,5 +1,4 @@
 import asyncio
-import time
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -14,11 +13,16 @@ from reviewer.context.models import (
 )
 from reviewer.context.partition import partition
 from reviewer.findings.models import Coverage, StageEnvelope
-from reviewer.orchestrator.stages import execute, fan_out
+from reviewer.orchestrator.stages import execute
 from reviewer.services.forge.gitlab import MergeRequestContext
 
+# A line long enough that no two files share a 256-byte unit.
+LONG = "x = " + "1" * 150
+# One file per unit, so unit-level concurrency and retries are observable.
+SEPARATE = {"review": {"unit_tokens": 256}}
 
-def bundle(tmp_path, count=40):
+
+def bundle(tmp_path, count=40, text="x=1"):
     return ContextBundle(
         review_id=uuid4(),
         mr=MergeRequestContext(project_id=1, iid=1, head_sha="a" * 40),
@@ -34,7 +38,7 @@ def bundle(tmp_path, count=40):
                     path=f"f{n}.py",
                     change_type="added",
                     lines=[
-                        DiffLine(text="x=1", new_line=1, old_line=None, kind="added")
+                        DiffLine(text=text, new_line=1, old_line=None, kind="added")
                     ],
                 )
                 for n in range(count)
@@ -62,15 +66,16 @@ class Echo:
         )
 
 
-async def test_forty_files_covered_and_fanout_parallel(tmp_path):
+async def test_small_files_pack_and_every_unit_is_covered(tmp_path):
     b = bundle(tmp_path)
-    config = ProjectConfig(analysis_mode="deep")
-    assert len(partition(b)) == 40
-    start = time.monotonic()
-    results = await fan_out(b, Echo(), config)
-    elapsed = time.monotonic() - start
-    assert all(len(r.examined) == 40 and not r.partial for r in results)
-    assert elapsed < 1.2  # sequential baseline is at least 4*40*.01=1.6s
+    assert len(partition(b)) == 1
+    result = await execute("defect_review", b, Echo(), ProjectConfig())
+    assert result.examined == [u.id for u in partition(b)] and not result.partial
+    separate = bundle(tmp_path, 40, LONG)
+    config = ProjectConfig(**SEPARATE)
+    assert len(partition(separate, 256)) == 40
+    result = await execute("defect_review", separate, Echo(), config)
+    assert len(result.examined) == 40 and not result.partial
 
 
 async def test_missing_coverage_reruns_exactly_once(tmp_path):
@@ -83,7 +88,9 @@ async def test_missing_coverage_reruns_exactly_once(tmp_path):
                 ),
             )
 
-    result = await execute("purpose", bundle(tmp_path, 1), Missing(), ProjectConfig())
+    result = await execute(
+        "defect_review", bundle(tmp_path, 1), Missing(), ProjectConfig()
+    )
     assert result.attempts == 2 and result.partial and len(result.skipped) == 1
 
 
@@ -94,14 +101,16 @@ async def test_budget_exhaustion_is_partial(tmp_path):
         async def complete(self, **kwargs):
             raise BudgetExhausted()
 
-    result = await execute("purpose", bundle(tmp_path, 1), Exhausted(), ProjectConfig())
+    result = await execute(
+        "defect_review", bundle(tmp_path, 1), Exhausted(), ProjectConfig()
+    )
     assert result.partial and result.skipped
 
 
 async def test_units_overlap_with_limit_and_return_in_dispatch_order(
     tmp_path, monkeypatch
 ):
-    from reviewer.agents.base import TemplateAgent
+    from reviewer.agents.base import DefectReviewAgent
 
     started = []
     active = 0
@@ -127,24 +136,24 @@ async def test_units_overlap_with_limit_and_return_in_dispatch_order(
         finally:
             active -= 1
 
-    monkeypatch.setattr(TemplateAgent, "run", run)
-    b = bundle(tmp_path, 5)
+    monkeypatch.setattr(DefectReviewAgent, "run", run)
+    b = bundle(tmp_path, 5, LONG)
     task = asyncio.create_task(
-        execute("tests_", b, None, ProjectConfig(unit_concurrency=2))
+        execute("defect_review", b, None, ProjectConfig(unit_concurrency=2, **SEPARATE))
     )
     await asyncio.wait_for(two_started.wait(), 1)
     assert len(started) == 2
     release.set()
     result = await asyncio.wait_for(task, 1)
     assert peak == 2
-    assert result.examined == [u.id for u in partition(b, "file_group")]
+    assert result.examined == [u.id for u in partition(b, 256)]
     assert not result.partial
 
 
 async def test_cancelling_stage_drains_active_units(tmp_path, monkeypatch):
     import pytest
 
-    from reviewer.agents.base import TemplateAgent
+    from reviewer.agents.base import DefectReviewAgent
 
     active = 0
     started = asyncio.Event()
@@ -159,9 +168,14 @@ async def test_cancelling_stage_drains_active_units(tmp_path, monkeypatch):
         finally:
             active -= 1
 
-    monkeypatch.setattr(TemplateAgent, "run", run)
+    monkeypatch.setattr(DefectReviewAgent, "run", run)
     task = asyncio.create_task(
-        execute("tests_", bundle(tmp_path, 5), None, ProjectConfig())
+        execute(
+            "defect_review",
+            bundle(tmp_path, 5, LONG),
+            None,
+            ProjectConfig(**SEPARATE),
+        )
     )
     await asyncio.wait_for(started.wait(), 1)
     task.cancel()
@@ -170,8 +184,8 @@ async def test_cancelling_stage_drains_active_units(tmp_path, monkeypatch):
     assert active == 0
 
 
-async def test_repeated_context_is_present_once_without_losing_distinct_files(tmp_path):
-    from reviewer.agents.base import TemplateAgent
+async def test_requested_context_is_supplied_once_in_the_single_round(tmp_path):
+    from reviewer.agents.base import DefectReviewAgent
     from reviewer.findings.models import ContextRequest
 
     prompts = []
@@ -182,28 +196,20 @@ async def test_repeated_context_is_present_once_without_losing_distinct_files(tm
             return StageEnvelope(
                 findings=[],
                 coverage=Coverage(
-                    units_examined=["change:unit-0"], units_skipped=[], skip_reason=None
+                    units_examined=["f0.py:unit-0"], units_skipped=[], skip_reason=None
                 ),
                 context_requests=[
                     ContextRequest(kind="file", target="f0.py", reason="check")
                 ],
             )
 
-    responses = iter(
-        [
-            {"f0.py": "unique_context_a"},
-            {"f0.py": "unique_context_a", "f1.py": "unique_context_b"},
-        ]
-    )
-
     async def provider(requests):
-        return next(responses)
+        return {"f0.py": "unique_context_a", "f1.py": "unique_context_b"}
 
     b = bundle(tmp_path, 1)
-    await TemplateAgent("purpose").run(
-        b, partition(b, "whole_change")[0], Requests(), provider
-    )
-    assert len(prompts) == 3
+    await DefectReviewAgent().run(b, partition(b)[0], Requests(), provider)
+    # One context round: the second answer is final even if it asks again.
+    assert len(prompts) == 2
     assert prompts[-1].count("unique_context_a") == 1
     assert prompts[-1].count("unique_context_b") == 1
 
@@ -211,7 +217,7 @@ async def test_repeated_context_is_present_once_without_losing_distinct_files(tm
 async def test_concurrent_retry_and_failure_preserve_other_units(tmp_path, monkeypatch):
     from collections import Counter
 
-    from reviewer.agents.base import TemplateAgent
+    from reviewer.agents.base import DefectReviewAgent
 
     attempts = Counter()
 
@@ -230,8 +236,10 @@ async def test_concurrent_retry_and_failure_preserve_other_units(tmp_path, monke
             ),
         )
 
-    monkeypatch.setattr(TemplateAgent, "run", run)
-    result = await execute("tests_", bundle(tmp_path, 3), None, ProjectConfig())
+    monkeypatch.setattr(DefectReviewAgent, "run", run)
+    result = await execute(
+        "defect_review", bundle(tmp_path, 3, LONG), None, ProjectConfig(**SEPARATE)
+    )
     assert result.examined == ["f0.py:unit-0", "f2.py:unit-0"]
     assert result.skipped == ["f1.py:unit-0"]
     assert result.failed and result.partial
@@ -246,9 +254,9 @@ async def test_unit_progress_tracks_logical_units_and_reuse(tmp_path, monkeypatc
             events.append(data)
 
     monkeypatch.setattr("reviewer.orchestrator.stages.record", record)
-    b = bundle(tmp_path, 4)
-    config = ProjectConfig(analysis_mode="deep", unit_concurrency=2)
-    result = await execute("line_review", b, Echo(), config)
+    b = bundle(tmp_path, 4, LONG)
+    config = ProjectConfig(unit_concurrency=2, **SEPARATE)
+    result = await execute("defect_review", b, Echo(), config)
     assert events[0]["total"] == events[0]["idle"] == 4
     assert events[-1]["completed"] == 4
     assert events[-1]["running"] == events[-1]["idle"] == 0
@@ -258,7 +266,7 @@ async def test_unit_progress_tracks_logical_units_and_reuse(tmp_path, monkeypatc
         for e in events
     )
     events.clear()
-    await execute("line_review", b, Echo(), config, previous=result)
+    await execute("defect_review", b, Echo(), config, previous=result)
     assert len(events) == 1
     assert events[0]["completed"] == 4 and events[0]["running"] == 0
 
@@ -280,7 +288,9 @@ async def test_progress_coverage_retry_does_not_inflate_total(tmp_path, monkeypa
             )
 
     monkeypatch.setattr("reviewer.orchestrator.stages.record", record)
-    result = await execute("purpose", bundle(tmp_path, 1), Missing(), ProjectConfig())
+    result = await execute(
+        "defect_review", bundle(tmp_path, 1), Missing(), ProjectConfig()
+    )
     assert result.attempts == 2
     assert events[-1]["total"] == 1
     assert events[-1]["completed"] == events[-1]["running"] == 0

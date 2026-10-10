@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from test_stages import bundle
 
-from reviewer.agents.base import TemplateAgent, unit_response_model
+from reviewer.agents.base import DefectReviewAgent, unit_response_model
 from reviewer.config.schema import ProjectConfig
 from reviewer.context.builder import attach_scopes
 from reviewer.context.models import ChangedFile, DiffLine, Hunk
@@ -33,7 +33,7 @@ def test_scope_lines_widen_a_hunk_and_gaps_are_marked(tmp_path):
     ]
     file.scope = {n: f"scope {n}" for n in (8, 9, 11, 12)}
     b.code.files = [file]
-    (unit,) = partition(b, "hunks", 24000)
+    (unit,) = partition(b, 24000)
     lines = unit.content.splitlines()
     assert lines[0] == "=== svc.py ==="
     assert lines[1:6] == [
@@ -54,23 +54,21 @@ def test_small_files_pack_into_one_unit_with_tests_beside_their_source(tmp_path)
         changed("pkg/z.py", [1]),
         changed("tests/test_a.py", [1]),
     ]
-    units = partition(b, "hunks", 24000)
+    units = partition(b, 24000)
     assert [u.paths for u in units] == [["pkg/a.py", "tests/test_a.py", "pkg/z.py"]]
     assert units[0].id == "pkg/a.py:unit-0"
     assert set(units[0].file_context) == {"pkg/a.py", "tests/test_a.py", "pkg/z.py"}
-    # Packing is a Defect Review behaviour; other kinds keep one file per unit.
-    assert len(partition(b, "file_group", 24000)) == 3
 
 
 def test_packing_respects_the_limit_and_the_cap_grows_with_the_unit(tmp_path):
     b = bundle(tmp_path, 0)
     b.code.files = [changed(f"m{n}.py", range(1, 300)) for n in range(4)]
-    units = partition(b, "hunks", 2000)
+    units = partition(b, 2000)
     assert len(units) > 1
     assert all(len(u.content.encode()) <= 2000 for u in units)
-    big = partition(b, "hunks", 60000)
+    big = partition(b, 60000)
     assert len(big) == 1 and big[0].max_findings > units[0].max_findings == 3
-    schema = unit_response_model(big[0].id, True, big[0].max_findings)
+    schema = unit_response_model(big[0].id, big[0].max_findings)
     assert (
         schema.model_json_schema()["properties"]["findings"]["maxItems"]
         == big[0].max_findings
@@ -80,9 +78,10 @@ def test_packing_respects_the_limit_and_the_cap_grows_with_the_unit(tmp_path):
 def test_prompt_puts_shared_context_first_and_code_last_verbatim(tmp_path):
     b = bundle(tmp_path, 0)
     b.code.files = [changed("a.py", [1]), changed("b.py", [1])]
-    b.code.files[0].lines[0].text = 'if a < b && c: print("x")'
-    first, second = partition(b, "file_group", 24000)
-    agent = TemplateAgent("defect_review", unit_kind="hunks")
+    b.code.files[0].lines[0].text = 'if a < b && c: print("x")  # ' + "p" * 150
+    b.code.files[1].lines[0].text = "y = " + "2" * 150
+    first, second = partition(b, 256)
+    agent = DefectReviewAgent()
     _, one = agent.build_prompt(b, first)
     _, two = agent.build_prompt(b, second)
     order = [
@@ -112,7 +111,7 @@ async def test_explicit_skip_is_not_retried(tmp_path):
             )
 
     result = await execute(
-        "tests_", bundle(tmp_path, 1), Skipping(), ProjectConfig(analysis_mode="deep")
+        "defect_review", bundle(tmp_path, 1), Skipping(), ProjectConfig()
     )
     assert len(calls) == 1
     assert result.skipped == ["f0.py:unit-0"] and result.partial

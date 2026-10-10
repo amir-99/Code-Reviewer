@@ -40,7 +40,7 @@ async def test_malformed_output_reparse_audited_and_stage_fails(store, tmp_path)
     )
     with pytest.raises(StageFailed):
         await llm.complete(
-            stage="purpose",
+            stage="recheck",
             tier="strong",
             system="review",
             user="code",
@@ -81,7 +81,7 @@ async def test_transport_retries_exactly_twice_and_audits(store, tmp_path):
     )
     with pytest.raises(StageFailed):
         await llm.complete(
-            stage="purpose",
+            stage="recheck",
             tier="strong",
             system="review",
             user="code",
@@ -140,7 +140,7 @@ async def test_attempt_diagnostics_are_persisted_without_response_content(
     try:
         with pytest.raises(StageFailed):
             await llm.complete(
-                stage="design",
+                stage="defect_review",
                 tier="strong",
                 system="review",
                 user="private-code",
@@ -216,7 +216,7 @@ async def test_concurrent_gateway_calls_wait_for_budget_and_keep_audits(
 
     async def complete():
         return await llm.complete(
-            stage="correctness",
+            stage="defect_review",
             tier="strong",
             system="review",
             user="code",
@@ -271,8 +271,8 @@ async def test_each_role_runs_on_its_own_model_within_its_own_limits(store, tmp_
     settings = Settings(
         gateway_base_url="https://gateway.internal/v1",
         model_roles={
-            "correctness": "vendor/strong",
-            "line_review": "vendor/cheap",
+            "defect_review": "vendor/strong",
+            "recheck": "vendor/cheap",
             "verification": "vendor/judge",
         },
         model_limits={
@@ -297,7 +297,7 @@ async def test_each_role_runs_on_its_own_model_within_its_own_limits(store, tmp_
     )
     token = sink.set((store, review.id))
     try:
-        for role in ("correctness", "line_review", "verification"):
+        for role in ("defect_review", "recheck", "verification"):
             await llm.complete(
                 stage=role,
                 tier=role,
@@ -325,8 +325,8 @@ async def test_each_role_runs_on_its_own_model_within_its_own_limits(store, tmp_
         e["data"] for e in await store.events(review.id) if e["kind"] == "llm_attempt"
     ]
     assert [(a["role"], a["model"]) for a in attempts] == [
-        ("correctness", "vendor/strong"),
-        ("line_review", "vendor/cheap"),
+        ("defect_review", "vendor/strong"),
+        ("recheck", "vendor/cheap"),
         ("verification", "vendor/judge"),
     ]
 
@@ -358,8 +358,10 @@ async def test_a_role_sends_its_configured_effort_and_its_own_context_window(
     config = ProjectConfig(
         models=ModelProfile(
             roles={
-                "design": ModelSpec(model="vendor/thinker", reasoning_effort="high"),
-                "complexity": ModelSpec(model="vendor/tiny", context_tokens=1200),
+                "defect_review": ModelSpec(
+                    model="vendor/thinker", reasoning_effort="high"
+                ),
+                "chat": ModelSpec(model="vendor/tiny", context_tokens=1200),
             }
         )
     )
@@ -378,8 +380,8 @@ async def test_a_role_sends_its_configured_effort_and_its_own_context_window(
         models=resolve(settings, config),
     )
     await llm.complete(
-        stage="design",
-        tier="design",
+        stage="defect_review",
+        tier="defect_review",
         system="review",
         user="code",
         response_model=StageEnvelope,
@@ -392,8 +394,8 @@ async def test_a_role_sends_its_configured_effort_and_its_own_context_window(
     # refused here rather than by the gateway, one stage at a time.
     with pytest.raises(StageFailed):
         await llm.complete(
-            stage="complexity",
-            tier="complexity",
+            stage="chat",
+            tier="chat",
             system="review",
             user="x" * 4000,
             response_model=StageEnvelope,
@@ -402,11 +404,11 @@ async def test_a_role_sends_its_configured_effort_and_its_own_context_window(
             timeout_s=2,
         )
     # A role nothing selected a model for is still refused explicitly.
-    llm.specs.pop("purpose")
+    llm.specs.pop("recheck")
     with pytest.raises(StageFailed):
         await llm.complete(
-            stage="purpose",
-            tier="purpose",
+            stage="recheck",
+            tier="recheck",
             system="review",
             user="code",
             response_model=StageEnvelope,
@@ -441,7 +443,7 @@ async def test_spend_is_reported_per_role_and_counts_unpriced_models_honestly(
 
     settings = Settings(
         gateway_base_url="https://gateway.internal/v1",
-        model_roles={"correctness": "vendor/priced", "complexity": "vendor/unpriced"},
+        model_roles={"defect_review": "vendor/priced", "recheck": "vendor/unpriced"},
         # Only one of the two models has a configured price.
         model_prices={"vendor/priced": {"input": 2.0, "output": 10.0}},
     )
@@ -462,7 +464,7 @@ async def test_spend_is_reported_per_role_and_counts_unpriced_models_honestly(
     )
     token = sink.set((store, review.id))
     try:
-        for role in ("correctness", "correctness", "complexity"):
+        for role in ("defect_review", "defect_review", "recheck"):
             await llm.complete(
                 stage=role,
                 tier=role,
@@ -486,12 +488,12 @@ async def test_spend_is_reported_per_role_and_counts_unpriced_models_honestly(
     assert spend["cost"] == pytest.approx(0.004 + 0.004)
     assert spend["unpriced_calls"] == 1, "an unpriced call is not a free call"
     by_role = {row["role"]: row for row in spend["roles"]}
-    assert by_role["correctness"]["calls"] == 2
-    assert by_role["correctness"]["model"] == "vendor/priced"
-    assert by_role["complexity"]["cost"] == 0
-    assert by_role["complexity"]["unpriced_calls"] == 1
+    assert by_role["defect_review"]["calls"] == 2
+    assert by_role["defect_review"]["model"] == "vendor/priced"
+    assert by_role["recheck"]["cost"] == 0
+    assert by_role["recheck"]["unpriced_calls"] == 1
     # Costliest role first: that is the row worth changing a model for.
-    assert spend["roles"][0]["role"] == "correctness"
+    assert spend["roles"][0]["role"] == "defect_review"
     # Every attempt reports its own tokens and cost live, so the dashboard can
     # total a run that has not finished yet.
     attempts = [
@@ -523,7 +525,7 @@ async def test_a_failed_call_still_reports_the_tokens_it_spent(store, tmp_path):
 
     settings = Settings(
         gateway_base_url="https://gateway.internal/v1",
-        model_roles={"design": "vendor/priced"},
+        model_roles={"defect_review": "vendor/priced"},
         model_prices={"vendor/priced": {"input": 2.0, "output": 10.0}},
     )
     review = await store.accept(7, 2, "d" * 40, "wasted")
@@ -545,8 +547,8 @@ async def test_a_failed_call_still_reports_the_tokens_it_spent(store, tmp_path):
     try:
         with pytest.raises(StageFailed):
             await llm.complete(
-                stage="design",
-                tier="design",
+                stage="defect_review",
+                tier="defect_review",
                 system="review",
                 user="code",
                 response_model=StageEnvelope,

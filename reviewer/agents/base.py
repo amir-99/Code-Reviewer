@@ -1,5 +1,4 @@
 import json
-from abc import ABC, abstractmethod
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
@@ -7,7 +6,7 @@ from typing import Literal
 from pydantic import Field, create_model
 
 from reviewer.context.framing import INJECTION_RULE, frame
-from reviewer.findings.models import Coverage, StageEnvelope
+from reviewer.findings.models import Coverage
 from reviewer.services.llm import tokens
 from reviewer.telemetry.activity import activity, record
 
@@ -24,10 +23,11 @@ for path in sorted(
     )
 
 
-SHARED = "_shared"
+STAGE = "defect_review"
+CONTRACT = "_compact"
 
 
-def unit_response_model(unit_id, compact=False, max_findings=3):
+def unit_response_model(unit_id, max_findings=3):
     from reviewer.agents.defects import DefectClaim, DefectEnvelope
 
     # Constrain IDs in the gateway schema as well as checking coverage in code.
@@ -38,10 +38,6 @@ def unit_response_model(unit_id, compact=False, max_findings=3):
         units_examined=(list[Literal[unit_id]], ...),
         units_skipped=(list[Literal[unit_id]], ...),
     )
-    if not compact:
-        return create_model(
-            "UnitStageEnvelope", __base__=StageEnvelope, coverage=(coverage, ...)
-        )
     # The per-unit cap grows with the unit, so packing more code into one call
     # does not crowd out findings a smaller unit would have had room for.
     return create_model(
@@ -52,22 +48,91 @@ def unit_response_model(unit_id, compact=False, max_findings=3):
     )
 
 
-class StageAgent(ABC):
-    name: str
-    # The model-selection role this agent's calls resolve through. A stage runs
-    # on its own role by default, so operators can price each stage separately.
-    tier: str = ""
-    unit_kind: str = "file_group"
+class DefectReviewAgent:
+    """The combined Defect Review over one unit, with one context round."""
+
+    name = STAGE
+    # The model-selection role this agent's calls resolve through.
+    tier = STAGE
     context_tokens: int | None = None
+    rounds = 2
+
+    def __init__(self):
+        self.prompts = {}
 
     @property
     def prompt_version(self):
         # The shared contract is versioned independently, so record both.
-        shared = "_compact" if self.name == "defect_review" else SHARED
-        return f"{PROMPTS[self.name][0]}+shared.{PROMPTS[shared][0]}"
+        return f"{PROMPTS[STAGE][0]}+shared.{PROMPTS[CONTRACT][0]}"
 
-    @abstractmethod
-    def build_prompt(self, bundle, unit): ...
+    def build_prompt(self, bundle, unit):
+        # Unit identity and the call itself both need the prompt; build it once.
+        key = (id(bundle), unit.id, unit.content)
+        if key not in self.prompts:
+            self.prompts[key] = self.compose(bundle, unit)
+        return self.prompts[key]
+
+    def compose(self, bundle, unit):
+        version, template, digest = PROMPTS[STAGE]
+        requirements = {
+            "issue": bundle.issue.model_dump() if bundle.issue else None,
+            "epic": bundle.epic.model_dump() if bundle.epic else None,
+            "documents": [d.model_dump() for d in bundle.documents],
+            "mr_title": bundle.mr.title,
+            "mr_description": bundle.mr.description,
+        }
+        system = template + "\n" + PROMPTS[CONTRACT][1] + "\n" + INJECTION_RULE
+        static = [s.model_dump() for s in bundle.static]
+        meta = {"unit": unit.model_dump(exclude={"omitted", "content"})}
+
+        def render(requirements):
+            # What every unit of the review shares comes first, so a gateway's
+            # prefix cache can reuse it; the unit's own code comes last, as
+            # numbered lines rather than a JSON string of escaped newlines.
+            return "\n".join(
+                [
+                    frame(
+                        json.dumps(
+                            {"requirements": requirements, "static": static},
+                            ensure_ascii=False,
+                        ),
+                        "review-context",
+                    ),
+                    frame(json.dumps(meta, ensure_ascii=False), "review-unit"),
+                    frame(unit.content, "review-diff"),
+                ]
+            )
+
+        # Use the receiving model's window instead of a universal 12 KB cutoff.
+        # Leave a quarter of that window for output; this sizes input only and
+        # does not impose a generation cap. Fakes without model metadata retain
+        # the historical conservative requirements allocation.
+        encoded = json.dumps(requirements, ensure_ascii=False)
+        user = render(requirements)
+        input_limit = self.context_tokens * 3 // 4 if self.context_tokens else None
+
+        def fits(user, size):
+            if input_limit is None:
+                return size <= 12000
+            return tokens.messages(system, user) <= input_limit
+
+        raw = encoded.encode()
+        if not fits(user, len(raw)):
+            low, high = 0, len(raw)
+            while low < high:
+                middle = (low + high + 1) // 2
+                candidate = render(
+                    {"truncated_requirements": raw[:middle].decode(errors="ignore")}
+                )
+                if fits(candidate, middle):
+                    low = middle
+                else:
+                    high = middle - 1
+            user = render({"truncated_requirements": raw[:low].decode(errors="ignore")})
+            if "prompt_requirements_truncated" not in bundle.degradations:
+                bundle.degradations.append("prompt_requirements_truncated")
+        return system, user
+
     @activity("unit", lambda self, *args, **kwargs: self.name)
     async def run(self, bundle, unit, llm, context_provider=None, coverage_retry=False):
         system, user = self.build_prompt(bundle, unit)
@@ -84,15 +149,12 @@ class StageAgent(ABC):
             )
         initial_user = user
         context = {}
-        compact = self.name == "defect_review"
-        response_model = unit_response_model(
-            unit.id, compact, getattr(unit, "max_findings", 3)
-        )
-        rounds = 2 if compact else 3
+        response_model = unit_response_model(unit.id, getattr(unit, "max_findings", 3))
+        rounds = self.rounds
         for round_no in range(rounds):
             result = await llm.complete(
                 stage=self.name,
-                tier=self.tier or self.name,
+                tier=self.tier,
                 system=system,
                 user=user,
                 response_model=response_model,
@@ -100,7 +162,7 @@ class StageAgent(ABC):
                 timeout_s=180,
                 prompt_version=self.prompt_version,
             )
-            if compact and hasattr(result, "expand"):
+            if hasattr(result, "expand"):
                 result = result.expand()
             if unit.id not in result.coverage.units_examined:
                 await record(
@@ -151,85 +213,3 @@ class StageAgent(ABC):
                     + frame(json.dumps(context), "requested-code-context")
                 )
         return result
-
-
-class TemplateAgent(StageAgent):
-    def __init__(self, name, tier=None, unit_kind="file_group"):
-        self.name, self.tier, self.unit_kind = name, tier or name, unit_kind
-        self.prompts = {}
-
-    def build_prompt(self, bundle, unit):
-        # Unit identity and the call itself both need the prompt; build it once.
-        key = (id(bundle), unit.id, unit.content)
-        if key not in self.prompts:
-            self.prompts[key] = self.compose(bundle, unit)
-        return self.prompts[key]
-
-    def compose(self, bundle, unit):
-        version, template, digest = PROMPTS[self.name]
-        requirements = {
-            "issue": bundle.issue.model_dump() if bundle.issue else None,
-            "epic": bundle.epic.model_dump() if bundle.epic else None,
-            "documents": [d.model_dump() for d in bundle.documents],
-            "mr_title": bundle.mr.title,
-            "mr_description": bundle.mr.description,
-        }
-        system = (
-            template
-            + "\n"
-            + PROMPTS["_compact" if self.name == "defect_review" else SHARED][1]
-            + "\n"
-            + INJECTION_RULE
-        )
-        static = [s.model_dump() for s in bundle.static]
-        meta = {"unit": unit.model_dump(exclude={"omitted", "content"})}
-        if self.name == "system_context":
-            meta["aggregated_findings"] = bundle.aggregated_findings
-
-        def render(requirements):
-            # What every unit of the review shares comes first, so a gateway's
-            # prefix cache can reuse it; the unit's own code comes last, as
-            # numbered lines rather than a JSON string of escaped newlines.
-            return "\n".join(
-                [
-                    frame(
-                        json.dumps(
-                            {"requirements": requirements, "static": static},
-                            ensure_ascii=False,
-                        ),
-                        "review-context",
-                    ),
-                    frame(json.dumps(meta, ensure_ascii=False), "review-unit"),
-                    frame(unit.content, "review-diff"),
-                ]
-            )
-
-        # Use the receiving model's window instead of a universal 12 KB cutoff.
-        # Leave a quarter of that window for output; this sizes input only and
-        # does not impose a generation cap. Fakes without model metadata retain
-        # the historical conservative requirements allocation.
-        encoded = json.dumps(requirements, ensure_ascii=False)
-        user = render(requirements)
-        input_limit = self.context_tokens * 3 // 4 if self.context_tokens else None
-
-        def fits(user, size):
-            if input_limit is None:
-                return size <= 12000
-            return tokens.messages(system, user) <= input_limit
-
-        raw = encoded.encode()
-        if not fits(user, len(raw)):
-            low, high = 0, len(raw)
-            while low < high:
-                middle = (low + high + 1) // 2
-                candidate = render(
-                    {"truncated_requirements": raw[:middle].decode(errors="ignore")}
-                )
-                if fits(candidate, middle):
-                    low = middle
-                else:
-                    high = middle - 1
-            user = render({"truncated_requirements": raw[:low].decode(errors="ignore")})
-            if "prompt_requirements_truncated" not in bundle.degradations:
-                bundle.degradations.append("prompt_requirements_truncated")
-        return system, user

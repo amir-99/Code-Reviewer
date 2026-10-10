@@ -22,19 +22,26 @@ class Strict(BaseModel):
 # and an operator must be able to price and tune them independently.
 ROLES = (
     "defect_review",
-    "purpose",
-    "design",
-    "correctness",
-    "complexity",
-    "tests_",
-    "line_review",
-    "system_context",
     "verification",
     "recheck",
     "chat",
     # Document reviews: the section reviewer and its independent verifier.
     "document_review",
     "document_verification",
+)
+
+# Roles of the removed seven-stage deep mode. Operator files, MODEL_ROLES and
+# frozen runs may still name them; they are accepted and ignored.
+RETIRED_ROLES = frozenset(
+    {
+        "purpose",
+        "design",
+        "correctness",
+        "complexity",
+        "tests_",
+        "line_review",
+        "system_context",
+    }
 )
 
 # Roles the code asked for before selection was per-role. Retained so a gateway
@@ -49,13 +56,6 @@ LEGACY_TIERS = {
 # Operator-supplied IDs: change them in projects.json or MODEL_ROLES, not here.
 DEFAULT_ROLE_MODELS = {
     "defect_review": "google/gemini-3.8-flash",
-    "purpose": "google/gemini-3.8-flash",
-    "design": "google/gemini-3.8-flash",
-    "correctness": "google/gemini-3.8-flash",
-    "complexity": "google/gemini-3.8-flash",
-    "tests_": "google/gemini-3.8-flash",
-    "line_review": "openai/gpt-5.6-terra",
-    "system_context": "google/gemini-3.8-flash",
     "verification": "anthropic/claude-sonnet-5",
     "recheck": "google/gemini-3.8-flash",
     "chat": "google/gemini-3.8-flash",
@@ -85,6 +85,14 @@ class ModelProfile(Strict):
 
     default: ModelSpec | None = None
     roles: dict[str, ModelSpec] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_retired_roles(cls, data):
+        if isinstance(data, dict) and isinstance(data.get("roles"), dict):
+            roles = {k: v for k, v in data["roles"].items() if k not in RETIRED_ROLES}
+            data = {**data, "roles": roles}
+        return data
 
     @model_validator(mode="after")
     def known_roles(self):
@@ -196,8 +204,16 @@ class StaticTool(Strict):
 
 
 class ProjectConfig(Strict):
+    @model_validator(mode="before")
+    @classmethod
+    def drop_analysis_mode(cls, data):
+        # The deep/standard selector is gone: every review runs the combined
+        # Defect Review. Old operator files and frozen runs still name it.
+        if isinstance(data, dict) and "analysis_mode" in data:
+            data = {k: v for k, v in data.items() if k != "analysis_mode"}
+        return data
+
     # Operator-only controls; repository YAML cannot set these.
-    analysis_mode: Literal["standard", "deep"] = "standard"
     unit_concurrency: int = Field(default=2, ge=1, le=16)
     verification_concurrency: int = Field(default=2, ge=1, le=16)
     finalization_reserve_s: float = Field(default=360, ge=0, le=1200)

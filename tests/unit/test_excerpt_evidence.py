@@ -22,9 +22,8 @@ def payload(user):
     return json.loads(unescape(user.split("\n", 1)[1].rsplit("\n", 1)[0]))
 
 
-@pytest.mark.parametrize("kind", ["hunks", "file_group", "file"])
 def test_split_function_is_explicitly_an_excerpt_and_continuation_is_retained(
-    tmp_path, kind
+    tmp_path,
 ):
     b = bundle(tmp_path, 1)
     file = b.code.files[0]
@@ -39,7 +38,7 @@ def test_split_function_is_explicitly_an_excerpt_and_continuation_is_retained(
         DiffLine(text=line, new_line=n, old_line=None, kind="added")
         for n, line in enumerate(source, 1)
     ]
-    units = partition(b, kind, 3000)
+    units = partition(b, 3000)
     first = units[0].file_context[file.path]
     assert first["total_lines"] == 142
     assert first["has_more_after"] and not first["complete_file"]
@@ -74,7 +73,7 @@ def test_fitting_function_stays_together_despite_preceding_code(tmp_path):
         DiffLine(text=line, new_line=n, old_line=None, kind="added")
         for n, line in enumerate(source, 1)
     ]
-    units = partition(b, "hunks", 256)
+    units = partition(b, 256)
     containing = next(u for u in units if "def f():" in u.content)
     assert "return a + b" in containing.content
     assert all(len(u.content.encode()) <= 256 for u in units)
@@ -304,12 +303,12 @@ async def test_builder_retrieves_symbol_and_range_beyond_old_prefix(tmp_path):
 async def test_requested_context_is_sized_for_receiving_model_with_truthful_metadata(
     tmp_path,
 ):
-    from reviewer.agents.base import TemplateAgent
+    from reviewer.agents.base import DefectReviewAgent
     from reviewer.context.partition import WorkUnit
     from reviewer.findings.models import ContextRequest, Coverage, StageEnvelope
 
     b = bundle(tmp_path, 1)
-    agent = TemplateAgent("correctness")
+    agent = DefectReviewAgent()
     agent.context_tokens = 18000
     calls = []
 

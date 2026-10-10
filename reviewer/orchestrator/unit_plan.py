@@ -8,12 +8,12 @@ from dataclasses import asdict, is_dataclass
 from reviewer.context.partition import partition
 
 
-def plan(bundle, config, kind, stage, only_paths):
-    units = partition(bundle, kind, config.review.unit_tokens)
-    if only_paths is not None:
-        units = [u for u in units if set(u.paths) & set(only_paths)]
-    if kind == "whole_change":
-        return units, {u.id for u in units}
+def plan(bundle, config, only_paths):
+    units = partition(
+        bundle,
+        config.review.unit_tokens,
+        None if only_paths is None else set(only_paths),
+    )
     # Visit one chunk per file before visiting a second chunk. Large files cannot
     # monopolize the remaining budget. Prioritize source over non-code changes.
     groups = defaultdict(list)
@@ -43,9 +43,6 @@ def identity(agent, bundle, unit, llm, config):
     system, user = agent.build_prompt(bundle, unit)
     spec = getattr(llm, "specs", {}).get(agent.name)
     config_data = config.model_dump(mode="json")
-    if config.analysis_mode == "deep":
-        # Preserve checkpoint identities from before analysis_mode was explicit.
-        config_data.pop("analysis_mode", None)
     data = dict(
         schema=2,
         stage=agent.name,

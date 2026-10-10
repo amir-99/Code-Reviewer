@@ -114,9 +114,6 @@ class ChatSources:
                 "merge_base_sha": review.merge_base_sha,
                 "models": (bundle.get("budget") or {}).get("model_tier"),
                 "degradations": bundle.get("degradations") or [],
-                "analysis_mode": (self.snapshot.get("config") or {}).get(
-                    "analysis_mode"
-                ),
             },
             "merge_request": {
                 "iid": mr.get("iid"),
