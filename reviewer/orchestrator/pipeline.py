@@ -22,7 +22,7 @@ from reviewer.orchestrator.stages import execute
 from reviewer.orchestrator.states import ORDER, TERMINAL
 from reviewer.orchestrator.verification import verify_findings
 from reviewer.publish.publisher import Publisher
-from reviewer.publish.rereview import full_review, reanchor
+from reviewer.publish.rereview import adopt_identities, full_review, reanchor
 from reviewer.services.forge.gitlab import StaleReview
 from reviewer.services.llm.client import GatewayClient
 from reviewer.store.audit import Audit, blob_store
@@ -223,6 +223,7 @@ class Pipeline:
                 previous_findings = []
                 previous_head = None
                 system_paths = None
+                delta = None
                 if previous:
                     # Loaded whether or not the re-review is incremental: the
                     # comments already on the merge request are rechecked either
@@ -469,8 +470,22 @@ class Pipeline:
                 if level >= 5:
                     await self.advance(review, "EVIDENCE_VALIDATION")
                     await self.advance(review, "FINDING_VERIFICATION")
+                    fresh = await process(raw)
+                    if previous_findings:
+                        if delta is None and previous_head:
+                            try:
+                                delta = await self.git.diff(
+                                    wt, previous_head, review.head_sha
+                                )
+                            except Exception:
+                                # A rewritten history leaves no path to follow;
+                                # snippets that survived still reanchor by hash.
+                                delta = None
+                        adopt_identities(fresh, previous_findings, wt.path, delta)
+                    # Published identities come before fresh claims so a merge
+                    # keeps the fingerprint the open thread already carries.
                     findings = deduplicate(
-                        secrets + await process(raw) + carried,
+                        secrets + carried + fresh,
                         config.review.merge_distance,
                     )
                 if level < 5:

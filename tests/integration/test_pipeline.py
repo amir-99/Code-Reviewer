@@ -101,6 +101,38 @@ class Reviewing:
         )
 
 
+def wire(result, response_model):
+    """The compact Defect Review wire envelope for a fixture's stage result."""
+    findings = []
+    for finding in result.findings:
+        data = finding.model_dump(exclude={"reason", "severity_proposed"})
+        data["anchor"] = finding.anchor.model_dump(
+            include={"file", "line_start", "line_end", "symbol"}
+        )
+        data["evidence"] = [
+            e.model_dump(include={"file", "line_start", "line_end"})
+            for e in finding.evidence
+        ]
+        findings.append(data)
+    return response_model.model_validate(
+        dict(
+            findings=findings,
+            findings_truncated=False,
+            coverage=result.coverage.model_dump(),
+            context_requests=[],
+            notes_for_summary="",
+        )
+    )
+
+
+class WireReview(Reviewing):
+    async def complete(self, **kwargs):
+        result = await super().complete(**kwargs)
+        if kwargs["stage"] != "defect_review":
+            return result
+        return wire(result, kwargs["response_model"])
+
+
 def pipeline(store, forge, tmp_path, scanner=None, llm=None, mode="deep"):
     # These legacy scenarios exercise the optional seven-stage workflow.
     path = tmp_path / "config.json"
@@ -794,32 +826,6 @@ async def test_standard_review_uses_one_proposer_and_verifies_findings(
         config["defaults"]["triage_max_units"] = 2
     (tmp_path / "config.json").write_text(json.dumps(config))
 
-    class WireReview(Reviewing):
-        async def complete(self, **kwargs):
-            result = await super().complete(**kwargs)
-            if kwargs["stage"] != "defect_review":
-                return result
-            findings = []
-            for finding in result.findings:
-                data = finding.model_dump(exclude={"reason", "severity_proposed"})
-                data["anchor"] = finding.anchor.model_dump(
-                    include={"file", "line_start", "line_end", "symbol"}
-                )
-                data["evidence"] = [
-                    e.model_dump(include={"file", "line_start", "line_end"})
-                    for e in finding.evidence
-                ]
-                findings.append(data)
-            return kwargs["response_model"].model_validate(
-                dict(
-                    findings=findings,
-                    findings_truncated=False,
-                    coverage=result.coverage.model_dump(),
-                    context_requests=[],
-                    notes_for_summary="",
-                )
-            )
-
     llm = WireReview()
     review = await store.accept(7, 2, head, "standard")
     machine = pipeline(store, forge, tmp_path, llm=llm, mode="standard")
@@ -923,3 +929,60 @@ async def test_unverified_absence_is_a_coverage_gap_not_a_published_suggestion(
     assert snapshot["partial"]
     assert "unverified_scope_claims" in snapshot["bundle"]["degradations"]
     assert "The assigned value is never checked" not in str(forge.discussions)
+
+
+async def test_reworded_claim_on_a_later_push_stays_in_its_open_thread(
+    store, history, tmp_path
+):
+    """The same defect worded differently is neither reposted nor resolved."""
+
+    repo, base, head = history
+    forge = FakeForge(
+        MergeRequestContext(
+            project_id=7,
+            iid=2,
+            head_sha=head,
+            target_branch="main",
+            repository_url=str(repo),
+        )
+    )
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, head
+    ).splitlines()
+
+    class Rewording(WireReview):
+        line = 1
+
+        async def complete(self, **kwargs):
+            result = await super().complete(**kwargs)
+            if kwargs["stage"] == "defect_review" and self.line != 1:
+                for finding in result.findings:
+                    finding.claim = "Nothing validates the value assigned here"
+                    finding.anchor.line_start = finding.anchor.line_end = self.line
+                    for evidence in finding.evidence:
+                        evidence.line_start = evidence.line_end = self.line
+            return result
+
+    llm = Rewording()
+    machine = pipeline(store, forge, tmp_path, llm=llm, mode="standard")
+    first = await store.accept(7, 2, head, "first-push")
+    assert await machine.run(first.id) == "PUBLISHED"
+    threads = [d for d in forge.discussions if d.file == "new0.py"]
+    assert len(threads) == 1
+
+    (repo / "new0.py").write_text("y = 9\nx = 0\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "unrelated line above")
+    newhead = git(repo, "rev-parse", "HEAD")
+    forge.mr.head_sha = newhead
+    forge.paths = git(
+        repo, "diff", "--no-renames", "--name-only", base, newhead
+    ).splitlines()
+    llm.line = 2
+    second = await store.accept(7, 2, newhead, "second-push")
+    assert await machine.run(second.id) == "PUBLISHED"
+
+    assert [d.id for d in forge.discussions if d.file == "new0.py"] == [threads[0].id]
+    assert not threads[0].resolved
+    verdicts = (await store.snapshot(second.id))["recheck"]["verdicts"]
+    assert [v["verdict"] for v in verdicts] == ["not_fixed"]
