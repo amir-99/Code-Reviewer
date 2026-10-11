@@ -10,12 +10,22 @@ from fastapi.responses import StreamingResponse
 from reviewer.accounts.policy import review_access
 from reviewer.api.admin import authenticate, inspect
 from reviewer.orchestrator.states import TERMINAL
+from reviewer.telemetry.activity import RECHECK_RUN
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(authenticate)])
 
 # A worker that dies between the terminal transition and its closing marker
 # would otherwise hold the stream open for ever.
 CLOSING_GRACE = 30.0
+# How long a requested recheck holds a finished review's stream open before a
+# worker takes it. A busy queue past this only costs the reader a reconnect.
+QUEUED_GRACE = 120.0
+
+
+def age(at):
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - at).total_seconds()
 
 
 def frame(event, data, sequence=None):
@@ -42,18 +52,20 @@ async def closing(store, review):
     run is still going, and freezes the snapshot on an undelivered status.
     """
     marker = await store.run_marker(review.id)
-    if marker is None or marker.data.get("status") != "started":
+    status = marker.data.get("status") if marker is not None else None
+    if status == "queued":
+        # A requested recheck no worker has taken yet.
+        return age(marker.created_at) < QUEUED_GRACE
+    if status != "started":
         return False
     finished = (
         marker.created_at
-        if marker and marker.data.get("name") == "Standalone recheck run"
+        if marker.data.get("name") == RECHECK_RUN
         else getattr(review, "finished_at", None)
     )
     if finished is None:
         return True
-    if finished.tzinfo is None:
-        finished = finished.replace(tzinfo=UTC)
-    return (datetime.now(UTC) - finished).total_seconds() < CLOSING_GRACE
+    return age(finished) < CLOSING_GRACE
 
 
 async def stream(request, review_id, after):

@@ -244,3 +244,36 @@ async def test_a_claim_this_run_still_reports_is_never_judged_fixed(tmp_path):
         redactor=Redactor(),
     )
     assert verdicts[0].verdict == "not_fixed" and llm.calls == 0
+
+
+async def test_recheck_reports_each_thread_as_live_activity(tmp_path):
+    from reviewer.telemetry.activity import sink
+
+    class Rows:
+        rows = []
+
+        async def append_event(self, review_id, kind, data):
+            self.rows.append((review_id, kind, data))
+
+    store = Rows()
+    forge, f = await opened(tmp_path)
+    threads = await collect(forge, None, 7, 2, [f], HEAD)
+    token = sink.set((store, "review"))
+    try:
+        await evaluate(threads, root=tmp_path, touched={"other.py"})
+    finally:
+        sink.reset(token)
+    rows = [data for _, kind, data in store.rows if kind == "recheck"]
+    assert [r["status"] for r in rows] == [
+        "started",
+        "started",
+        "completed",
+        "completed",
+    ]
+    whole, thread = rows[0], rows[1]
+    assert whole["total"] == 1 and thread["parent_id"] == whole["activity_id"]
+    assert thread["name"] == f"{f.anchor.file}:{f.anchor.line_start}"
+    assert rows[2]["verdict"] == "not_fixed" and rows[2]["judged"] is False
+    assert rows[3]["verdicts"] == {"not_fixed": 1}
+    # Where a thread is, never what it says.
+    assert all(f.claim not in str(r) for r in rows)

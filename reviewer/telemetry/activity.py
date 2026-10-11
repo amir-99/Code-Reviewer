@@ -180,7 +180,7 @@ async def _run_event(store, review_id, status, *, name="review run"):
                 name=name,
                 status=status,
                 activity_id=f"{RUN}:{review_id}"
-                + (":recheck" if name == "Standalone recheck run" else ""),
+                + (":recheck" if name == RECHECK_RUN else ""),
                 parent_id=None,
             ),
         )
@@ -203,6 +203,18 @@ async def close_run(store, review_id):
     await _run_event(store, review_id, CLOSED.get(str(state), "failed"))
 
 
+RECHECK_RUN = "Standalone recheck run"
+
+
+async def queue_recheck(store, review_id, status="queued"):
+    """Mark a requested recheck before a worker takes it.
+
+    A stream keeps a finished review open while this lease is fresh, so the
+    recheck's own activity reaches the reader live instead of after the fact.
+    """
+    await _run_event(store, review_id, status, name=RECHECK_RUN)
+
+
 @asynccontextmanager
 async def recheck_run(store, review_id):
     """Keep a terminal review live, with a lease that expires if its worker dies."""
@@ -213,9 +225,9 @@ async def recheck_run(store, review_id):
     async def heartbeat():
         while True:
             await asyncio.sleep(10)
-            await _run_event(store, review_id, "started", name="Standalone recheck run")
+            await _run_event(store, review_id, "started", name=RECHECK_RUN)
 
-    await _run_event(store, review_id, "started", name="Standalone recheck run")
+    await _run_event(store, review_id, "started", name=RECHECK_RUN)
     task = asyncio.create_task(heartbeat())
     status = "completed"
     try:
@@ -227,4 +239,4 @@ async def recheck_run(store, review_id):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
-        await _run_event(store, review_id, status, name="Standalone recheck run")
+        await _run_event(store, review_id, status, name=RECHECK_RUN)

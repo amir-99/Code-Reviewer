@@ -389,3 +389,27 @@ async def test_abandoned_recheck_lease_expires(store):
             .values(created_at=datetime.now(UTC) - timedelta(seconds=CLOSING_GRACE + 1))
         )
     assert not await closing(store, await store.get(review.id))
+
+
+async def test_requested_recheck_holds_the_stream_until_a_worker_takes_it(store):
+    from sqlalchemy import update
+
+    from reviewer.api.events import QUEUED_GRACE
+    from reviewer.store.models import ReviewEvent
+    from reviewer.telemetry.activity import queue_recheck
+
+    review = await store.accept(7, 2, "a" * 40, "recheck-queued")
+    await store.transition(review.id, "CANCELLED")
+    assert not await closing(store, await store.get(review.id))
+    await queue_recheck(store, review.id)
+    assert await closing(store, await store.get(review.id))
+    # A queue no worker drains does not hold the reader for ever.
+    async with store.transaction() as session:
+        await session.execute(
+            update(ReviewEvent)
+            .where(ReviewEvent.review_id == review.id)
+            .values(created_at=datetime.now(UTC) - timedelta(seconds=QUEUED_GRACE + 1))
+        )
+    assert not await closing(store, await store.get(review.id))
+    await queue_recheck(store, review.id, "failed")
+    assert not await closing(store, await store.get(review.id))

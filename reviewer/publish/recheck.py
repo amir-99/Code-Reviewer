@@ -13,6 +13,8 @@ longer reports are all settled from the diff alone.
 """
 
 from pathlib import Path
+from time import monotonic
+from uuid import uuid4
 
 import structlog
 from pydantic import BaseModel
@@ -23,6 +25,7 @@ from reviewer.findings.validator import read_lines
 from reviewer.publish.publisher import existing, pending
 from reviewer.publish.renderer import recheck_marker, render_recheck
 from reviewer.publish.rereview import reanchor
+from reviewer.telemetry.activity import emit, parent
 
 logger = structlog.get_logger()
 
@@ -190,7 +193,22 @@ async def evaluate(
     """
     verdicts = []
     judged = 0
-    for finding, discussion, notes in threads:
+    # Progress as activity: one row for the pass, one per thread with the
+    # verdict it reached. Metadata only: where the thread is, never its text.
+    progress, outer, began = str(uuid4()), parent.get(), monotonic()
+    total = len(threads)
+    await emit(
+        "recheck",
+        f"Recheck {total} open thread(s)",
+        "started",
+        progress,
+        outer,
+        total=total,
+    )
+    for index, (finding, discussion, notes) in enumerate(threads, 1):
+        row, started = str(uuid4()), monotonic()
+        label = f"{finding.anchor.file}:{finding.anchor.line_start}"
+        await emit("recheck", label, "started", row, progress, index=index, total=total)
         verdict, anchored = triage(finding, root, touched, absent, reported)
         anchored = anchored or finding
         result = None
@@ -259,6 +277,32 @@ async def evaluate(
                 judged=result is not None,
             )
         )
+        await emit(
+            "recheck",
+            label,
+            "completed",
+            row,
+            progress,
+            index=index,
+            total=total,
+            verdict=verdict,
+            judged=result is not None,
+            duration_ms=(monotonic() - started) * 1000,
+        )
+    tally = {}
+    for verdict in verdicts:
+        tally[verdict.verdict] = tally.get(verdict.verdict, 0) + 1
+    await emit(
+        "recheck",
+        f"Recheck {total} open thread(s)",
+        "completed",
+        progress,
+        outer,
+        total=total,
+        judged=judged,
+        verdicts=tally,
+        duration_ms=(monotonic() - began) * 1000,
+    )
     return verdicts
 
 
