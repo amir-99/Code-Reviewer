@@ -260,6 +260,7 @@ class BuildAgent:
                     True,
                     Path(self.settings.static_workspace_root) / "builds",
                     self.build,
+                    redact=self.redactor.text,
                 ) as box:
                     await box.copy(wt.path)
                     ecosystems = [e for e in detect(box.src) if e in self.build.images]

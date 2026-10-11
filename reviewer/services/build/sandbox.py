@@ -19,6 +19,7 @@ from time import monotonic
 from uuid import uuid4
 
 from reviewer.telemetry.activity import activity
+from reviewer.telemetry.checks import CheckOutput
 
 OUTPUT_TAIL = 8000
 
@@ -93,11 +94,13 @@ def _force_remove(function, path, _exc):
 
 
 class BuildSandbox:
-    def __init__(self, enabled, parent, config):
+    def __init__(self, enabled, parent, config, redact=None):
         self.enabled = enabled
         self.parent = Path(parent)
         self.config = config
         self.root = None
+        # Commands' output streams to activity only through the run's redactor.
+        self.redact = redact
 
     @property
     def src(self):
@@ -173,7 +176,15 @@ class BuildSandbox:
     async def run(self, ecosystem, command, timeout_s, network=""):
         start = monotonic()
         image = self.config.images.get(ecosystem)
+        # The agent chose the arguments, so they are shown only once redacted.
+        label = " ".join(command) if self.redact else command[0] if command else ""
+        check = CheckOutput(
+            f"{ecosystem}: {self.redact(label) if self.redact else label}"[:160],
+            self.redact,
+        )
+        await check.start()
         if not self.enabled or not image or self.root is None:
+            await check.finish("errored")
             return RunResult(list(command), ecosystem, None, "", 0.0, "errored")
         name = "review-build-" + uuid4().hex
         output, code, status, process = "", None, "errored", None
@@ -185,7 +196,9 @@ class BuildSandbox:
             )
             async with asyncio.timeout(timeout_s):
                 while chunk := await process.stdout.read(8192):
-                    output = (output + chunk.decode(errors="replace"))[-OUTPUT_TAIL:]
+                    text = chunk.decode(errors="replace")
+                    output = (output + text)[-OUTPUT_TAIL:]
+                    await check.feed(text)
                 code = await process.wait()
             # 125-127: the sandbox could not start the command at all.
             status = (
@@ -198,8 +211,10 @@ class BuildSandbox:
         except TimeoutError:
             # A hung command is not evidence about the code; fail open.
             output = (output + "\n[command timed out]")[-OUTPUT_TAIL:]
+            await check.feed("\n[command timed out]\n")
         except Exception:
             output = "Sandbox unavailable"
+            await check.feed("\nSandbox unavailable\n")
         finally:
             if process and process.returncode is None:
                 process.kill()
@@ -216,6 +231,7 @@ class BuildSandbox:
                 await cleanup.wait()
             except Exception:
                 pass
+        await check.finish(status, code, monotonic() - start)
         return RunResult(
             list(command), ecosystem, code, output, monotonic() - start, status
         )

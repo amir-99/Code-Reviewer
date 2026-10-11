@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from reviewer.context.models import StaticAnalysisResult
 from reviewer.telemetry.activity import activity
+from reviewer.telemetry.checks import CheckOutput
 
 
 class StaticRunner:
@@ -42,13 +43,16 @@ class StaticRunner:
             *tool.command,
         ]
 
-    @activity("tool", "Static analyzer")
-    async def run(self, tool, path):
+    @activity("tool", lambda self, tool, *_, **__: f"Static analyzer: {tool.name}")
+    async def run(self, tool, path, redact=None):
+        """Run one analyzer; its output streams to activity through `redact`."""
         start = monotonic()
         code = None
         output = ""
         status = "skipped"
         name = "review-static-" + uuid4().hex
+        check = CheckOutput(tool.name, redact)
+        await check.start()
         if self.enabled:
             process = None
             try:
@@ -59,7 +63,9 @@ class StaticRunner:
                 )
                 async with asyncio.timeout(tool.timeout_s):
                     while chunk := await process.stdout.read(8192):
-                        output = (output + chunk.decode(errors="replace"))[-16000:]
+                        text = chunk.decode(errors="replace")
+                        output = (output + text)[-16000:]
+                        await check.feed(text)
                     code = await process.wait()
                 status = "passed" if code == 0 else "failed"
                 if code in {125, 126, 127}:
@@ -67,6 +73,7 @@ class StaticRunner:
             except Exception:
                 status = "errored"
                 output = "Static tool unavailable or timed out"
+                await check.feed("\n" + output + "\n")
             finally:
                 if process and process.returncode is None:
                     process.kill()
@@ -80,6 +87,7 @@ class StaticRunner:
                     stderr=asyncio.subprocess.DEVNULL,
                 )
                 await cleanup.wait()
+        await check.finish(status, code, monotonic() - start)
         return StaticAnalysisResult(
             name=tool.name,
             required=tool.required,
