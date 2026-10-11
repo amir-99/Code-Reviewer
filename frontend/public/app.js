@@ -6,15 +6,11 @@ import {FAILED, HALTED, TERMINAL, label as labels, walk, UnitProgress} from './f
 import {chosenModels, modelFor, roleFor, roleLabel, rolesFor} from './models.js';
 import {addAttempt, breakdown, cost as money, emptySpend, mergeSpend, tokens as count, usage} from './spend.js';
 import {runControls} from './controls.js';
-
-const $ = id => document.getElementById(id);
-const el = (tag, text, cls) => {
-  const node = document.createElement(tag);
-  if (text !== undefined && text !== null) node.textContent = text;
-  if (cls) node.className = cls;
-  return node;
-};
-const all = selector => Array.from(document.querySelectorAll(selector));
+import {$, all, ago, confirmDialog, delay, el, notice, short, span} from './dom.js';
+import {mountAccounts, readiness} from './accounts.js';
+import {explain} from './reasons.js';
+import {CheckLog, checkTone} from './checks.js';
+import {RecheckProgress, describe as describeRecheck} from './recheck-progress.js';
 
 const SEVERITIES = ['BLOCKER', 'REQUIRED', 'SUGGESTION', 'QUESTION', 'NIT', 'FYI', 'PRAISE'];
 const IMPACTS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'unknown'];
@@ -30,18 +26,20 @@ const THEME_KEY = 'review-room-theme';
 // Kinds beyond the four the filter chips name, and the chip each belongs under:
 // a gateway attempt is reported inside the LLM tool call it was made for, and
 // the run bracket spans the states of one worker run.
-const GROUPS = {llm_attempt: 'tool', run: 'state', models: 'state'};
+const GROUPS = {llm_attempt: 'tool', run: 'state', models: 'state', check: 'tool'};
 const KINDS = {llm_attempt: 'llm'};
 const KEEP = 300;
 
 let token = '', account = null, sessionGeneration = 0, sessionAbort = new AbortController(), selected = '', current = null, controller, refreshTimer, lastRecheck = null;
-let pendingRecheck = '';
-let runningAgain = false;      // a rerun or retry request is in flight
+let pendingRecheck = null;      // {id, before, until}: a recheck this page asked for, not yet answered
+let controlBusy = false;        // a stop, rerun or retry request is in flight
 let reviews = [], listFilter = 'all', listQuery = '', activityKind = 'all', severity = 'all', tabTouched = false;
 let snapshotSeq = 0;            // the newest event the last snapshot already reflects
 const activities = new Map();   // activity_id -> {row, kind, name, status, depth, at}
 const running = new Set();
 const unitProgress = new UnitProgress();
+const checkLog = new CheckLog();          // static checks, streamed then as recorded
+const recheckProgress = new RecheckProgress();
 const stages = new Map();       // agent name -> {status, at, took}
 const stateAt = new Map();      // review state -> when the pipeline entered it
 const earlyAt = new Map();      // review state -> when its work started ahead of the state
@@ -56,32 +54,7 @@ let streamed = emptySpend();    // attempts seen since that snapshot, not yet au
 const group = kind => GROUPS[kind] || kind;
 const shows = kind => activityKind === 'all' || activityKind === group(kind);
 
-const short = (sha, length = 8) => String(sha ?? '').slice(0, length);
 const tone = state => FAILED.has(state) ? 'bad' : HALTED.has(state) ? 'warn' : state === 'PUBLISHED' ? 'ok' : 'run';
-
-function ago(value) {
-  const at = Date.parse(value ?? '');
-  if (!Number.isFinite(at)) return '—';
-  const seconds = Math.max(0, (Date.now() - at) / 1000);
-  if (seconds < 60) return `${Math.floor(seconds)}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-}
-
-function span(milliseconds) {
-  const seconds = Math.max(0, Math.round(milliseconds / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-}
-
-function notice(message, kind = '') {
-  const toast = el('div', message, `toast ${kind}`.trim());
-  $('toasts').append(toast);
-  while ($('toasts').children.length > 3) $('toasts').firstChild.remove();
-  setTimeout(() => toast.remove(), 8000);
-}
 
 async function request(path, options = {}) {
   const generation = sessionGeneration;
@@ -185,6 +158,8 @@ function reviewRow(review) {
   if (account?.role === 'admin') bottom.append(el('span', review.owner_user_id || 'system / legacy'));
   if (review.spend) bottom.append(el('span', `${money(review.spend.cost, {unpriced: review.spend.unpriced_calls})} · ${count(review.spend.tokens)} tokens`));
   button.append(top, bottom);
+  // A failed or stopped run says why without opening it.
+  if (review.error) button.title = review.error;
   button.onclick = () => select(review.id);
   return button;
 }
@@ -230,17 +205,7 @@ function renderHead(review) {
     $('decision').className = decisionBadge(review.decision).className;
   }
 
-  if (review.error) {
-    $('alert').hidden = false; $('alert').className = 'alert';
-    $('alert').textContent = `This review recorded an error: ${review.error}`;
-  } else if (review.partial) {
-    $('alert').hidden = false; $('alert').className = 'alert warn';
-    $('alert').textContent = isDocument
-      ? 'Partial review — not every section was examined, so the outcome falls back to comment only.'
-      : 'Partial review — coverage is incomplete, so the decision falls back to comment only and the commit status passes.';
-  } else {
-    $('alert').hidden = true;
-  }
+  renderReasons(review);
 
   const findings = review.findings || [];
   // Stored findings include ones the pipeline discarded; only live ones are counted.
@@ -266,6 +231,22 @@ function renderHead(review) {
 
   renderTrail(review.history);
   renderPipeline(review.state, review.history);
+}
+
+// Why a review failed, stopped or ran partial, as the API worded it.
+function renderReasons(review) {
+  const view = explain(review);
+  $('alert').hidden = !view;
+  if (!view) return;
+  $('alert').className = `alert${view.tone === 'bad' ? '' : ` ${view.tone}`}`;
+  const list = el('ul');
+  for (const item of view.items) list.append(el('li', item.message));
+  $('alert').replaceChildren(el('strong', view.title), ...(view.items.length ? [list] : []));
+  if (review.partial && review.state === 'PUBLISHED') {
+    $('alert').append(el('p', review.kind === 'document'
+      ? 'Not every section was examined, so the outcome falls back to comment only.'
+      : 'The decision falls back to comment only and the commit status passes.', 'consequence'));
+  }
 }
 
 // The header answers "what has this cost so far" without leaving the tab that
@@ -936,8 +917,8 @@ $('chat-question').onkeydown = event => {
 /* ---------- activity feed ---------- */
 
 function statusTone(status) {
-  if (status === 'completed') return 'tone-good';
-  if (status === 'partial' || status === 'no completion') return 'tone-warn';
+  if (status === 'completed' || status === 'passed') return 'tone-good';
+  if (['partial', 'no completion', 'errored', 'skipped', 'queued'].includes(status)) return 'tone-warn';
   if (status === 'failed' || status === 'cancelled') return 'tone-bad';
   return '';
 }
@@ -1017,7 +998,7 @@ function countRunning() {
 
 // One count per filter, read off the feed so a bounded row never inflates it.
 function tally() {
-  const counts = {all: 0, state: 0, agent: 0, unit: 0, tool: 0};
+  const counts = {all: 0, state: 0, agent: 0, unit: 0, tool: 0, recheck: 0};
   for (const row of $('activity').children) {
     counts.all++;
     const key = group(row.dataset.kind);
@@ -1027,6 +1008,10 @@ function tally() {
 }
 
 function addActivity(item) {
+  if (checkLog.accept(item)) renderChecks();
+  if (recheckProgress.accept(item)) renderRecheckProgress();
+  // A check streams its output under one row; while it runs it reads as started.
+  if (item.kind === 'check' && item.data?.status === 'running') item = {...item, data: {...item.data, status: 'started'}};
   const {data = {}, kind} = item;
   if (unitProgress.accept(item)) renderPipeline();
   if (kind === 'unit_progress') return;
@@ -1145,6 +1130,63 @@ function closeOpenActivities() {
     if (stage.status === 'started') stages.set(name, {...stage, status: 'no completion'});
   }
   renderPipeline();
+}
+
+/* ---------- static checks ---------- */
+
+const checkOpen = new Map();    // check key -> whether the reader opened or closed it
+function renderChecks() {
+  const list = checkLog.list, counts = checkLog.counts;
+  $('tabn-checks').textContent = String(list.length);
+  $('tabn-checks').hidden = !list.length;
+  $('checks-summary').textContent = [
+    counts.running && `${counts.running} running`, counts.failed && `${counts.failed} failed`,
+    counts.passed && `${counts.passed} passed`, counts.other && `${counts.other} other`,
+  ].filter(Boolean).join(' · ') || '0';
+  $('checks-empty').hidden = list.length > 0;
+  $('checks').replaceChildren(...list.map((check, index) => checkCard(check, check.id || `${index}:${check.name}`)));
+}
+
+function checkCard(check, key) {
+  const card = el('details', '', 'check-run');
+  card.dataset.status = check.status || '';
+  // Running and failed checks open by default; the reader's own toggle wins.
+  card.open = checkOpen.get(key) ?? ['running', 'failed'].includes(check.status);
+  card.ontoggle = () => checkOpen.set(key, card.open);
+  const summary = el('summary');
+  summary.append(el('span', check.name || 'check', 'name'));
+  if (check.required) summary.append(el('span', 'required', 'badge'));
+  const meta = [
+    check.exit_code !== null && check.exit_code !== undefined ? `exit ${check.exit_code}` : '',
+    Number.isFinite(check.duration_ms) ? span(check.duration_ms) : '',
+  ].filter(Boolean).join(' · ');
+  if (meta) summary.append(el('span', meta, 'meta'));
+  summary.append(check.status === 'running' ? el('i', '', 'spinner')
+    : el('span', check.status || 'unknown', `badge ${checkTone(check.status)}`));
+  card.append(summary);
+  const lines = check.lines || [];
+  if (!lines.length) {
+    card.append(el('p', check.status === 'running' ? 'Waiting for output…' : 'No output.', 'empty-line'));
+    return card;
+  }
+  const output = el('pre', (check.truncated ? `… ${check.truncated} line(s) not shown\n` : '') + lines.join('\n'));
+  card.append(output);
+  // Follow a running check's newest line, as a terminal would.
+  if (check.status === 'running') requestAnimationFrame(() => { output.scrollTop = output.scrollHeight; });
+  return card;
+}
+
+/* ---------- recheck progress ---------- */
+
+function renderRecheckProgress() {
+  const view = recheckProgress.view;
+  $('recheck-progress').hidden = !view?.active;
+  if (!view?.active) return;
+  $('recheck-progress-bar').max = Math.max(view.total, 1);
+  $('recheck-progress-bar').value = view.done;
+  $('recheck-progress-text').textContent = describeRecheck(view, verdict => VERDICTS[verdict] || labels(verdict));
+  $('tabn-recheck').hidden = false;
+  $('tabn-recheck').textContent = `${view.done}/${view.total}`;
 }
 
 /* ---------- tabs ---------- */
@@ -1297,12 +1339,6 @@ function live(state, text) {
   $('live-text').textContent = text;
 }
 
-const delay = (ms, signal) => new Promise(resolve => {
-  const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
-  const timer = setTimeout(done, ms); signal.addEventListener('abort', done, {once: true});
-  if (signal.aborted) done();
-});
-
 function render(review) {
   for (const id of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(id).hidden = !review.capabilities?.execute;
   renderRunControls(review);
@@ -1327,6 +1363,27 @@ function render(review) {
   renderFindings();
   renderReport(review.report);
   renderRecheck(review.recheck);
+  renderRecheckProgress();
+  settleRecheck(review);
+  checkLog.load(review.checks);
+  renderChecks();
+}
+
+const RECHECK_BUTTONS = ['recheck', 'recheck-tab-action', 'recheck-report-action'];
+
+// A recheck this page asked for is answered once the review's recorded recheck
+// changes; the stream that carried it is still open, so its progress was live.
+function settleRecheck(review) {
+  const waiting = pendingRecheck?.id === review.id;
+  for (const button of RECHECK_BUTTONS) $(button).disabled = waiting;
+  if (waiting && lastRecheck === pendingRecheck.before && !recheckProgress.view?.active) {
+    $('recheck-meta').textContent = 'Recheck queued — waiting for a worker…';
+  }
+  if (!waiting || lastRecheck === pendingRecheck.before) return;
+  pendingRecheck = null;
+  for (const button of RECHECK_BUTTONS) $(button).disabled = false;
+  const reason = review.recheck?.reason;
+  notice(reason ? `Recheck: ${reason.replaceAll('_', ' ')}.` : 'Recheck answered the open threads.', reason === 'failed' ? 'error' : 'ok');
 }
 
 async function follow(id, signal) {
@@ -1343,7 +1400,14 @@ async function follow(id, signal) {
         if (event.event === 'snapshot') render(event.data);
         if (event.event === 'activity' && Number(event.id) > Number(cursor)) { addActivity(event.data); cursor = event.id; }
         if (event.event === 'complete') {
-          if (pendingRecheck === id) break; // The worker may still be queued; reconnect with the cursor.
+          // A recheck still unanswered: its queue outlasted the stream's hold.
+          // Reconnect with the cursor until it answers or the page stops waiting.
+          if (pendingRecheck?.id === id) {
+            if (Date.now() < pendingRecheck.until) break;
+            pendingRecheck = null;
+            for (const button of RECHECK_BUTTONS) $(button).disabled = false;
+            notice('No recheck answers recorded yet. The review may have no open reviewer threads, or recheck may be off for this project.');
+          }
           live(tone(event.data?.state) === 'bad' ? 'bad' : 'done', 'Finished');
           closeOpenActivities();
           if (!tabTouched && current?.findings?.length) showTab('findings');
@@ -1391,6 +1455,10 @@ function select(id) {
   $('alert').hidden = true;
   $('decision').hidden = true;
   unitProgress.clear();
+  checkLog.clear();
+  recheckProgress.clear();
+  renderChecks();
+  renderRecheckProgress();
   stages.clear();
   stateAt.clear();
   earlyAt.clear();
@@ -1471,36 +1539,24 @@ addEventListener('keydown', event => {
 
 $('recheck').onclick = async () => {
   if (!selected) return;
-  const id = selected, before = lastRecheck;
-  for (const button of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(button).disabled = true;
+  const id = selected;
+  for (const button of RECHECK_BUTTONS) $(button).disabled = true;
   $('recheck-meta').textContent = 'Recheck queued…';
   showTab('recheck');
   try {
     await request(`/admin/reviews/${encodeURIComponent(id)}/recheck`, {method: 'POST'});
-    notice('Recheck queued. Judging the open threads at the current head…');
+    notice('Recheck queued. Its progress appears here as each thread is judged.');
     if (selected !== id) return;
-    pendingRecheck = id;
+    // Reconnect: the stream holds open while the recheck is queued and running,
+    // so its activity arrives live and the closing snapshot carries the answers.
+    pendingRecheck = {id, before: lastRecheck, until: Date.now() + 5 * 60_000};
     select(id);
     tabTouched = true;
     showTab('recheck');
-    // Keep following while queued; poll the persisted result for completion.
-    for (let attempt = 0; attempt < 40 && selected === id; attempt++) {
-      await delay(3000, controller.signal);
-      if (selected !== id) return;
-      const review = await (await request(`/admin/reviews/${encodeURIComponent(id)}`)).json();
-      if (selected !== id) return;
-      if (JSON.stringify(review.recheck ?? null) !== before) {
-        pendingRecheck = '';
-        renderRecheck(review.recheck);
-        tabTouched = true;
-        showTab('recheck');
-        notice(review.recheck?.reason ? `Recheck: ${review.recheck.reason.replaceAll('_', ' ')}.` : 'Recheck answered the open threads.', review.recheck?.reason === 'failed' ? 'error' : 'ok');
-        return;
-      }
-    }
-    notice('No recheck answers recorded yet. The review may have no open reviewer threads, or recheck may be off for this project.');
-  } catch (error) { if (error.name !== 'AbortError') notice(error.message, 'error'); }
-  finally { pendingRecheck = ''; for (const button of ['recheck', 'recheck-tab-action', 'recheck-report-action']) $(button).disabled = false; }
+  } catch (error) {
+    if (error.name !== 'AbortError') notice(error.message, 'error');
+    for (const button of RECHECK_BUTTONS) $(button).disabled = false;
+  }
 };
 
 $('recheck-tab-action').onclick = $('recheck-report-action').onclick = () => $('recheck').click();
@@ -1618,231 +1674,83 @@ function applyAccount() {
   $('nav-profile').textContent = admin ? 'Account' : 'Profile';
   $('owner-filter-label').hidden = !admin;
   $('nav-users').hidden = !admin; $('nav-new').hidden = admin; $('new-review-card').hidden = admin;
-  if (!admin) readiness();
+  if (!admin) readiness(request);
 }
 
-async function readiness() {
-  try {
-    const statuses = await (await request('/profile/integrations')).json();
-    const missing = Object.entries(statuses).filter(([,v]) => v.status !== 'configured').map(([k]) => k);
-    $('credential-readiness').textContent = missing.length ? `Missing or invalid: ${missing.join(', ')}. Gateway and GitLab are required; missing Jira or Confluence degrades requirements.` : 'Integration credentials are configured.';
-  } catch (error) { notice(error.message, 'error'); }
-}
-
-function field(form, label, type='text') {
-  const input = el('input'); input.type = type; input.required = true;
-  const wrapper = el('label', label); wrapper.append(input); form.append(wrapper); return input;
-}
-function action(label, fn) {
-  const button = el('button', label); button.type = 'button';
-  button.onclick = async () => { button.disabled = true; try { await fn(); } catch (error) { notice(error.message, 'error'); } finally { button.disabled = false; } };
-  return button;
-}
-function jsonRequest(path, method, body) { return request(path, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}); }
-function panel(title) { $('account-panel').hidden = false; $('review-layout').hidden = true; $('account-title').textContent = title; $('account-content').replaceChildren(); return $('account-content'); }
-function initials(name) {
-  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
-  return parts.length ? (parts[0][0] + (parts[1]?.[0] || '')).toUpperCase() : '?';
-}
-function statusBadge(status) {
-  const tone = status === 'configured' ? 'tone-good' : status === 'invalid' ? 'tone-bad' : 'tone-warn';
-  return el('span', status, `badge ${tone}`);
-}
-// Native <dialog> keeps this dependency-free; resolves false on Cancel, backdrop click cancel, or Escape.
-function confirmDialog(title, message, confirmLabel) {
-  return new Promise(resolve => {
-    const dialog = document.createElement('dialog'); dialog.className = 'confirm-dialog';
-    dialog.append(el('h3', title), el('p', message));
-    const actions = el('div', null, 'form-actions');
-    const cancel = el('button', 'Cancel'); cancel.type = 'button';
-    const confirmButton = el('button', confirmLabel, 'danger'); confirmButton.type = 'button';
-    actions.append(cancel, confirmButton);
-    dialog.append(actions);
-    document.body.append(dialog);
-    let result = false;
-    cancel.onclick = () => dialog.close();
-    confirmButton.onclick = () => { result = true; dialog.close(); };
-    dialog.addEventListener('close', () => { dialog.remove(); resolve(result); }, {once: true});
-    dialog.showModal();
-  });
-}
 $('nav-reviews').onclick = () => { $('account-panel').hidden = true; $('review-layout').hidden = false; };
 $('nav-new').onclick = () => { $('nav-reviews').click(); $('mr').focus(); };
-$('nav-profile').onclick = async () => {
-  const admin = account.role === 'admin';
-  const root = panel(admin ? 'Account' : 'Profile');
-  root.append(el('p', `Signed in as ${account.display_name} (@${account.login}).`, 'account-lede'));
 
-  const passwordCard = el('section', null, 'card');
-  passwordCard.append(el('h3', 'Change password'));
-  const password = el('form'); const grid = el('div', null, 'form-grid');
-  const old = field(grid, 'Current password', 'password');
-  const next = field(grid, 'New password', 'password'); next.minLength = 12;
-  password.append(grid);
-  const passwordActions = el('div', null, 'form-actions');
-  const submit = el('button', 'Change password', 'primary'); submit.type = 'submit';
-  passwordActions.append(submit, el('span', 'At least 12 characters. You will be signed out everywhere after this.', 'hint'));
-  password.append(passwordActions);
-  password.onsubmit = async event => { event.preventDefault(); try { await jsonRequest('/auth/password', 'POST', {current_password:old.value, password:next.value}); clearSession(); notice('Password changed. Sign in again.'); } catch (error) { notice(error.message, 'error'); } finally { old.value = ''; next.value = ''; } };
-  passwordCard.append(password);
-  root.append(passwordCard);
-  if (admin) return;
+/* ---------- stop, rerun and retry ---------- */
 
-  root.append(el('h3', 'Integrations'));
-  root.append(el('p', 'Personal credentials used whenever you trigger a review. Gateway and GitLab are required for merge requests; Jira and Confluence unlock requirement linkage. Document reviews need Gateway and Confluence.', 'hint'));
-  try {
-    const statuses = await (await request('/profile/integrations')).json();
-    for (const [name, state] of Object.entries(statuses)) {
-      const card = el('section', null, 'card');
-      const head = el('div', null, 'row');
-      head.append(el('h3', name), statusBadge(state.status));
-      card.append(head);
-      const form = el('form'); const input = field(form, 'Replacement token', 'password'); input.autocomplete = 'off';
-      const save = el('button', 'Save token', 'primary'); save.type = 'submit'; form.append(save);
-      form.onsubmit = async event => { event.preventDefault(); const value = input.value; input.value = ''; try { await jsonRequest(`/profile/integrations/${name}`, 'PUT', {token:value}); notice('Token saved'); $('nav-profile').click(); readiness(); } catch (error) { notice(error.message, 'error'); } };
-      card.append(form);
-      const cardActions = el('div', null, 'user-actions');
-      cardActions.append(action('Remove', async () => { await request(`/profile/integrations/${name}`, {method:'DELETE'}); $('nav-profile').click(); readiness(); }), action('Check connection', async () => { const result = await (await request(`/profile/integrations/${name}/check`, {method:'POST'})).json(); notice(result.reason || result.status); }));
-      card.append(cardActions);
-      root.append(card);
-    }
-  } catch (error) { notice(error.message, 'error'); }
-};
-$('activate').onsubmit = async event => { event.preventDefault(); try { await jsonRequest('/auth/activate', 'POST', {token:$('activation-token').value, password:$('activation-password').value}); notice('Password set. You can sign in.'); } catch (error) { notice(error.message, 'error'); } finally { $('activation-token').value = ''; $('activation-password').value = ''; } };
-$('nav-users').onclick = async () => {
-  const root = panel('Users');
-  root.append(el('p', 'Create accounts and manage roles, access and removal for everyone on this deployment.', 'account-lede'));
-
-  const createCard = el('section', null, 'card');
-  createCard.append(el('h3', 'Create account'));
-  const form = el('form'); const grid = el('div', null, 'form-grid');
-  const login = field(grid, 'Login'); const name = field(grid, 'Display name');
-  const roleLabel = el('label', 'Role'); const role = el('select');
-  for (const value of ['user','admin']) { const option = el('option', value); option.value = value; role.append(option); }
-  roleLabel.append(role); grid.append(roleLabel);
-  form.append(grid);
-  const createActions = el('div', null, 'form-actions');
-  const submit = el('button', 'Create account', 'primary'); submit.type = 'submit';
-  createActions.append(submit, el('span', "They'll get a one-time activation link to set their own password.", 'hint'));
-  form.append(createActions);
-  const delivery = el('div', null, 'token-callout'); delivery.hidden = true;
-  createCard.append(form, delivery);
-  root.append(createCard);
-  form.onsubmit = async event => {
-    event.preventDefault();
-    try {
-      const result = await (await jsonRequest('/auth/users','POST',{login:login.value,display_name:name.value,role:role.value})).json();
-      delivery.replaceChildren(el('span', 'Deliver privately, expires in one hour:'), el('code', result.activation_token));
-      const copy = el('button', 'Copy'); copy.type = 'button';
-      copy.onclick = async () => { try { await navigator.clipboard.writeText(result.activation_token); notice('Copied to clipboard'); } catch { notice('Could not copy — select and copy the token manually', 'error'); } };
-      delivery.append(copy);
-      delivery.hidden = false;
-      form.reset();
-      await listUsers();
-    } catch (error) { notice(error.message,'error'); }
-  };
-
-  const listCard = el('section', null, 'card');
-  listCard.append(el('h3', 'Accounts'));
-  const searchWrap = el('div', null, 'user-search');
-  const search = el('input'); search.type = 'search'; search.placeholder = 'Search by login…'; search.setAttribute('aria-label','Search accounts');
-  searchWrap.append(search);
-  listCard.append(searchWrap);
-  const showRemovedRow = el('label', null, 'checkbox-row');
-  const showRemoved = el('input'); showRemoved.type = 'checkbox';
-  showRemovedRow.append(showRemoved, el('span', 'Show removed accounts'));
-  listCard.append(showRemovedRow);
-  const list = el('div', null, 'user-list');
-  listCard.append(list);
-  root.append(listCard);
-
-  function userRow(user) {
-    const removed = Boolean(user.removed_at);
-    const row = el('section', null, `card user-row${removed ? ' is-removed' : ''}`);
-    row.append(el('div', initials(user.display_name), `avatar${user.role === 'admin' ? ' role-admin' : ''}`));
-    const main = el('div', null, 'user-main');
-    const heading = el('div', null, 'row');
-    heading.append(el('h3', user.display_name), el('span', user.role, `badge${user.role === 'admin' ? ' tone-info' : ''}`));
-    heading.append(removed ? el('span', 'removed', 'badge tone-bad') : el('span', user.active ? 'active' : 'disabled', `badge ${user.active ? 'tone-good' : 'tone-warn'}`));
-    main.append(heading, el('p', `@${user.login}`, 'user-meta'));
-    const actionsRow = el('div', null, 'user-actions');
-    if (!removed) {
-      for (const [label, body] of [['Toggle role',{action:'role',value:user.role === 'admin' ? 'user':'admin'}], [user.active ? 'Disable':'Reactivate',{action:'active',value:!user.active}], ['Revoke sessions',{action:'revoke_sessions'}], ['Start recovery (revokes integrations)',{action:'recovery'}]]) actionsRow.append(action(label, async () => { const result = await (await jsonRequest(`/auth/users/${user.id}`,'POST',body)).json(); if (result.activation_token) notice(`Deliver privately: ${result.activation_token}`); await listUsers(); }));
-      const remove = action('Delete user', async () => {
-        const ok = await confirmDialog('Delete this account?', `${user.display_name} (@${user.login}) will be signed out everywhere, permanently lose their saved integration credentials, and won't be able to sign back in. This can't be undone.`, 'Delete user');
-        if (!ok) return;
-        await jsonRequest(`/auth/users/${user.id}`, 'POST', {action:'remove'});
-        notice('Account removed');
-        await listUsers();
-      });
-      remove.className = 'danger';
-      if (user.id === account.id) { remove.disabled = true; remove.title = "You can't delete the account you're signed in as."; }
-      actionsRow.append(remove);
-    }
-    main.append(actionsRow);
-    row.append(main);
-    return row;
-  }
-
-  async function listUsers() {
-    try {
-      const result = await (await request(`/auth/users?search=${encodeURIComponent(search.value)}`)).json();
-      const users = result.users.filter(user => showRemoved.checked || !user.removed_at);
-      list.replaceChildren();
-      if (!users.length) { list.append(el('p', result.users.length ? 'No matching accounts.' : 'No accounts yet.', 'empty-line')); return; }
-      for (const user of users) list.append(userRow(user));
-    } catch (error) { notice(error.message,'error'); }
-  }
-  search.oninput = listUsers; showRemoved.onchange = listUsers; await listUsers();
+const CONTROL_HINTS = {
+  stop: 'Cancel this review in flight; its commit status passes and posted comments stay',
+  rerun: 'Start a fresh review at the current head, with the context this one was given',
+  retry: 'Run this failed review again on the same head, with the same context and options',
 };
 
 function renderRunControls(review) {
   const view = runControls(review);
-  for (const mode of ['rerun', 'retry']) {
+  for (const mode of ['stop', 'rerun', 'retry']) {
     const button = $(mode), control = view[mode];
     button.hidden = !control.show;
-    button.disabled = runningAgain || !control.enabled;
-    button.title = control.reason || (mode === 'retry'
-      ? 'Run this failed review again on the same head, with the same context and options'
-      : 'Start a fresh review at the current head, with the context this one was given');
+    button.disabled = controlBusy || !control.enabled;
+    button.title = control.reason || CONTROL_HINTS[mode];
   }
-  // Why a failed review cannot be retried is worth reading without hovering.
-  $('run-hint').hidden = !(view.retry.show && !view.retry.enabled && view.retry.reason);
-  $('run-hint').textContent = view.retry.reason;
+  // Why a shown control is refused is worth reading without hovering.
+  const refused = ['stop', 'retry'].map(mode => view[mode]).find(c => c.show && !c.enabled && c.reason);
+  $('run-hint').hidden = !refused;
+  $('run-hint').textContent = refused?.reason || '';
 }
 
-// Both ask the API for a new run, then follow it from worker admission.
-async function runAgain(mode) {
-  const view = runControls(current)[mode];
-  if (!selected || !view.enabled || runningAgain) return;
-  if (mode === 'rerun' && view.confirm && !await confirmDialog('Rerun this review?',
-    'It is still running. A rerun supersedes it and starts again at the current head.', 'Rerun')) return;
-  const noun = mode === 'retry' ? 'Retry' : 'Rerun';
-  runningAgain = true; renderRunControls(current);
-  try {
-    const job = await (await request(`/admin/reviews/${encodeURIComponent(selected)}/${mode}`, {method:'POST'})).json();
-    notice(`${noun} queued. Waiting for worker admission…`);
-    const signal = controller.signal;
-    while (!signal.aborted) {
-      const review = await (await request(job.poll, {signal})).json();
-      if (review.id) { select(review.id); refresh().catch(() => {}); break; }
-      if (['CONFLICT','REJECTED'].includes(review.state)) throw new Error(`${noun} was not admitted. Check credentials and try again after any active review finishes.`);
-      await delay(2000, signal);
-    }
-  } catch (error) {
-    if (error.name !== 'AbortError') notice(error.message, 'error');
-    // A refusal means the review's controls moved on (a newer run, a new head).
-    // A finished review's stream is closed, so read them back directly.
-    if (error.status === 409) await reloadControls(selected).catch(() => {});
-  } finally { runningAgain = false; if (current) renderRunControls(current); }
-}
+// A request the API refused means the controls moved on (the review finished,
+// a newer run, a new head). A finished review's stream is closed, so read
+// them back directly.
 async function reloadControls(id) {
   const review = await (await request(`/admin/reviews/${encodeURIComponent(id)}`)).json();
   if (id !== selected || !current) return;
   current = {...current, controls: review.controls};
   refresh().catch(() => {});
 }
+
+async function control(mode, work) {
+  const view = runControls(current)[mode];
+  if (!selected || !view.enabled || controlBusy) return;
+  controlBusy = true; renderRunControls(current);
+  try { await work(selected, view); }
+  catch (error) {
+    if (error.name !== 'AbortError') notice(error.message, 'error');
+    if (error.status === 409) await reloadControls(selected).catch(() => {});
+  } finally { controlBusy = false; if (current) renderRunControls(current); }
+}
+
+// The stream stays open: the review's cancellation, its worker winding down
+// and the reason it stopped all arrive on it.
+const stopReview = () => control('stop', async id => {
+  if (!await confirmDialog('Stop this review?',
+    'The run is cancelled within a few seconds and its commit status passes. Comments it already posted stay posted.', 'Stop review')) return;
+  await request(`/admin/reviews/${encodeURIComponent(id)}/stop`, {method: 'POST'});
+  notice('Review stopped. The worker is winding it down…');
+});
+
+// Rerun and retry ask the API for a new run, then follow it from admission.
+const runAgain = mode => control(mode, async (id, view) => {
+  if (mode === 'rerun' && view.confirm && !await confirmDialog('Rerun this review?',
+    'It is still running. A rerun supersedes it and starts again at the current head.', 'Rerun')) return;
+  const noun = mode === 'retry' ? 'Retry' : 'Rerun';
+  const job = await (await request(`/admin/reviews/${encodeURIComponent(id)}/${mode}`, {method: 'POST'})).json();
+  notice(`${noun} queued. Waiting for worker admission…`);
+  const signal = controller.signal;
+  while (!signal.aborted) {
+    const review = await (await request(job.poll, {signal})).json();
+    if (review.id) { select(review.id); refresh().catch(() => {}); break; }
+    if (['CONFLICT', 'REJECTED'].includes(review.state)) throw new Error(`${noun} was not admitted. Check credentials and try again after any active review finishes.`);
+    await delay(2000, signal);
+  }
+});
+
+$('stop').onclick = stopReview;
 $('rerun').onclick = () => runAgain('rerun');
 $('retry').onclick = () => runAgain('retry');
 
+mountAccounts({request, account: () => account, clearSession});
 void restoreSession();

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {apiURL} from './paths.js';
+import {apiURL} from '../public/paths.js';
 
 test('API requests and SSE reconnects stay under the deployment prefix', () => {
   for (const prefix of ['/', '/agentic/']) {

@@ -46,6 +46,9 @@ class ProxyTests(unittest.TestCase):
         seen = set()
         dockerfile = (server.ROOT / "Dockerfile").read_text()
         included = (server.ROOT / ".dockerignore").read_text().splitlines()
+        # The image ships the whole public directory and nothing from tests/.
+        self.assertIn("COPY public/ ./public/", dockerfile)
+        self.assertIn("!public/", included)
         while pending:
             name = pending.pop()
             if name in seen:
@@ -54,10 +57,18 @@ class ProxyTests(unittest.TestCase):
             handler = self.handler("/" + name)
             handler.do_GET()
             self.assertEqual(handler.sent, [(200, "text/javascript")])
-            self.assertIn(name, dockerfile)
-            self.assertIn("!" + name, included)
             source = handler.wfile.getvalue().decode()
             pending.extend(re.findall(r"from ['\"]\./([^'\"]+)['\"]", source))
+        self.assertGreater(len(seen), 5)
+
+    def test_only_public_files_are_served(self):
+        self.assertEqual(server.ASSETS["/"], ("index.html", "text/html"))
+        self.assertTrue(all(name.count("/") == 1 for name in server.ASSETS))
+        self.assertFalse(any(name.endswith(".test.js") for name in server.ASSETS))
+        for path in ("/server.py", "/Dockerfile", "/tests/flow.test.js", "/public/app.js"):
+            handler = self.handler(path)
+            handler.do_GET()
+            self.assertEqual(handler.sent, [(404,)])
 
     def test_no_static_traversal(self):
         handler = self.handler("/../server.py")
@@ -76,9 +87,6 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(handler.sent[0][0], 502)
         self.assertNotIn(b"private", handler.wfile.getvalue())
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class RouteTests(unittest.TestCase):
@@ -103,10 +111,11 @@ class RouteTests(unittest.TestCase):
             self.assertFalse(server.allowed(method, path))
 
     def test_run_again_route_allowlist(self):
-        for action in ("rerun", "retry", "replay"):
+        for action in ("rerun", "retry", "replay", "stop"):
             self.assertTrue(server.allowed("POST", f"/api/admin/reviews/abc-123/{action}"))
             self.assertFalse(server.allowed("GET", f"/api/admin/reviews/abc-123/{action}"))
         self.assertFalse(server.allowed("POST", "/api/admin/reviews/abc/retry/again"))
 
-    def test_controls_module_is_served(self):
-        self.assertEqual(server.ASSETS["/controls.js"], ("controls.js", "text/javascript"))
+
+if __name__ == "__main__":
+    unittest.main()

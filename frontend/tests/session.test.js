@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
-const source = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const helpers = source.slice(source.indexOf('function startSession('), source.indexOf('function clearSession('));
 
 function harness(request) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {runControls} from './controls.js';
+import {runControls} from '../public/controls.js';
 
 const allowed = {allowed: true, reason: null};
 const refused = reason => ({allowed: false, reason});
@@ -32,6 +32,18 @@ test('readers who cannot execute, and responses without controls, show nothing',
   assert.equal(admin.rerun.show, false);
   assert.equal(admin.retry.show, false);
   const legacy = runControls({state: 'FAILED_INTERNAL', capabilities: {execute: true}});
+  assert.equal(legacy.stop.show, false);
   assert.equal(legacy.rerun.show, false);
   assert.equal(legacy.retry.show, false);
+});
+
+test('stop is offered while a review runs, and explains itself while it publishes', () => {
+  const running = runControls({state: 'DEFECT_REVIEW', controls: {stop: allowed, rerun: allowed, retry: refused('The review is still running')}});
+  assert.deepEqual(running.stop, {show: true, enabled: true, reason: ''});
+  const publishing = runControls({state: 'DECISION', controls: {stop: refused('The review is publishing its report'), rerun: allowed, retry: refused('x')}});
+  assert.deepEqual(publishing.stop, {show: true, enabled: false, reason: 'The review is publishing its report'});
+  const finished = runControls({state: 'PUBLISHED', controls: {stop: refused('The review has finished'), rerun: allowed, retry: refused('x')}});
+  assert.equal(finished.stop.show, false);
+  const reader = runControls({state: 'DEFECT_REVIEW', controls: {stop: refused('owner'), rerun: refused('owner'), retry: refused('owner')}});
+  assert.equal(reader.stop.show, false);
 });

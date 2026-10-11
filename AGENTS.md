@@ -315,6 +315,21 @@ that interface through API_BIND_ADDRESS / FRONTEND_BIND_ADDRESS; shipped Compose
 defaults remain localhost. Do not expand these bindings to all interfaces.
 
 
+### Review controls, reasons and check output
+
+`run_controls` in `accounts/policy.py` is the one rule for stop, rerun and
+retry; the API returns its answer as `controls` on every review and enforces the
+same answer on each request, and the dashboard only draws it. All three are
+owner-only. Stop commits `CANCELLED` with `STOPPED_BY_OWNER` under the row lock
+and is refused in `DECISION`, which a stop can no longer take back; the worker
+cancels the run when it sees exactly that reason, then runs the machine once
+more on the terminal review to deliver the passing status. Retry repeats a
+failed run on its own head and is refused once a later review exists or the
+head moved. A failure reason is named by exception kind and stage
+(`orchestrator/reasons.py`), never by exception text. Check output reaches
+activity only through the run's redactor, bounded per line and per check; with
+no redactor only the outcome is recorded.
+
 ### Review chat
 
 `POST/GET /admin/reviews/{id}/chat` answers questions about a finished review.

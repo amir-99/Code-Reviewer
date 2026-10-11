@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {identity, identityNode} from './identity.js';
+import {identity, identityNode} from '../public/identity.js';
 
 const document = {createElement() { return {textContent: '', children: [], append(...nodes) {this.children.push(...nodes);}}; }};
 test('project paths take precedence, ids remain muted, names are text', () => {

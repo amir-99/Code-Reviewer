@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {events} from './sse.js';
+import {events} from '../public/sse.js';
 
 test('decodes split UTF-8, CRLF, heartbeat and reconnect ids', async () => {
   const bytes = new TextEncoder().encode('retry: 2000\r\n\r\n: heartbeat\r\n\r\nid: 42\r\nevent: activity\r\ndata: {"name":"réview"}\r\n\r\nevent: complete\ndata: {}\n\n');

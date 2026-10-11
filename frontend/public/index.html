@@ -166,6 +166,7 @@
         <nav id="review-links" class="review-links" aria-label="Review references" hidden></nav>
         <div id="trail" class="trail" aria-label="State history"></div>
         <div class="actions">
+          <button id="stop" type="button" class="danger" hidden>Stop review</button>
           <button id="retry" type="button" class="primary" hidden>Retry review</button>
           <button id="rerun" type="button" hidden>Rerun review</button>
           <span id="run-hint" class="hint" hidden></span>
@@ -179,6 +180,7 @@
         <button class="tab" type="button" role="tab" id="tab-findings" data-tab="findings" aria-selected="false" aria-controls="panel-findings">Findings<span class="n" id="tabn-findings">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-recheck" data-tab="recheck" aria-selected="false" aria-controls="panel-recheck">Recheck<span class="n" id="tabn-recheck">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-spend" data-tab="spend" aria-selected="false" aria-controls="panel-spend">Spend<span class="n" id="tabn-spend">0</span></button>
+        <button class="tab" type="button" role="tab" id="tab-checks" data-tab="checks" aria-selected="false" aria-controls="panel-checks">Checks<span class="n" id="tabn-checks">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-report" data-tab="report" aria-selected="false" aria-controls="panel-report">Report<span class="n" id="tabn-report">0</span></button>
         <button class="tab" type="button" role="tab" id="tab-chat" data-tab="chat" aria-selected="false" aria-controls="panel-chat">Ask<span class="n" id="tabn-chat">0</span></button>
       </div>
@@ -192,9 +194,10 @@
             <button class="chip" type="button" data-kind="agent">Stages<span class="n" data-tally="agent">0</span></button>
             <button class="chip" type="button" data-kind="unit">Units<span class="n" data-tally="unit">0</span></button>
             <button class="chip" type="button" data-kind="tool">Tools<span class="n" data-tally="tool">0</span></button>
+            <button class="chip" type="button" data-kind="recheck">Recheck<span class="n" data-tally="recheck">0</span></button>
           </div>
         </div>
-        <p class="hint">Operational activity only — prompts, code, model reasoning and raw tool output stay private.
+        <p class="hint">Operational activity only — prompts, code and model reasoning stay private; static check output is shown redacted, in the Checks tab.
           Work units and verifiers run concurrently, so rows interleave; each is indented under the activity that started it.</p>
         <ol id="activity" class="activity" aria-label="Review activity" aria-live="polite"></ol>
         <p id="activity-empty" class="empty-line">Waiting for the first event…</p>
@@ -223,6 +226,10 @@
           <h2>Recheck <span id="recheck-count" class="badge">0</span></h2>
           <span id="recheck-meta" class="hint"></span><button id="recheck-tab-action" type="button">Recheck comments</button>
         </div>
+        <div id="recheck-progress" class="recheck-progress" hidden>
+          <progress id="recheck-progress-bar" max="1" value="0"></progress>
+          <span id="recheck-progress-text" class="hint" aria-live="polite"></span>
+        </div>
         <div id="recheck-results"></div>
       </section>
 
@@ -241,6 +248,16 @@
         </table>
         <p id="spend-empty" class="empty-line">No model calls have been billed to this review yet.</p>
         <p id="spend-chat" class="hint" hidden></p>
+      </section>
+
+      <section class="card" id="panel-checks" role="tabpanel" aria-labelledby="tab-checks" hidden>
+        <div class="card-head">
+          <h2>Static checks <span id="checks-summary" class="badge">0</span></h2>
+        </div>
+        <p class="hint">Static analyzers and sandboxed build commands, with secrets redacted from their output.
+          Output streams while the review runs; a finished review keeps the last lines of each.</p>
+        <div id="checks" class="checks"></div>
+        <p id="checks-empty" class="empty-line">No static checks have run for this review.</p>
       </section>
 
       <section class="card" id="panel-report" role="tabpanel" aria-labelledby="tab-report" hidden>

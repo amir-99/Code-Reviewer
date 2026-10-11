@@ -479,7 +479,7 @@ Users with at least Developer access may issue:
 
 ## Audit and observability
 
-Dashboard routes require an account session. Writes also require the configured Origin and `X-CSRF-Token` from login or authenticated `GET /auth/me` session restoration. Admins can read every review but cannot trigger, rerun, retry or recheck one. Users can read and execute only their own reviews. `ADMIN_TOKEN` no longer authorizes these routes or metrics.
+Dashboard routes require an account session. Writes also require the configured Origin and `X-CSRF-Token` from login or authenticated `GET /auth/me` session restoration. Admins can read every review but cannot trigger, stop, rerun, retry or recheck one. Users can read and execute only their own reviews. `ADMIN_TOKEN` no longer authorizes these routes or metrics.
 
 - `POST /admin/reviews`: trigger a review from a merge request link, with no
   hook involved. The body takes `merge_request_url` plus optional `issue_key`,
@@ -511,7 +511,17 @@ Dashboard routes require an account session. Writes also require the configured 
   this review's open threads — `models`, the model each role ran on, and
   `spend`: calls, tokens in and out, and cost per role, against the token
   ceiling the run announced. It is read from the audited calls, so it answers
-  while the review is still running.
+  while the review is still running. `reasons` says why a review failed,
+  stopped or ran partial: the recorded failure reason (named by kind and stage,
+  never by exception text) first, then the run's degradations as sentences,
+  each marked `partial` when it made the review partial. `checks` lists the
+  static analyzers and build commands the run finished, each with its status,
+  exit code, duration and the last 80 lines of its redacted output.
+- `POST /admin/reviews/{id}/stop`: cancel a review in flight. The worker
+  running it sees the stop within seconds, cancels the run and delivers a
+  passing commit status, as for any cancelled review; comments already posted
+  stay. Refused with 409 once the review has finished or is publishing its
+  report (`DECISION`).
 - `POST /admin/reviews/{id}/rerun` (also `/replay`): fresh review at the
   current head, keeping any context the review was manually triggered with. On a
   review still in flight it supersedes that run.
@@ -520,12 +530,16 @@ Dashboard routes require an account session. Writes also require the configured 
   options. Refused with 409 once a later review of the merge request or page has
   run, or once the head (page version) has moved: rerun instead.
 - Every review the API returns — `GET /admin/reviews`, `GET /admin/reviews/{id}`
-  and the event stream's snapshots — carries `controls`: for `rerun` and
-  `retry`, whether the caller may use it now and, if not, the `reason`. Both
-  are owner-only; admins see them refused.
+  and the event stream's snapshots — carries `controls`: for `stop`, `rerun`
+  and `retry`, whether the caller may use it now and, if not, the `reason`.
+  All three are owner-only; admins see them refused.
 - `POST /admin/reviews/{id}/recheck`: re-judge the comments that review
   published, at the merge request's current head. Runs no stages and publishes
-  no report.
+  no report. The request leaves a queued lease that holds the review's event
+  stream open (up to two minutes) until a worker takes the recheck, so its
+  progress — one `recheck` activity row per thread, with the verdict reached —
+  streams live. An `/ai recheck` command records its progress on the review
+  whose threads it answers.
 - `GET /admin/models`: the selectable roles, the model each role resolves to
   today, and the catalogue a manual run may choose from.
 - `GET /admin/reviews/{id}/audit`: model, prompt/version/hash, token counts,

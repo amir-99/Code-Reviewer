@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {matchesFinding, verificationBadge} from './findings.js';
+import {matchesFinding, verificationBadge} from '../public/findings.js';
 
 const findings = [
   {severity: 'REQUIRED', impact_level: 'HIGH'},
@@ -14,7 +14,7 @@ assert.deepEqual(findings.filter(f => matchesFinding(f, 'REQUIRED', 'all')), fin
 assert.deepEqual(findings.filter(f => matchesFinding(f, 'all', 'all')), findings);
 assert.equal(matchesFinding({severity: 'NIT', impact_level: null}, 'NIT', 'unknown'), true);
 
-const {commentActions, bulkCommentKeys} = await import('./findings.js');
+const {commentActions, bulkCommentKeys} = await import('../public/findings.js');
 assert.deepEqual(commentActions({status: 'drafted'}, true), ['edit', 'remove']);
 assert.deepEqual(commentActions({status: 'committed', thread_status: 'open'}, true), ['edit', 'remove', 'resolve']);
 assert.deepEqual(commentActions({status: 'committed', thread_status: 'not_applicable'}, true), ['edit', 'remove']);

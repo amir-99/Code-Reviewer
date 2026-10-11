@@ -9,20 +9,20 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).parent
 UPSTREAM = urlsplit(os.environ.get("REVIEWER_API_URL", "http://api:8080"))
-ASSETS = {"/identity.js": ("identity.js", "text/javascript"), "/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
-          "/sse.js": ("sse.js", "text/javascript"), "/flow.js": ("flow.js", "text/javascript"),
-          "/models.js": ("models.js", "text/javascript"),
-          "/paths.js": ("paths.js", "text/javascript"),
-          "/controls.js": ("controls.js", "text/javascript"),
-          "/findings.js": ("findings.js", "text/javascript"),
-          "/spend.js": ("spend.js", "text/javascript"),
-          "/style.css": ("style.css", "text/css"),
-          "/favicon.svg": ("favicon.svg", "image/svg+xml")}
+PUBLIC = ROOT / "public"
+TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
+# Every shipped file, by exact name: a request names one of these or gets 404,
+# so no path from the client ever reaches the filesystem.
+ASSETS = {"/": ("index.html", "text/html")} | {
+    f"/{path.name}": (path.name, TYPES[path.suffix])
+    for path in sorted(PUBLIC.iterdir())
+    if path.is_file() and path.suffix in TYPES
+}
 
 
 ROUTES = {
     "GET": r"/(?:admin/(?:models|quality|reviews(?:/[A-Za-z0-9-]+(?:/(?:events|audit|comments|chat))?)?)|auth/(?:me|users)|profile/integrations)",
-    "POST": r"/(?:auth/(?:login|logout|activate|password|users(?:/[A-Za-z0-9-]+)?)|admin/reviews(?:/[A-Za-z0-9-]+/(?:replay|rerun|retry|recheck|comments|chat))?|profile/integrations/(?:gateway|gitlab|jira|confluence)/check)",
+    "POST": r"/(?:auth/(?:login|logout|activate|password|users(?:/[A-Za-z0-9-]+)?)|admin/reviews(?:/[A-Za-z0-9-]+/(?:replay|rerun|retry|stop|recheck|comments|chat))?|profile/integrations/(?:gateway|gitlab|jira|confluence)/check)",
     "PUT": r"/profile/integrations/(?:gateway|gitlab|jira|confluence)",
     "DELETE": r"/profile/integrations/(?:gateway|gitlab|jira|confluence)",
 }
@@ -57,7 +57,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         name, mime = asset
         self.headers_for(200, mime)
-        self.wfile.write((ROOT / name).read_bytes())
+        self.wfile.write((PUBLIC / name).read_bytes())
 
     def do_POST(self):
         if allowed(self.command, self.path):

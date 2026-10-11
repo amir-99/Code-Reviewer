@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {chosenModels, modelFor, roleFor, roleLabel} from './models.js';
+import {chosenModels, modelFor, roleFor, roleLabel} from '../public/models.js';
 
 const RESOLVED = {
   defect_review: 'vendor/strong', document_review: 'vendor/cheap',
@@ -77,7 +77,7 @@ test('roles are labelled for people, not for Python', () => {
 });
 
 test('each review kind selects models for its own roles', async () => {
-  const {rolesFor, DOCUMENT_ROLES} = await import('./models.js');
+  const {rolesFor, DOCUMENT_ROLES} = await import('../public/models.js');
   const roles = ['defect_review', 'verification', 'chat', 'document_review', 'document_verification'];
   assert.deepEqual(rolesFor('document', roles), ['chat', 'document_review', 'document_verification']);
   assert.equal(DOCUMENT_ROLES.length, 3);

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {addAttempt, cost, emptySpend, mergeSpend, tokens, usage} from './spend.js';
+import {addAttempt, cost, emptySpend, mergeSpend, tokens, usage} from '../public/spend.js';
 
 const attempt = (over = {}) => ({
   role: 'defect_review', model: 'vendor/strong', outcome: 'success',
@@ -100,7 +100,7 @@ test('cost keeps the digits that matter at review scale', () => {
 });
 
 test('model and step breakdowns include rechecks without duplicating calls', async () => {
-  const {breakdown} = await import('./spend.js');
+  const {breakdown} = await import('../public/spend.js');
   const spend = emptySpend();
   addAttempt(spend, attempt());
   addAttempt(spend, attempt({role: 'recheck'}));

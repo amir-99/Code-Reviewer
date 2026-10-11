@@ -14,7 +14,7 @@ function harness() {
   const buttons = ['view', 'text'].map(mode => { const button = new Node('button'); button.dataset.reportMode = mode; return button; });
   const context = vm.createContext({el: (tag, text) => new Node(tag, text), document: {createTextNode: text => new Node('#text', text)},
     $: id => { if (!nodes.has(id)) nodes.set(id, new Node('div')); return nodes.get(id); }, all: () => buttons});
-  const source = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   vm.runInContext(source.slice(source.indexOf('function markdownPreview('), source.indexOf('function renderRecheck(')), context);
   return {context, nodes, buttons};
 }

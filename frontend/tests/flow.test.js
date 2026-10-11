@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {walk, spans} from './flow.js';
+import {walk, spans} from '../public/flow.js';
 
 const at = (...steps) => new Map(steps);
 const status = (flow, state) => flow.steps.find(step => step.state === state).status;
@@ -109,7 +109,7 @@ test('standard reviews show the combined stage and preserve partial coverage', (
 });
 
 test('unit counts use planned totals and ignore stale progress snapshots', async () => {
-  const {UnitProgress} = await import('./flow.js');
+  const {UnitProgress} = await import('../public/flow.js');
   const progress = new UnitProgress();
   const step = {stage: 'defect_review'};
   assert.equal(progress.get(step), undefined);
@@ -131,7 +131,7 @@ test('unit counts use planned totals and ignore stale progress snapshots', async
 });
 
 test('coverage without unit snapshots still yields counts, and stageless steps have none', async () => {
-  const {UnitProgress} = await import('./flow.js');
+  const {UnitProgress} = await import('../public/flow.js');
   const progress = new UnitProgress();
   progress.accept({kind: 'stage_coverage', data: {name: 'defect_review', examined: 3, skipped: 1}});
   assert.deepEqual(progress.get({stage: 'defect_review'}),

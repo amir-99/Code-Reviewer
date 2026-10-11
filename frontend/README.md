@@ -40,14 +40,23 @@ For local development (Python 3.12; no npm install required):
 
 ```sh
 REVIEWER_API_URL=http://127.0.0.1:8092 PORT=8093 python3 frontend/server.py
-node --check frontend/app.js
-node --test frontend/sse.test.js frontend/flow.test.js
+cd frontend && npm run check && npm test        # node only; nothing to install
+python3 -m unittest discover -s frontend         # proxy and packaging
 ```
 
-`flow.js` holds the pipeline's shape and the pure reading of where a review is in
-it; `app.js` only paints what it returns. Adding a state means editing that one
-list. A new asset also has to be added to `ASSETS` in
-`server.py` and to the image's `COPY` line.
+Everything the browser loads lives in `public/`; the image copies that directory
+whole and `server.py` serves each file in it by exact name, so a new module needs
+no registration. Tests live in `tests/` and never ship.
+
+`app.js` wires the page together and paints; the pure readings it paints from
+live in their own modules, each with a test: `flow.js` (where a review is in the
+pipeline — adding a state means editing that one list), `controls.js` (which of
+stop, rerun and retry to show), `reasons.js` (why a review failed, stopped or ran
+partial), `checks.js` (static check output, streamed then as recorded),
+`recheck-progress.js` (a recheck as it runs), plus `findings.js`, `models.js`,
+`spend.js`, `identity.js`, `sse.js` and `paths.js`. `dom.js` holds the shared DOM
+and formatting helpers, and `accounts.js` the profile, integration and user
+panels.
 
 The dashboard supports recent reviews, manual triggers, Jira story/epic and
 Confluence overrides, report modes, stored findings, plain-text reports, and a
@@ -95,9 +104,11 @@ names that reason. Dark is the default palette; the header toggle switches to
 light and the choice is remembered per browser. `/` focuses the review filter
 and `r` refreshes the list.
 
-**Retry review** and **Rerun review** are drawn from the `controls` the API
-sends with each review, so they appear only for the review's owner and only when
-the API would accept them. Retry is offered on a failed review and repeats it on
+**Stop review**, **Retry review** and **Rerun review** are drawn from the
+`controls` the API sends with each review, so they appear only for the review's
+owner and only when the API would accept them. Stop asks for confirmation, then
+the stream carries the cancellation and the reason; a review publishing its
+report shows stop refused, with why. Retry is offered on a failed review and repeats it on
 the same head with the same context and options; when it is refused (a later
 run exists, or the head moved) the reason is shown beside the buttons. Rerun
 starts a fresh review at the current head and asks for confirmation when the
@@ -106,9 +117,23 @@ run from worker admission, as a manual trigger does.
 
 **Recheck comments** re-judges the threads a review published, at the merge
 request's current head. It calls `POST /admin/reviews/{id}/recheck`, which runs
-no stages and publishes no report. The review is already terminal, so its event
-stream is finished: the dashboard polls the review until the answers appear and
-then shows each verdict, what changed, and whether the thread was resolved.
+no stages and publishes no report. The request holds the review's event stream
+open while the recheck is queued and running, so the Recheck tab shows live
+progress — which thread is being judged and the verdicts so far — and each
+thread appears in the activity feed under the Recheck filter. The stream's
+closing snapshot carries the answers: each verdict, what changed, and whether
+the thread was resolved. If no worker takes the recheck in time, the page
+reconnects for up to five minutes before saying no answers were recorded.
+
+**Checks** lists the static analyzers and sandboxed build commands. While the
+review runs, each command's output streams in as it prints, redacted of secrets
+by the run's own redactor and bounded in length; a finished review shows the
+last lines each one recorded. Running and failed checks open by default.
+
+When a review failed, stopped or ran partial, the header says why, from the
+`reasons` the API derives: the recorded failure reason first, then what made the
+review partial, then what only limited it. A failed or stopped review in the
+list carries its reason as a tooltip.
 Nothing appears if the review has no open reviewer threads or the project
 disables recheck. Project enforcement rules
 still control publication and commit statuses. Activity is bounded to the latest
