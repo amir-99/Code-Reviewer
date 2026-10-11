@@ -1,0 +1,33 @@
+# Run the sandbox on the SAME Docker daemon that hosts this stack. Use together
+# with compose.static.yml and SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock.
+#
+# This gives the worker control of the host daemon, which is equivalent to root
+# on the host. Use it only when the operator accepts that and no dedicated
+# sandbox daemon is available. The worker still starts every analyzer itself
+# with --network none, a read-only root filesystem, no capabilities and an
+# unprivileged user; no model or repository setting chooses an image, mount or
+# network.
+#
+#   docker compose -f compose.yml -f compose.frontend.yml \
+#     -f compose.static.yml -f compose.sandbox-local.yml up -d
+#
+# REPO_CACHE must be an absolute host directory owned by uid 10001, because the
+# daemon bind-mounts checkouts from the same path it has on the host.
+services:
+  worker:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The numeric group that owns the socket (`stat -c %g /var/run/docker.sock`).
+    group_add: ["${DOCKER_GID:?Set DOCKER_GID to the group of the Docker socket}"]
+  # Holds the sandbox image so it can be referenced by a registry digest. Bound
+  # to localhost: the daemon pulls from it, nothing else needs to.
+  sandbox-registry:
+    image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+    ports: ["127.0.0.1:5000:5000"]
+    volumes: [sandbox_registry:/var/lib/registry]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+volumes:
+  sandbox_registry:

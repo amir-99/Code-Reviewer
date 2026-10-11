@@ -19,7 +19,28 @@
       ],
       "ac_heading": "Acceptance Criteria"
     },
-    "static_tools": [],
+    "static_tools": [
+      {
+        "name": "python-ruff",
+        "image": "127.0.0.1:5000/reviewer-sandbox@sha256:44506f1234a75194e46e6e4f8de1d2542de0de338daf7190340a5f8e32860585",
+        "command": ["ruff", "check", "--no-cache", "--output-format=concise", "."],
+        "categories": ["style"],
+        "timeout_s": 120
+      },
+      {
+        "name": "typescript-eslint",
+        "image": "127.0.0.1:5000/reviewer-sandbox@sha256:44506f1234a75194e46e6e4f8de1d2542de0de338daf7190340a5f8e32860585",
+        "command": ["eslint", "--no-config-lookup", "-c", "/opt/sandbox/eslint.config.mjs", "."],
+        "categories": ["style"],
+        "timeout_s": 180
+      },
+      {
+        "name": "go-syntax",
+        "image": "127.0.0.1:5000/reviewer-sandbox@sha256:44506f1234a75194e46e6e4f8de1d2542de0de338daf7190340a5f8e32860585",
+        "command": ["gofmt", "-e", "-l", "."],
+        "timeout_s": 60
+      }
+    ],
     "review": {
       "token_ceiling": 8000000
     },
