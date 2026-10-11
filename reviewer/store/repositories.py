@@ -251,6 +251,38 @@ class Store:
                 setattr(review, name, value)
             return review
 
+    async def stop(self, review_id: str):
+        """Cancel a review on its owner's request; None when it cannot be stopped.
+
+        Checked and written under the row lock, so a review that reaches its
+        report, or finishes, in the meantime is left alone. The worker running
+        it sees the recorded reason and cancels the run. A page has no commit
+        status, so a stopped document review has nothing left to deliver.
+        """
+        from reviewer.orchestrator.states import STOPPED_BY_OWNER, UNSTOPPABLE
+
+        async with self.transaction() as session:
+            if self.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            review = await session.scalar(
+                select(Review).where(Review.id == review_id).with_for_update()
+            )
+            if (
+                review is None
+                or review.state in TERMINAL
+                or review.state in UNSTOPPABLE
+            ):
+                return None
+            check_transition(review.state, "CANCELLED")
+            review.state = "CANCELLED"
+            review.history = review.history + ["CANCELLED"]
+            review.finished_at = utcnow()
+            review.error = STOPPED_BY_OWNER
+            if review.kind == "document":
+                review.status_delivered = True
+            await self._event(session, review.id, "state", {"state": "CANCELLED"})
+            return review
+
     async def mark_status(self, review_id: str):
         async with self.transaction() as session:
             review = await session.get(Review, review_id)
@@ -1035,6 +1067,7 @@ class Store:
                     state=r.state,
                     partial=r.partial,
                     decision=r.decision,
+                    error=r.error,
                     started_at=r.started_at,
                 )
                 for r, p, name, path in rows

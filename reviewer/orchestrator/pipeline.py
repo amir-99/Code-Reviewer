@@ -26,6 +26,7 @@ from reviewer.findings.models import (
 from reviewer.findings.policy import needs_verification, normalize
 from reviewer.findings.validator import change_commits, validate
 from reviewer.orchestrator.budget import BudgetTracker
+from reviewer.orchestrator.reasons import failure_reason
 from reviewer.orchestrator.stages import execute
 from reviewer.orchestrator.states import ORDER, TERMINAL
 from reviewer.orchestrator.streaming import FileStream
@@ -126,13 +127,20 @@ class Pipeline:
         bundle = None
         decision = "COMMENT_ONLY"
         final = "FAILED_INTERNAL"
+        error = None
         try:
             mr = await self.forge.get_merge_request(project, review.mr_iid)
             if mr.head_sha != review.head_sha:
                 raise StaleReview()
             if mr.state != "opened" or mr.draft:
                 final = "CANCELLED"
-                return await self.finish(review, final, decision, config)
+                return await self.finish(
+                    review,
+                    final,
+                    decision,
+                    config,
+                    error="The merge request was closed, merged or made a draft",
+                )
             url = mr.repository_url or await self.forge.repository_url(project)
             previous = await self.store.previous(
                 review.project_id, review.mr_iid, review.id
@@ -284,7 +292,7 @@ class Pipeline:
                 await self.advance(review, "STATIC_ANALYSIS")
                 bundle.static = await asyncio.gather(
                     *(
-                        self.static.run(tool, wt.path)
+                        self.static.run(tool, wt.path, redact=redactor.text)
                         for tool in config.static_tools
                         if level >= 3
                     )
@@ -711,7 +719,17 @@ class Pipeline:
             final = "SUPERSEDED"
             logger.info("review_stale", review_id=review.id, head_sha=review.head_sha)
             current = await self.forge.get_merge_request(project, review.mr_iid)
-            await self.store.transition(review.id, final)
+            await self.store.transition(
+                review.id,
+                final,
+                **(
+                    {
+                        "error": "The merge request received new commits during the review"
+                    }
+                    if current.head_sha != review.head_sha
+                    else {}
+                ),
+            )
             if current.head_sha != review.head_sha:
                 logger.info(
                     "review_superseded_by_new_head",
@@ -753,10 +771,14 @@ class Pipeline:
                 final_state=final,
                 error=str(exc),
             )
+            # Named by kind and stage, never by exception text.
+            error = failure_reason(exc, persisted.state)
         finally:
             if llm and hasattr(llm, "close"):
                 await llm.close()
-        return await self.finish(review, final, "COMMENT_ONLY", config, True)
+        return await self.finish(
+            review, final, "COMMENT_ONLY", config, True, error=error
+        )
 
     @activity("phase", "Recheck comments")
     async def recheck(
@@ -870,7 +892,12 @@ class Pipeline:
 
         token = sink.set((self.store, review_id)) if review_id is not None else None
         try:
-            result = await self._recheck_now(project_id, iid, review_id)
+            work = self._recheck_now(project_id, iid, review_id)
+            # A command names no review and points activity at the one it
+            # answers; its own task keeps that from outliving the recheck.
+            result = await (
+                work if review_id is not None else asyncio.create_task(work)
+            )
         except Exception:
             if review_id is not None:
                 stored = await self.store.snapshot(review_id) or {}
@@ -931,6 +958,10 @@ class Pipeline:
         )
         if not previous:
             return {"rechecked": False, "reason": "no_published_review"}
+        if review_id is None and sink.get() is None:
+            # An `/ai recheck` names no review; its progress belongs to the
+            # one whose threads it answers, where its result is recorded too.
+            sink.set((self.store, previous_id))
         source_review = await self.store.get(previous_id)
         from reviewer.context.models import ReviewOverrides
 
@@ -1041,7 +1072,7 @@ class Pipeline:
             )
             await self.store.transition(review.id, state)
 
-    async def finish(self, review, state, decision, config, partial=False):
+    async def finish(self, review, state, decision, config, partial=False, error=None):
         logger.info(
             "pipeline_finish",
             review_id=review.id,
@@ -1049,9 +1080,10 @@ class Pipeline:
             decision=str(decision),
             partial=partial,
         )
-        result = await self.store.transition(
-            review.id, state, decision=str(decision), partial=partial
-        )
+        fields = dict(decision=str(decision), partial=partial)
+        if error:
+            fields["error"] = error
+        result = await self.store.transition(review.id, state, **fields)
         failed = state in {
             "FAILED_INTERNAL",
             "FAILED_CONTEXT",

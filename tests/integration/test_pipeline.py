@@ -359,6 +359,10 @@ async def test_git_failure_is_context_failure_and_passes(store, tmp_path):
     assert await pipeline(store, forge, tmp_path).run(review.id) == "FAILED_CONTEXT"
     assert forge.statuses[-1]["state"] == "success"
     assert len(forge.comments) == 1 and "could not collect" in forge.comments[0].body
+    # The reason names the kind of failure and where, never its private text.
+    error = (await store.get(review.id)).error
+    assert error.startswith("The repository could not be fetched")
+    assert error.endswith("(GitError)") and str(tmp_path) not in error
 
 
 async def test_incremental_push_only_dispatches_affected_files(

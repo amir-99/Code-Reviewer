@@ -86,6 +86,14 @@ ORDER = [
 ]
 
 
+# The recorded reason of a review its owner stopped. The worker running it
+# watches for exactly this, so a cancellation the pipeline makes itself (a
+# closed merge request) is never mistaken for a stop.
+STOPPED_BY_OWNER = "Stopped by its owner"
+# A review publishing its report is past the point a stop can take back.
+UNSTOPPABLE = frozenset({ReviewState.DECISION})
+
+
 def check_transition(old: str, new: str) -> None:
     if ReviewState(new) not in LEGAL.get(ReviewState(old), set()):
         raise ValueError(f"Illegal review transition: {old} -> {new}")

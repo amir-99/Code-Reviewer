@@ -27,6 +27,7 @@ from reviewer.findings import document as policy
 from reviewer.findings.document import DocumentFinding
 from reviewer.findings.models import Provenance, Severity
 from reviewer.orchestrator.budget import BudgetExhausted, BudgetTracker
+from reviewer.orchestrator.reasons import failure_reason
 from reviewer.orchestrator.stages import StageResult
 from reviewer.orchestrator.states import ORDER, TERMINAL
 from reviewer.publish.document_publisher import DocumentPublisher
@@ -244,14 +245,15 @@ class DocumentPipeline:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("document_pipeline_failed", review_id=review_id)
+            current = await self.store.get(review.id)
             return await self.finish(
                 review,
                 "FAILED_INTERNAL",
                 decision,
                 partial=True,
-                error="Internal error",
+                error=failure_reason(exc, current.state if current else review.state),
             )
         finally:
             if llm is not None and hasattr(llm, "close"):

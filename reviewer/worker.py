@@ -1,3 +1,5 @@
+import asyncio
+
 import structlog
 from arq import cron
 from arq.connections import RedisSettings
@@ -5,6 +7,7 @@ from arq.connections import RedisSettings
 from reviewer.api.webhooks import ReviewJob
 from reviewer.config.schema import Settings
 from reviewer.orchestrator.machine import ReviewStateMachine
+from reviewer.orchestrator.states import STOPPED_BY_OWNER
 from reviewer.services.forge.gitlab import GitLab
 from reviewer.store.repositories import Store
 from reviewer.telemetry import configure
@@ -312,7 +315,7 @@ async def run_review(ctx, review_id):
 
                     try:
                         async with personal_document_machine(ctx, review) as machine:
-                            return await machine.run(review_id)
+                            return await until_stopped(ctx["store"], review_id, machine)
                     except CredentialUnavailable:
                         await ctx["store"].transition(
                             review_id,
@@ -327,7 +330,7 @@ async def run_review(ctx, review_id):
 
                     try:
                         async with personal_machine(ctx, review) as machine:
-                            return await machine.run(review_id)
+                            return await until_stopped(ctx["store"], review_id, machine)
                     except CredentialUnavailable:
                         await ctx["store"].transition(
                             review_id,
@@ -336,9 +339,50 @@ async def run_review(ctx, review_id):
                             error="Account or pinned credentials unavailable",
                         )
                         return
-                return await ctx["machine"].run(review_id)
+                return await until_stopped(ctx["store"], review_id, ctx["machine"])
         finally:
             await close_run(ctx["store"], review_id)
+
+
+# How often a running review checks whether its owner stopped it.
+STOP_POLL_S = 2.0
+
+
+async def stopped(store, review_id):
+    try:
+        review = await store.get(review_id)
+    except Exception:
+        return False  # An unreadable row is not a stop; the next poll asks again.
+    return (
+        review is not None
+        and review.state == "CANCELLED"
+        and review.error == STOPPED_BY_OWNER
+    )
+
+
+async def until_stopped(store, review_id, machine):
+    """Run a review, cancelling the run as soon as its owner stops it.
+
+    The stop is durable before this sees it, so this only makes it prompt: a
+    run that missed it would still halt at its next stage. Once cancelled, the
+    machine runs once more on the now-terminal review, which delivers the
+    passing commit status exactly as recovery would. Worker shutdown cancels
+    this too, and the run with it, leaving its last state intact.
+    """
+    task = asyncio.create_task(machine.run(review_id))
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=STOP_POLL_S)
+            if done:
+                return task.result()
+            if await stopped(store, review_id):
+                break
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    logger.info("review_stopped", review_id=review_id)
+    return await machine.run(review_id)
 
 
 async def recheck_review(ctx, project_id, iid, review_id=None):

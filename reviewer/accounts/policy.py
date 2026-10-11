@@ -21,25 +21,34 @@ RETRYABLE = frozenset({"FAILED_CONTEXT", "FAILED_INTERNAL"})
 
 
 def run_controls(account, owner_user_id, state, *, overtaken=False):
-    """Which ways of running a review again `account` may use, and why not.
+    """Which of stop, rerun and retry `account` may use on a review, and why not.
 
-    `rerun` starts a fresh review at the merge request's current head (or the
-    page's current version) with the context the review was triggered with; on
-    a review still in flight it supersedes that run, as a manual trigger does.
-    `retry` repeats a failed run on the same head with the same context, and is
-    refused once anything has run after it. Both stay owner-only: admins read
-    every review but never execute one. The head is compared when a retry is
-    requested, not here, so this stays a pure reading of stored state.
+    `stop` cancels a review in flight; its commit status then passes, as for
+    any cancelled review. It is refused once the review is publishing its
+    report, which a stop could no longer take back. `rerun` starts a fresh
+    review at the merge request's current head (or the page's current version)
+    with the context the review was triggered with; on a review still in flight
+    it supersedes that run, as a manual trigger does. `retry` repeats a failed
+    run on the same head with the same context, and is refused once anything
+    has run after it. All three stay owner-only: admins read every review but
+    never execute one. The head is compared when a retry is requested, not
+    here, so this stays a pure reading of stored state.
     """
-    from reviewer.orchestrator.states import TERMINAL
+    from reviewer.orchestrator.states import TERMINAL, UNSTOPPABLE
 
     owner = account.role == "user" and owner_user_id == account.id
     if not owner:
         refused = {
             "allowed": False,
-            "reason": "Only the review's owner can run it again",
+            "reason": "Only the review's owner can run or stop it",
         }
-        return {"rerun": refused, "retry": refused}
+        return {"stop": refused, "rerun": refused, "retry": refused}
+    if state in TERMINAL:
+        stop = {"allowed": False, "reason": "The review has finished"}
+    elif state in UNSTOPPABLE:
+        stop = {"allowed": False, "reason": "The review is publishing its report"}
+    else:
+        stop = {"allowed": True, "reason": None}
     rerun = {"allowed": True, "reason": None}
     if state not in RETRYABLE:
         reason = (
@@ -55,4 +64,4 @@ def run_controls(account, owner_user_id, state, *, overtaken=False):
         }
     else:
         retry = {"allowed": True, "reason": None}
-    return {"rerun": rerun, "retry": retry}
+    return {"stop": stop, "rerun": rerun, "retry": retry}

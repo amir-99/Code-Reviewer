@@ -147,6 +147,20 @@ async def inspect(review_id: str, request: Request):
         "model_tier"
     ) or await store.event_data(review_id, "models")
 
+    # Why the review failed, stopped or ran partial, as sentences: the stored
+    # failure reason first, then the run's own degradation codes.
+    from reviewer.orchestrator.reasons import reasons
+
+    body["reasons"] = reasons(
+        review, (snapshot.get("bundle") or {}).get("degradations") or ()
+    )
+    # Static analyzers and build commands as the run finished them. While it
+    # runs, their output streams as `check` activity instead.
+    from reviewer.telemetry.checks import summary
+
+    body["checks"] = [
+        summary(result) for result in (snapshot.get("bundle") or {}).get("static") or []
+    ]
     body["report"] = snapshot.get("report")
     body["recheck"] = snapshot.get("recheck")
     # What the run has spent so far, against the ceiling it is allowed to spend.
@@ -201,6 +215,34 @@ def summarise(finding):
         "unverified_reason": finding.get("unverified_reason"),
         "resolution": finding.get("resolution"),
     }
+
+
+@router.post("/reviews/{review_id}/stop")
+async def stop(review_id: str, request: Request):
+    """Stop a review in flight.
+
+    The cancellation is committed here; the worker running the review sees it
+    within seconds, cancels the run and delivers a passing commit status, as
+    for any cancelled review. Comments already posted stay posted.
+    """
+    review = await review_access(request, review_id, execute=True)
+    store = request.app.state.store
+    control = run_controls(request.state.principal, review.owner_user_id, review.state)[
+        "stop"
+    ]
+    if not control["allowed"]:
+        raise HTTPException(409, control["reason"])
+    if await store.stop(review.id) is None:
+        raise HTTPException(409, "The review moved on before it could be stopped")
+    await store.append_event(
+        review.id,
+        "request",
+        {
+            "name": f"Stop requested by {request.state.principal.id}",
+            "status": "completed",
+        },
+    )
+    return {"stopped": True, "state": "CANCELLED"}
 
 
 @router.post("/reviews/{review_id}/rerun")
@@ -322,9 +364,17 @@ async def recheck(review_id: str, request: Request):
     if review.kind == "document":
         raise HTTPException(409, "Document reviews have no threads to recheck")
     project_id = await request.app.state.store.project_number(review)
-    await request.app.state.queue.enqueue_job(
-        "recheck_review", project_id, review.mr_iid, str(review.id)
-    )
+    from reviewer.telemetry.activity import queue_recheck
+
+    # Before the job, so the stream a reader reconnects holds open for it.
+    await queue_recheck(request.app.state.store, review.id)
+    try:
+        await request.app.state.queue.enqueue_job(
+            "recheck_review", project_id, review.mr_iid, str(review.id)
+        )
+    except Exception:
+        await queue_recheck(request.app.state.store, review.id, "failed")
+        raise
     await request.app.state.store.append_event(
         review.id,
         "request",
